@@ -12,13 +12,12 @@ use crate::analysis_experience::{
     AnalysisDefaultTarget, AnalysisOutputSelection, EffectiveAnalysisExperience,
 };
 use crate::backend_cli::{
-    ANALYZE_REQUEST_CONTRACT, ANALYZE_REQUEST_VERSION, AnalysisCliClient, AnalysisPlanWireV1,
-    AnalysisProfileWireV1, AnalysisSpecWireV1, AnalyzeRequestWireV1, AudioRoleWireV1,
-    AudioSourceKindWireV1, AudioSourceWireV1, CANONICAL_TIMEBASE, ContextAuthorityWireV1,
-    DeviceClassWireV1, ExecutionPolicyWireV1, LyricTokenWireV1, LyricsModeWireV1, LyricsWireV1,
-    MusicalContextWireV1, NativeBackendWireV1, QuantizationGridWireV1, RequestedArtifactsWireV1,
-    RuntimePolicyWireV1, RuntimeResourceStatusWireV1, SourceTimelineWireV1, TimeSignatureWireV1,
-    TrackTargetWireV1,
+    ANALYZE_REQUEST_CONTRACT, ANALYZE_REQUEST_VERSION, AnalysisCliClient, AnalysisPlanWire,
+    AnalysisProfileWire, AnalysisSpecWire, AnalyzeRequestWire, AudioRoleWire, AudioSourceKindWire,
+    AudioSourceWire, CANONICAL_TIMEBASE, ContextAuthorityWire, DeviceClassWire,
+    ExecutionPolicyWire, LyricTokenWire, LyricsModeWire, LyricsWire, MusicalContextWire,
+    NativeBackendWire, QuantizationGridWire, RequestedArtifactsWire, RuntimePolicyWire,
+    RuntimeResourceStatusWire, SourceTimelineWire, TimeSignatureWire, TrackTargetWire,
 };
 use crate::config::AppConfig;
 
@@ -27,7 +26,7 @@ pub struct ResolvedAnalysisSource {
     pub library_file_hash: String,
     pub path: PathBuf,
     pub sha256: String,
-    pub role: AudioRoleWireV1,
+    pub role: AudioRoleWire,
 }
 
 pub fn resolve_true_source(file_hash: &str) -> Result<ResolvedAnalysisSource, String> {
@@ -35,7 +34,7 @@ pub fn resolve_true_source(file_hash: &str) -> Result<ResolvedAnalysisSource, St
         .map_err(|error| format!("could not load song {file_hash}: {error}"))?
         .ok_or_else(|| format!("song not found: {file_hash}"))?;
     if song.origin != crate::song::SongOrigin::LocalFile {
-        return Err("Engine v1 requires a local TrueSource".to_string());
+        return Err("Engine requires a local TrueSource".to_string());
     }
     resolve_true_source_path(file_hash, &song.path)
 }
@@ -66,7 +65,7 @@ fn resolve_true_source_path(
         library_file_hash: library_file_hash.to_string(),
         path,
         sha256: library_file_hash.to_string(),
-        role: AudioRoleWireV1::OriginalMix,
+        role: AudioRoleWire::OriginalMix,
     })
 }
 
@@ -133,7 +132,7 @@ pub fn project_lyrics_context(
 
 fn project_lyrics_context_for_request(
     context: &StudioLyricsContext,
-    requested: &RequestedArtifactsWireV1,
+    requested: &RequestedArtifactsWire,
 ) -> StudioLyricsContextProjection {
     StudioLyricsContextProjection {
         mode: context.mode,
@@ -301,11 +300,11 @@ pub fn preview_engine_run(
         &effective,
     )?;
     attach_song_execution_context(&mut request, &draft.file_hash, &effective)?;
-    preview_analyze_request_v1(request, source, effective)
+    preview_analyze_request(request, source, effective)
 }
 
 fn attach_song_execution_context(
-    request: &mut AnalyzeRequestWireV1,
+    request: &mut AnalyzeRequestWire,
     file_hash: &str,
     effective: &EffectiveAnalysisExperience,
 ) -> Result<(), String> {
@@ -329,13 +328,12 @@ fn attach_song_execution_context(
     }
     request.analysis.enable_quantization = quantization_enabled;
     if bpm.is_some() || key.is_some() || quantization_enabled {
-        request.musical_context = Some(MusicalContextWireV1 {
+        request.musical_context = Some(MusicalContextWire {
             bpm,
             key,
-            time_signature: quantization_enabled
-                .then_some(TimeSignatureWireV1 { beats: 4, unit: 4 }),
-            quantization_grid: quantization_enabled.then_some(QuantizationGridWireV1::Sixteenth),
-            authority: ContextAuthorityWireV1::Hint,
+            time_signature: quantization_enabled.then_some(TimeSignatureWire { beats: 4, unit: 4 }),
+            quantization_grid: quantization_enabled.then_some(QuantizationGridWire::Sixteenth),
+            authority: ContextAuthorityWire::Hint,
         });
     }
 
@@ -470,7 +468,7 @@ fn lyrics_context_for_song(
                 })
                 .collect::<Vec<_>>();
         if tokens.is_empty() {
-            return Err("Timed lyrics cannot be represented as exact Engine v1 alignment input. Choose an independent target or edit supplied plain lyrics first.".to_string());
+            return Err("Timed lyrics cannot be represented as exact Engine alignment input. Choose an independent target or edit supplied plain lyrics first.".to_string());
         }
         return Ok(StudioLyricsContext {
             mode: StudioLyricsMode::Canonical,
@@ -481,7 +479,7 @@ fn lyrics_context_for_song(
     if song.transcript_source == Some(crate::song::TranscriptSource::Usdx)
         && (requested_outputs.candidate_chart || requested_outputs.alignment)
     {
-        return Err("Timed lyrics cannot be represented as exact Engine v1 alignment input. Choose an independent target or edit supplied plain lyrics first.".to_string());
+        return Err("Timed lyrics cannot be represented as exact Engine alignment input. Choose an independent target or edit supplied plain lyrics first.".to_string());
     }
     if song.transcript_source == Some(crate::song::TranscriptSource::Lyrics)
         && (requested_outputs.candidate_chart || requested_outputs.alignment)
@@ -525,24 +523,24 @@ fn matching_lrc_tokens(
 
 fn cached_step_one_audio_sources(
     decision: &crate::chain_cache::ChainCacheDecision,
-    primary_role: AudioRoleWireV1,
+    primary_role: AudioRoleWire,
     primary_path: &Path,
-) -> Vec<AudioSourceWireV1> {
+) -> Vec<AudioSourceWire> {
     decision
         .cached_sources
         .iter()
         .filter(|cached| cached.role != primary_role || cached.path != primary_path)
         .enumerate()
-        .map(|(index, cached)| AudioSourceWireV1 {
+        .map(|(index, cached)| AudioSourceWire {
             id: format!("cached_step1_{index}"),
-            kind: AudioSourceKindWireV1::LocalFile,
+            kind: AudioSourceKindWire::LocalFile,
             path: cached.path.clone(),
             // This remains identity/provenance metadata. Engine input
             // validation uses the actual file and does not hash-verify it.
             sha256: cached.identity.clone(),
             role: cached.role,
             primary: false,
-            timeline: SourceTimelineWireV1 {
+            timeline: SourceTimelineWire {
                 timebase: CANONICAL_TIMEBASE,
                 source_start: 0,
             },
@@ -552,25 +550,25 @@ fn cached_step_one_audio_sources(
 
 fn ensure_original_mix_source(
     library_source: &ResolvedAnalysisSource,
-    sources: &mut Vec<AudioSourceWireV1>,
+    sources: &mut Vec<AudioSourceWire>,
 ) {
-    if library_source.role != AudioRoleWireV1::OriginalMix {
+    if library_source.role != AudioRoleWire::OriginalMix {
         return;
     }
     if sources
         .iter()
-        .any(|source| source.role == AudioRoleWireV1::OriginalMix)
+        .any(|source| source.role == AudioRoleWire::OriginalMix)
     {
         return;
     }
-    sources.push(AudioSourceWireV1 {
+    sources.push(AudioSourceWire {
         id: "original_mix".to_string(),
-        kind: AudioSourceKindWireV1::LocalFile,
+        kind: AudioSourceKindWire::LocalFile,
         path: library_source.path.clone(),
         sha256: library_source.sha256.clone(),
-        role: AudioRoleWireV1::OriginalMix,
+        role: AudioRoleWire::OriginalMix,
         primary: false,
-        timeline: SourceTimelineWireV1 {
+        timeline: SourceTimelineWire {
             timebase: CANONICAL_TIMEBASE,
             source_start: 0,
         },
@@ -580,7 +578,7 @@ fn ensure_original_mix_source(
 pub fn compile_analyze_request(
     intent: AnalysisRequestIntent,
     effective: &EffectiveAnalysisExperience,
-) -> Result<AnalyzeRequestWireV1, String> {
+) -> Result<AnalyzeRequestWire, String> {
     if !intent.source.path.is_absolute() {
         return Err("analysis source path must be absolute".to_string());
     }
@@ -601,7 +599,7 @@ pub fn compile_analyze_request(
     if outputs.candidate_chart && !effective.preserve_continuous_pitch.value {
         requested_artifacts.pitch_evidence = false;
     }
-    if outputs.candidate_chart && lyrics.mode == LyricsModeWireV1::Canonical {
+    if outputs.candidate_chart && lyrics.mode == LyricsModeWire::Canonical {
         requested_artifacts.transcript = false;
     }
     // The Step 1 audio chain's "skip if unchanged" cache only ever applies
@@ -613,7 +611,7 @@ pub fn compile_analyze_request(
     let mut satisfied_capabilities = Vec::new();
     let mut reused_step_one_sources = Vec::new();
     let mut extensions = BTreeMap::new();
-    if source_role == AudioRoleWireV1::OriginalMix
+    if source_role == AudioRoleWire::OriginalMix
         && let Ok(stored_workflow) =
             crate::workflow::load_song_workflow(&intent.source.library_file_hash)
     {
@@ -641,21 +639,21 @@ pub fn compile_analyze_request(
         }
     }
     let mut audio_sources = Vec::with_capacity(reused_step_one_sources.len() + 2);
-    audio_sources.push(AudioSourceWireV1 {
+    audio_sources.push(AudioSourceWire {
         id: "true_source".to_string(),
-        kind: AudioSourceKindWireV1::LocalFile,
+        kind: AudioSourceKindWire::LocalFile,
         path: source_path,
         sha256: intent.source.sha256.clone(),
         role: source_role,
         primary: true,
-        timeline: SourceTimelineWireV1 {
+        timeline: SourceTimelineWire {
             timebase: CANONICAL_TIMEBASE,
             source_start: 0,
         },
     });
     audio_sources.extend(reused_step_one_sources);
     ensure_original_mix_source(&intent.source, &mut audio_sources);
-    Ok(AnalyzeRequestWireV1 {
+    Ok(AnalyzeRequestWire {
         contract: ANALYZE_REQUEST_CONTRACT.to_string(),
         version: ANALYZE_REQUEST_VERSION,
         request_id: intent.request_id,
@@ -663,30 +661,30 @@ pub fn compile_analyze_request(
         lyrics,
         boundary_constraints: Vec::new(),
         musical_context: None,
-        analysis: AnalysisSpecWireV1 {
+        analysis: AnalysisSpecWire {
             profile: match effective.quality_profile.value {
                 crate::analysis_experience::AnalysisQualityProfile::Fast => {
-                    AnalysisProfileWireV1::Fast
+                    AnalysisProfileWire::Fast
                 }
                 crate::analysis_experience::AnalysisQualityProfile::Balanced => {
-                    AnalysisProfileWireV1::Balanced
+                    AnalysisProfileWire::Balanced
                 }
                 crate::analysis_experience::AnalysisQualityProfile::Maximum => {
-                    AnalysisProfileWireV1::Maximum
+                    AnalysisProfileWire::Maximum
                 }
             },
-            track_target: TrackTargetWireV1::Lead,
+            track_target: TrackTargetWire::Lead,
             preserve_continuous_pitch: effective.preserve_continuous_pitch.value,
             // Song musical context is attached immediately before Preview so
             // enabled quantization can never travel without explicit BPM/grid.
             enable_quantization: false,
         },
         requested_artifacts,
-        execution_policy: ExecutionPolicyWireV1 {
-            runtime_policy: RuntimePolicyWireV1::Production,
+        execution_policy: ExecutionPolicyWire {
+            runtime_policy: RuntimePolicyWire::Production,
             requested_backend: match intent.compute_backend.as_deref() {
                 None | Some("auto") => None,
-                Some("ggml" | "ggml_vulkan" | "vulkan") => Some(NativeBackendWireV1::Ggml),
+                Some("ggml" | "ggml_vulkan" | "vulkan") => Some(NativeBackendWire::Ggml),
                 Some(other) => {
                     return Err(format!("unsupported analysis compute backend: {other}"));
                 }
@@ -699,7 +697,7 @@ pub fn compile_analyze_request(
                         return Err(format!("invalid model backend override id: {model_id}"));
                     }
                     let backend = match backend.as_str() {
-                        "ggml" | "ggml_vulkan" | "vulkan" => NativeBackendWireV1::Ggml,
+                        "ggml" | "ggml_vulkan" | "vulkan" => NativeBackendWire::Ggml,
                         other => {
                             return Err(format!(
                                 "unsupported backend {other} for model {model_id}"
@@ -711,9 +709,9 @@ pub fn compile_analyze_request(
                 .collect::<Result<_, String>>()?,
             requested_device: match intent.default_device_class.as_deref() {
                 None => None,
-                Some("cpu") => Some(DeviceClassWireV1::Cpu),
-                Some("gpu") => Some(DeviceClassWireV1::Gpu),
-                Some("integrated_gpu") => Some(DeviceClassWireV1::IntegratedGpu),
+                Some("cpu") => Some(DeviceClassWire::Cpu),
+                Some("gpu") => Some(DeviceClassWire::Gpu),
+                Some("integrated_gpu") => Some(DeviceClassWire::IntegratedGpu),
                 Some(other) => {
                     return Err(format!("unsupported analysis device class: {other}"));
                 }
@@ -726,9 +724,9 @@ pub fn compile_analyze_request(
                         return Err(format!("invalid model device override id: {model_id}"));
                     }
                     let device = match device.as_str() {
-                        "cpu" => DeviceClassWireV1::Cpu,
-                        "gpu" => DeviceClassWireV1::Gpu,
-                        "integrated_gpu" => DeviceClassWireV1::IntegratedGpu,
+                        "cpu" => DeviceClassWire::Cpu,
+                        "gpu" => DeviceClassWire::Gpu,
+                        "integrated_gpu" => DeviceClassWire::IntegratedGpu,
                         other => {
                             return Err(format!(
                                 "unsupported device class {other} for model {model_id}"
@@ -744,7 +742,7 @@ pub fn compile_analyze_request(
     })
 }
 
-fn compile_lyrics(lyrics: StudioLyricsContext) -> Result<LyricsWireV1, String> {
+fn compile_lyrics(lyrics: StudioLyricsContext) -> Result<LyricsWire, String> {
     if lyrics.mode == StudioLyricsMode::None && !lyrics.tokens.is_empty() {
         return Err("lyrics mode none cannot contain tokens".to_string());
     }
@@ -757,17 +755,17 @@ fn compile_lyrics(lyrics: StudioLyricsContext) -> Result<LyricsWireV1, String> {
             return Err("lyrics contain an invalid or duplicate token".to_string());
         }
     }
-    Ok(LyricsWireV1 {
+    Ok(LyricsWire {
         mode: match lyrics.mode {
-            StudioLyricsMode::None => LyricsModeWireV1::None,
-            StudioLyricsMode::Reference => LyricsModeWireV1::Reference,
-            StudioLyricsMode::Canonical => LyricsModeWireV1::Canonical,
+            StudioLyricsMode::None => LyricsModeWire::None,
+            StudioLyricsMode::Reference => LyricsModeWire::Reference,
+            StudioLyricsMode::Canonical => LyricsModeWire::Canonical,
         },
         language: lyrics.language_hint,
         tokens: lyrics
             .tokens
             .into_iter()
-            .map(|token| LyricTokenWireV1 {
+            .map(|token| LyricTokenWire {
                 id: token.id,
                 text: token.text,
                 reading: token.reading,
@@ -779,8 +777,8 @@ fn compile_lyrics(lyrics: StudioLyricsContext) -> Result<LyricsWireV1, String> {
     })
 }
 
-fn requested_artifacts(outputs: AnalysisOutputSelection) -> RequestedArtifactsWireV1 {
-    let mut requested = RequestedArtifactsWireV1 {
+fn requested_artifacts(outputs: AnalysisOutputSelection) -> RequestedArtifactsWire {
+    let mut requested = RequestedArtifactsWire {
         vocal_chart: outputs.candidate_chart,
         pitch_evidence: outputs.pitch_evidence,
         singing_analysis: outputs.candidate_chart,
@@ -797,7 +795,7 @@ fn requested_artifacts(outputs: AnalysisOutputSelection) -> RequestedArtifactsWi
         // alongside Instrumental costs nothing extra to compute.
         stems: outputs
             .instrumental
-            .then_some([AudioRoleWireV1::Instrumental, AudioRoleWireV1::GuideVocals])
+            .then_some([AudioRoleWire::Instrumental, AudioRoleWire::GuideVocals])
             .into_iter()
             .flatten()
             .collect(),
@@ -825,7 +823,7 @@ pub struct EngineRunPreview {
     pub request_id: String,
     pub request_json: String,
     pub request_digest: String,
-    pub engine_plan: AnalysisPlanWireV1,
+    pub engine_plan: AnalysisPlanWire,
     pub effective_settings: EffectiveAnalysisExperience,
     pub lyrics_context: StudioLyricsContextProjection,
     pub source: ResolvedAnalysisSource,
@@ -842,8 +840,8 @@ impl EngineRunPreview {
     }
 }
 
-pub fn preview_analyze_request_v1(
-    request: AnalyzeRequestWireV1,
+pub fn preview_analyze_request(
+    request: AnalyzeRequestWire,
     source: ResolvedAnalysisSource,
     effective_settings: EffectiveAnalysisExperience,
 ) -> Result<EngineRunPreview, String> {
@@ -910,7 +908,7 @@ pub fn preview_analyze_request_v1(
     })
 }
 
-fn plan_resource_blockers(plan: &AnalysisPlanWireV1) -> Vec<String> {
+fn plan_resource_blockers(plan: &AnalysisPlanWire) -> Vec<String> {
     let mut blockers = Vec::new();
     for resource in &plan.resolved_resources {
         if !resource.requirement.required {
@@ -936,11 +934,11 @@ fn plan_resource_blockers(plan: &AnalysisPlanWireV1) -> Vec<String> {
     blockers
 }
 
-fn resource_ready(status: &RuntimeResourceStatusWireV1) -> bool {
+fn resource_ready(status: &RuntimeResourceStatusWire) -> bool {
     status.usable
 }
 
-fn runtime_status_reason(status: &RuntimeResourceStatusWireV1) -> String {
+fn runtime_status_reason(status: &RuntimeResourceStatusWire) -> String {
     if status.reasons.is_empty() {
         format!("state {:?}", status.install_state).to_lowercase()
     } else {
@@ -1012,7 +1010,7 @@ fn exact_queue_intent(
     if preview.request_json.trim().is_empty() {
         return Err("analysis preview has no request snapshot".to_string());
     }
-    let request: AnalyzeRequestWireV1 = serde_json::from_str(&preview.request_json)
+    let request: AnalyzeRequestWire = serde_json::from_str(&preview.request_json)
         .map_err(|error| format!("analysis preview request JSON is malformed: {error}"))?;
     if request.request_id != preview.request_id
         || preview.engine_plan.request_id != preview.request_id
@@ -1051,14 +1049,14 @@ fn exact_queue_intent(
 }
 
 pub(crate) fn validate_workflow_plan_identity(
-    request: &AnalyzeRequestWireV1,
-    plan: &AnalysisPlanWireV1,
+    request: &AnalyzeRequestWire,
+    plan: &AnalysisPlanWire,
 ) -> Result<(), String> {
     let request_workflow = request
         .extensions
         .get(crate::workflow::WORKFLOW_EXECUTION_EXTENSION_KEY)
         .map(|value| {
-            serde_json::from_value::<crate::workflow::WorkflowExecutionWireV1>(value.clone())
+            serde_json::from_value::<crate::workflow::WorkflowExecutionWire>(value.clone())
                 .map_err(|error| format!("workflow request snapshot is malformed: {error}"))
         })
         .transpose()?;
@@ -1078,11 +1076,11 @@ pub(crate) fn validate_workflow_plan_identity(
                 );
             }
             let requested_fusion_mode = match request_workflow.fusion_mode {
-                crate::workflow::WorkflowFusionModeWireV1::Algorithm => {
-                    crate::backend_cli::FusionModeWireV1::Algorithm
+                crate::workflow::WorkflowFusionModeWire::Algorithm => {
+                    crate::backend_cli::FusionModeWire::Algorithm
                 }
-                crate::workflow::WorkflowFusionModeWireV1::AiJudgment => {
-                    crate::backend_cli::FusionModeWireV1::AiJudgment
+                crate::workflow::WorkflowFusionModeWire::AiJudgment => {
+                    crate::backend_cli::FusionModeWire::AiJudgment
                 }
             };
             if planned.fusion_mode != requested_fusion_mode {
@@ -1179,12 +1177,12 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-fn studio_lyrics_from_wire(lyrics: &LyricsWireV1) -> StudioLyricsContext {
+fn studio_lyrics_from_wire(lyrics: &LyricsWire) -> StudioLyricsContext {
     StudioLyricsContext {
         mode: match lyrics.mode {
-            LyricsModeWireV1::None => StudioLyricsMode::None,
-            LyricsModeWireV1::Reference => StudioLyricsMode::Reference,
-            LyricsModeWireV1::Canonical => StudioLyricsMode::Canonical,
+            LyricsModeWire::None => StudioLyricsMode::None,
+            LyricsModeWire::Reference => StudioLyricsMode::Reference,
+            LyricsModeWire::Canonical => StudioLyricsMode::Canonical,
         },
         language_hint: lyrics.language.clone(),
         tokens: lyrics
@@ -1304,26 +1302,26 @@ mod tests {
     #[test]
     fn deep_step_one_cache_hit_keeps_every_earlier_semantic_source() {
         let decision = crate::chain_cache::ChainCacheDecision {
-            role: AudioRoleWireV1::CleanLeadVocal,
+            role: AudioRoleWire::CleanLeadVocal,
             source_path: Some(PathBuf::from("/cache/clean.flac")),
             cached_sources: vec![
                 crate::chain_cache::CachedChainSource {
-                    role: AudioRoleWireV1::GuideVocals,
+                    role: AudioRoleWire::GuideVocals,
                     path: PathBuf::from("/cache/guide.flac"),
                     identity: "guide".to_string(),
                 },
                 crate::chain_cache::CachedChainSource {
-                    role: AudioRoleWireV1::Instrumental,
+                    role: AudioRoleWire::Instrumental,
                     path: PathBuf::from("/cache/instrumental.flac"),
                     identity: "instrumental".to_string(),
                 },
                 crate::chain_cache::CachedChainSource {
-                    role: AudioRoleWireV1::LeadVocal,
+                    role: AudioRoleWire::LeadVocal,
                     path: PathBuf::from("/cache/lead.flac"),
                     identity: "lead".to_string(),
                 },
                 crate::chain_cache::CachedChainSource {
-                    role: AudioRoleWireV1::CleanLeadVocal,
+                    role: AudioRoleWire::CleanLeadVocal,
                     path: PathBuf::from("/cache/clean.flac"),
                     identity: "clean".to_string(),
                 },
@@ -1333,16 +1331,16 @@ mod tests {
 
         let sources = cached_step_one_audio_sources(
             &decision,
-            AudioRoleWireV1::CleanLeadVocal,
+            AudioRoleWire::CleanLeadVocal,
             Path::new("/cache/clean.flac"),
         );
 
         assert_eq!(
             sources.iter().map(|source| source.role).collect::<Vec<_>>(),
             vec![
-                AudioRoleWireV1::GuideVocals,
-                AudioRoleWireV1::Instrumental,
-                AudioRoleWireV1::LeadVocal,
+                AudioRoleWire::GuideVocals,
+                AudioRoleWire::Instrumental,
+                AudioRoleWire::LeadVocal,
             ]
         );
         assert!(sources.iter().all(|source| !source.primary));
@@ -1355,16 +1353,16 @@ mod tests {
             library_file_hash: "songhash".to_string(),
             path: mix.clone(),
             sha256: "mix-digest".to_string(),
-            role: AudioRoleWireV1::OriginalMix,
+            role: AudioRoleWire::OriginalMix,
         };
-        let mut sources = vec![AudioSourceWireV1 {
+        let mut sources = vec![AudioSourceWire {
             id: "true_source".to_string(),
-            kind: AudioSourceKindWireV1::LocalFile,
+            kind: AudioSourceKindWire::LocalFile,
             path: PathBuf::from("/cache/clean.flac"),
             sha256: "mix-digest".to_string(),
-            role: AudioRoleWireV1::CleanLeadVocal,
+            role: AudioRoleWire::CleanLeadVocal,
             primary: true,
-            timeline: SourceTimelineWireV1 {
+            timeline: SourceTimelineWire {
                 timebase: CANONICAL_TIMEBASE,
                 source_start: 0,
             },
@@ -1372,9 +1370,9 @@ mod tests {
         ensure_original_mix_source(&library_source, &mut sources);
         ensure_original_mix_source(&library_source, &mut sources);
         assert_eq!(sources.len(), 2);
-        assert_eq!(sources[0].role, AudioRoleWireV1::CleanLeadVocal);
+        assert_eq!(sources[0].role, AudioRoleWire::CleanLeadVocal);
         assert_eq!(sources[1].id, "original_mix");
-        assert_eq!(sources[1].role, AudioRoleWireV1::OriginalMix);
+        assert_eq!(sources[1].role, AudioRoleWire::OriginalMix);
         assert_eq!(sources[1].path, mix);
         assert!(!sources[1].primary);
     }
@@ -1407,7 +1405,7 @@ mod tests {
                         library_file_hash: "library".to_string(),
                         path: path.clone(),
                         sha256: "a".repeat(64),
-                        role: AudioRoleWireV1::OriginalMix,
+                        role: AudioRoleWire::OriginalMix,
                     },
                     lyrics: if target == AnalysisDefaultTarget::Alignment {
                         StudioLyricsContext {
@@ -1437,7 +1435,7 @@ mod tests {
             .unwrap();
             assert_eq!(
                 request.execution_policy.runtime_policy,
-                RuntimePolicyWireV1::Production
+                RuntimePolicyWire::Production
             );
             assert!(!request.analysis.enable_quantization);
             match target {
@@ -1453,7 +1451,7 @@ mod tests {
                 }
                 AnalysisDefaultTarget::Instrumental => assert_eq!(
                     request.requested_artifacts.stems,
-                    [AudioRoleWireV1::Instrumental, AudioRoleWireV1::GuideVocals]
+                    [AudioRoleWire::Instrumental, AudioRoleWire::GuideVocals]
                 ),
                 AnalysisDefaultTarget::FullCandidate => unreachable!(),
             }
@@ -1476,7 +1474,7 @@ mod tests {
                     library_file_hash: "library".to_string(),
                     path: std::env::temp_dir().join("source.flac"),
                     sha256: "a".repeat(64),
-                    role: AudioRoleWireV1::OriginalMix,
+                    role: AudioRoleWire::OriginalMix,
                 },
                 lyrics: StudioLyricsContext::default(),
                 target_override: None,
@@ -1492,7 +1490,7 @@ mod tests {
         assert!(request.requested_artifacts.transcript);
         assert_eq!(
             request.requested_artifacts.stems,
-            [AudioRoleWireV1::Instrumental, AudioRoleWireV1::GuideVocals]
+            [AudioRoleWire::Instrumental, AudioRoleWire::GuideVocals]
         );
         assert!(!request.requested_artifacts.vocal_chart);
         assert!(!request.requested_artifacts.pitch_evidence);
@@ -1509,7 +1507,7 @@ mod tests {
                     library_file_hash: "library".to_string(),
                     path: std::env::temp_dir().join("source.flac"),
                     sha256: "a".repeat(64),
-                    role: AudioRoleWireV1::OriginalMix,
+                    role: AudioRoleWire::OriginalMix,
                 },
                 lyrics: StudioLyricsContext::default(),
                 target_override: None,
@@ -1541,7 +1539,7 @@ mod tests {
                         library_file_hash: "library".to_string(),
                         path: std::env::temp_dir().join("source.flac"),
                         sha256: "a".repeat(64),
-                        role: AudioRoleWireV1::OriginalMix,
+                        role: AudioRoleWire::OriginalMix,
                     },
                     lyrics: StudioLyricsContext::default(),
                     target_override: Some(AnalysisDefaultTarget::PitchEvidence),
@@ -1556,11 +1554,11 @@ mod tests {
             .unwrap();
             assert_eq!(
                 request.execution_policy.requested_backend,
-                Some(NativeBackendWireV1::Ggml)
+                Some(NativeBackendWire::Ggml)
             );
             assert_eq!(
                 request.execution_policy.runtime_policy,
-                RuntimePolicyWireV1::Production
+                RuntimePolicyWire::Production
             );
         }
     }
@@ -1574,7 +1572,7 @@ mod tests {
                     library_file_hash: "library".to_string(),
                     path: std::env::temp_dir().join("source.flac"),
                     sha256: "a".repeat(64),
-                    role: AudioRoleWireV1::OriginalMix,
+                    role: AudioRoleWire::OriginalMix,
                 },
                 lyrics: StudioLyricsContext::default(),
                 target_override: Some(AnalysisDefaultTarget::Instrumental),
@@ -1596,21 +1594,21 @@ mod tests {
         assert_eq!(request.execution_policy.requested_backend, None);
         assert_eq!(
             request.execution_policy.runtime_policy,
-            RuntimePolicyWireV1::Production
+            RuntimePolicyWire::Production
         );
         assert_eq!(
             request
                 .execution_policy
                 .model_backend_overrides
                 .get("bs_roformer_leap_xe90_vocals"),
-            Some(&NativeBackendWireV1::Ggml)
+            Some(&NativeBackendWire::Ggml)
         );
         assert_eq!(
             request
                 .execution_policy
                 .model_backend_overrides
                 .get("rmvpe"),
-            Some(&NativeBackendWireV1::Ggml)
+            Some(&NativeBackendWire::Ggml)
         );
     }
 
@@ -1623,7 +1621,7 @@ mod tests {
                     library_file_hash: "library".to_string(),
                     path: std::env::temp_dir().join("source.flac"),
                     sha256: "a".repeat(64),
-                    role: AudioRoleWireV1::OriginalMix,
+                    role: AudioRoleWire::OriginalMix,
                 },
                 lyrics: StudioLyricsContext {
                     mode: StudioLyricsMode::Canonical,
@@ -1669,7 +1667,7 @@ mod tests {
                     library_file_hash: "library".to_string(),
                     path: std::env::temp_dir().join("source.flac"),
                     sha256: "a".repeat(64),
-                    role: AudioRoleWireV1::OriginalMix,
+                    role: AudioRoleWire::OriginalMix,
                 },
                 lyrics: StudioLyricsContext::default(),
                 target_override: Some(AnalysisDefaultTarget::FullCandidate),
@@ -1732,7 +1730,7 @@ mod tests {
         )
         .unwrap();
         let request_json = serde_json::to_string(&request).unwrap();
-        let plan: AnalysisPlanWireV1 = serde_json::from_value(serde_json::json!({
+        let plan: AnalysisPlanWire = serde_json::from_value(serde_json::json!({
             "schema":"uta.analysis-engine.plan", "schema_version":1,
             "request_id":"exact-preview-1",
             "source_route":{"primary_source_id":"true_source","input_role":"original_mix","preparation":[]},
@@ -1770,9 +1768,8 @@ mod tests {
     #[test]
     fn exact_plan_rejects_a_fusion_mode_mismatch() {
         let (preview, source) = exact_preview_fixture();
-        let mut request: AnalyzeRequestWireV1 =
-            serde_json::from_str(&preview.request_json).unwrap();
-        let request_workflow = crate::workflow::WorkflowExecutionWireV1 {
+        let mut request: AnalyzeRequestWire = serde_json::from_str(&preview.request_json).unwrap();
+        let request_workflow = crate::workflow::WorkflowExecutionWire {
             contract: "uta.workflow-execution".to_string(),
             version: 1,
             workflow_schema_version: crate::workflow::WORKFLOW_SCHEMA_VERSION,
@@ -1784,15 +1781,15 @@ mod tests {
             bindings: Vec::new(),
             terminal_outputs: Vec::new(),
             fusion_policy: None,
-            fusion_mode: crate::workflow::WorkflowFusionModeWireV1::AiJudgment,
+            fusion_mode: crate::workflow::WorkflowFusionModeWire::AiJudgment,
         };
         request.extensions.insert(
             crate::workflow::WORKFLOW_EXECUTION_EXTENSION_KEY.to_string(),
             serde_json::to_value(&request_workflow).unwrap(),
         );
         let mut plan = preview.engine_plan;
-        plan.workflow_execution = Some(crate::backend_cli::WorkflowExecutionPlanWireV1 {
-            identity: crate::backend_cli::WorkflowPlanIdentityWireV1 {
+        plan.workflow_execution = Some(crate::backend_cli::WorkflowExecutionPlanWire {
+            identity: crate::backend_cli::WorkflowPlanIdentityWire {
                 contract: request_workflow.contract,
                 version: request_workflow.version,
                 workflow_schema_version: request_workflow.workflow_schema_version,
@@ -1803,7 +1800,7 @@ mod tests {
             nodes: Vec::new(),
             terminal_outputs: Vec::new(),
             fusion_policy: None,
-            fusion_mode: crate::backend_cli::FusionModeWireV1::Algorithm,
+            fusion_mode: crate::backend_cli::FusionModeWire::Algorithm,
         });
         assert_eq!(
             validate_workflow_plan_identity(&request, &plan).unwrap_err(),
@@ -1880,18 +1877,17 @@ mod tests {
     fn exact_preview_accepts_a_cached_chain_input_for_an_unchanged_true_source() {
         let (mut preview, source) = exact_preview_fixture();
         let cached_path = source_fixture("cached-guide", b"cached guide vocal bytes");
-        let mut request: AnalyzeRequestWireV1 =
-            serde_json::from_str(&preview.request_json).unwrap();
+        let mut request: AnalyzeRequestWire = serde_json::from_str(&preview.request_json).unwrap();
         request.audio_sources[0].path = cached_path.clone();
-        request.audio_sources[0].role = AudioRoleWireV1::GuideVocals;
-        preview.engine_plan.source_route.input_role = AudioRoleWireV1::GuideVocals;
+        request.audio_sources[0].role = AudioRoleWire::GuideVocals;
+        preview.engine_plan.source_route.input_role = AudioRoleWire::GuideVocals;
         preview.request_json = serde_json::to_string(&request).unwrap();
         preview.request_digest = digest_json(&preview.request_json);
 
         let intent = exact_queue_intent(&preview, &source).unwrap();
         assert_eq!(intent.source_path, source.path);
         assert_eq!(
-            serde_json::from_str::<AnalyzeRequestWireV1>(&intent.request_json)
+            serde_json::from_str::<AnalyzeRequestWire>(&intent.request_json)
                 .unwrap()
                 .audio_sources[0]
                 .path,

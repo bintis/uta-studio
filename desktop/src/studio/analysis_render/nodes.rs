@@ -217,6 +217,9 @@ pub(crate) fn analysis_graph_route_summary(
     let measured = measured_work_unit_progress(route)
         .map(|(_, units)| format!(" · {units}"))
         .unwrap_or_default();
+    let elapsed = node_elapsed_copy(Some(route), unix_now_ms())
+        .map(|elapsed| format!(" · {elapsed}"))
+        .unwrap_or_default();
     AnalysisGraphRouteSummary {
         model_ids: {
             let mut models = node.model_ids.clone();
@@ -227,7 +230,7 @@ pub(crate) fn analysis_graph_route_summary(
             }
             models
         },
-        runtime: format!("{implementation}{measured}"),
+        runtime: format!("{implementation}{measured}{elapsed}"),
         warning,
     }
 }

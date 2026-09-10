@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{RuntimeManagerError, RuntimeManagerResult};
 use crate::external_tool::{
-    FUSION_AGENT_ADAPTER_ID, FusionAgentAdapterManifestV1, clear_fusion_provider,
+    FUSION_AGENT_ADAPTER_ID, FusionAgentAdapterManifest, clear_fusion_provider,
     configure_fusion_provider, configured_fusion_provider, fusion_adapter_manifest,
 };
 use crate::store::StorePaths;
@@ -49,7 +49,7 @@ pub struct FusionProviderReport {
 #[derive(Debug, Clone)]
 struct AdapterDiscovery {
     adapter: Option<std::path::PathBuf>,
-    manifest: Option<FusionAgentAdapterManifestV1>,
+    manifest: Option<FusionAgentAdapterManifest>,
     manifest_error: bool,
 }
 

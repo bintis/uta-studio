@@ -7,7 +7,7 @@ use std::time::Duration;
 use serde::Deserialize;
 
 use crate::contract::{
-    CANONICAL_TIMEBASE, DecodedAudioFactsV1, EngineError, EngineErrorCode, EngineResult,
+    CANONICAL_TIMEBASE, DecodedAudioFacts, EngineError, EngineErrorCode, EngineResult,
 };
 use crate::execution::CancellationToken;
 
@@ -53,7 +53,7 @@ struct SourceFacts {
 /// untouched; model-specific workers may derive their own sample-rate views.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DecodedAudio {
-    pub facts: DecodedAudioFactsV1,
+    pub facts: DecodedAudioFacts,
     pub(crate) metrics: SignalMetrics,
     pub(crate) profile: SignalProfile,
 }
@@ -296,7 +296,7 @@ pub(crate) fn decode_audio_with_cancellation(
     if sample_count > max_samples {
         return Err(EngineError::new(
             EngineErrorCode::DecodeFailed,
-            "decoded audio exceeds the four-hour Engine v1 limit",
+            "decoded audio exceeds the four-hour Engine limit",
         ));
     }
     let frame_count = sample_count / u64::from(source_facts.channels);
@@ -318,7 +318,7 @@ pub(crate) fn decode_audio_with_cancellation(
     }
     let metrics = statistics.finish();
     Ok(DecodedAudio {
-        facts: DecodedAudioFactsV1 {
+        facts: DecodedAudioFacts {
             source_id: source_id.to_string(),
             container: source_facts.container,
             codec: source_facts.codec,

@@ -1,8 +1,8 @@
 use super::AnalysisEngine;
-use crate::contract::{EngineError, EngineErrorCode, EngineResult, ExportRequestV1};
+use crate::contract::{EngineError, EngineErrorCode, EngineResult, ExportRequest};
 
 impl AnalysisEngine {
-    pub fn export(&self, request: &ExportRequestV1) -> EngineResult<()> {
+    pub fn export(&self, request: &ExportRequest) -> EngineResult<()> {
         request.validate()?;
         Err(EngineError::new(
             EngineErrorCode::ExportFailed,

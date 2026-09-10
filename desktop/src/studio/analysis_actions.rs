@@ -1292,7 +1292,7 @@ fn spawn_preview_resources(
         .engine_plan
         .workflow_execution
         .as_ref()
-        .map_or(app_core::FusionModeWireV1::Algorithm, |workflow| {
+        .map_or(app_core::FusionModeWire::Algorithm, |workflow| {
             workflow.fusion_mode
         });
     let candidate_graph_exercised = preview
@@ -1301,13 +1301,13 @@ fn spawn_preview_resources(
         .iter()
         .any(|node| node.capability.as_str() == "fusion.candidate_graph");
     let adapter_preview = match (fusion_mode, candidate_graph_exercised) {
-        (app_core::FusionModeWireV1::Algorithm, _) => {
+        (app_core::FusionModeWire::Algorithm, _) => {
             "Fusion Agent Adapter · Not required for Algorithm mode."
         }
-        (app_core::FusionModeWireV1::AiJudgment, false) => {
+        (app_core::FusionModeWire::AiJudgment, false) => {
             "Fusion Agent Adapter · Not exercised by this exact run. Preview does not contact the provider."
         }
-        (app_core::FusionModeWireV1::AiJudgment, true) => {
+        (app_core::FusionModeWire::AiJudgment, true) => {
             "Fusion Agent Adapter · Preview checks local readiness only; it does not contact the provider."
         }
     };
@@ -1346,12 +1346,12 @@ fn spawn_preview_resources(
                     ),
                 )
             } else if let Some(status) = &resource.status {
-                let missing = status.origin == app_core::ResourceOriginWireV1::Missing
+                let missing = status.origin == app_core::ResourceOriginWire::Missing
                     || status.reasons.iter().any(|reason| {
                         matches!(
                             reason,
-                            app_core::ReadinessReasonWireV1::Absent
-                                | app_core::ReadinessReasonWireV1::ExecutableMissing
+                            app_core::ReadinessReasonWire::Absent
+                                | app_core::ReadinessReasonWire::ExecutableMissing
                         )
                     });
                 let reasons = status

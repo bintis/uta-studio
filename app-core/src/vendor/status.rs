@@ -5,9 +5,9 @@ use std::time::{Duration, Instant};
 
 use super::*;
 use crate::backend_cli::{
-    AnalysisCliClient, NativeBackendWireV1, RuntimeCliClient, RuntimePolicyWireV1,
-    RuntimeResourceDetailsWireV1, RuntimeResourceRefWireV1, RuntimeResourceStatusWireV1,
-    ValidationStateWireV1,
+    AnalysisCliClient, NativeBackendWire, RuntimeCliClient, RuntimePolicyWire,
+    RuntimeResourceDetailsWire, RuntimeResourceRefWire, RuntimeResourceStatusWire,
+    ValidationStateWire,
 };
 use crate::cache::{
     CachePaths, normalized_target_path, relocate_directory_contents, songs_cache_dir,
@@ -64,14 +64,14 @@ pub(crate) fn silent_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
 
 pub(crate) fn runtime_client() -> Result<RuntimeCliClient, String> {
     RuntimeCliClient::discover()
-        .map(|client| client.with_policy(RuntimePolicyWireV1::Production))
+        .map(|client| client.with_policy(RuntimePolicyWire::Production))
         .map_err(|error| error.to_string())
 }
 
-pub(super) fn resource_for_target(target: ModelDownloadTarget) -> Option<RuntimeResourceRefWireV1> {
+pub(super) fn resource_for_target(target: ModelDownloadTarget) -> Option<RuntimeResourceRefWire> {
     match target {
-        ModelDownloadTarget::RoFormer => RuntimeResourceRefWireV1::bundle("roformer"),
-        ModelDownloadTarget::Pitch => RuntimeResourceRefWireV1::model("rmvpe"),
+        ModelDownloadTarget::RoFormer => RuntimeResourceRefWire::bundle("roformer"),
+        ModelDownloadTarget::Pitch => RuntimeResourceRefWire::model("rmvpe"),
     }
     .ok()
 }
@@ -87,7 +87,7 @@ fn status_copy(target: ModelDownloadTarget) -> (&'static str, &'static str) {
 }
 
 fn status_for(
-    statuses: &[RuntimeResourceStatusWireV1],
+    statuses: &[RuntimeResourceStatusWire],
     target: ModelDownloadTarget,
 ) -> Option<ModelInstallStatus> {
     let resource = resource_for_target(target)?;
@@ -107,18 +107,18 @@ fn status_for(
     })
 }
 
-fn backend_label(backend: NativeBackendWireV1) -> &'static str {
+fn backend_label(backend: NativeBackendWire) -> &'static str {
     match backend {
-        NativeBackendWireV1::Ggml => "ggml",
+        NativeBackendWire::Ggml => "ggml",
     }
 }
 
-fn validation_label(validation: ValidationStateWireV1) -> &'static str {
+fn validation_label(validation: ValidationStateWire) -> &'static str {
     match validation {
-        ValidationStateWireV1::ProductionPinned => "production_pinned",
-        ValidationStateWireV1::BenchmarkCandidate => "benchmark_candidate",
-        ValidationStateWireV1::Experimental => "experimental",
-        ValidationStateWireV1::Unsupported => "unsupported",
+        ValidationStateWire::ProductionPinned => "production_pinned",
+        ValidationStateWire::BenchmarkCandidate => "benchmark_candidate",
+        ValidationStateWire::Experimental => "experimental",
+        ValidationStateWire::Unsupported => "unsupported",
     }
 }
 
@@ -126,7 +126,7 @@ const MODEL_STATUS_TARGETS: [ModelDownloadTarget; 2] =
     [ModelDownloadTarget::RoFormer, ModelDownloadTarget::Pitch];
 
 fn model_install_statuses_from_statuses(
-    statuses: &[RuntimeResourceStatusWireV1],
+    statuses: &[RuntimeResourceStatusWire],
 ) -> Vec<ModelInstallStatus> {
     MODEL_STATUS_TARGETS
         .into_iter()
@@ -183,7 +183,7 @@ const ANALYSIS_STRATEGY_RESOURCES: [(&str, &str, &str, &str); 6] = [
 ];
 
 pub(super) fn strategy_resource_statuses_from_details(
-    details: &[RuntimeResourceDetailsWireV1],
+    details: &[RuntimeResourceDetailsWire],
 ) -> Vec<AnalysisStrategyResourceStatus> {
     ANALYSIS_STRATEGY_RESOURCES
         .into_iter()
@@ -237,7 +237,7 @@ pub(super) fn analysis_strategy_resource_statuses_with_client(
     let details = ANALYSIS_STRATEGY_RESOURCES
         .iter()
         .map(|(_, _, model_id, _)| {
-            let resource = RuntimeResourceRefWireV1::model(model_id)?;
+            let resource = RuntimeResourceRefWire::model(model_id)?;
             client.show(&resource).map_err(|error| error.to_string())
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -253,9 +253,9 @@ pub fn analysis_strategy_resource_statuses() -> Result<Vec<AnalysisStrategyResou
 }
 
 fn find_status<'a>(
-    statuses: &'a [RuntimeResourceStatusWireV1],
+    statuses: &'a [RuntimeResourceStatusWire],
     resource: &str,
-) -> Option<&'a RuntimeResourceStatusWireV1> {
+) -> Option<&'a RuntimeResourceStatusWire> {
     statuses.iter().find(|status| status.resource.0 == resource)
 }
 

@@ -6,10 +6,10 @@ pub(crate) const ANALYSIS_MODEL_PANEL_WIDTH: f32 = 338.0;
 pub(crate) struct AnalysisModelPanelScroll;
 
 fn workflow_node_for_presentation<'a>(
-    workflow: &'a app_core::WorkflowExecutionWireV1,
+    workflow: &'a app_core::WorkflowExecutionWire,
     node_id: &str,
 ) -> Option<(
-    &'a app_core::WorkflowNodeWireV1,
+    &'a app_core::WorkflowNodeWire,
     Option<&'static str>,
     Option<&'static str>,
 )> {
@@ -41,7 +41,7 @@ fn workflow_node_for_presentation<'a>(
 }
 
 fn presentation_model(
-    node: &app_core::WorkflowNodeWireV1,
+    node: &app_core::WorkflowNodeWire,
     concrete_capability: Option<&str>,
 ) -> Option<String> {
     if concrete_capability == Some("audio.extract_instrumental") {
@@ -149,15 +149,15 @@ fn planned_node_status(
     });
     Some(
         match state {
-            app_core::WorkflowNodeExecutionStateWireV1::Ready if concrete_not_requested => {
+            app_core::WorkflowNodeExecutionStateWire::Ready if concrete_not_requested => {
                 "NOT REQUESTED"
             }
-            app_core::WorkflowNodeExecutionStateWireV1::Ready if run_completed => "COMPLETE",
-            app_core::WorkflowNodeExecutionStateWireV1::Ready => "WAITING",
-            app_core::WorkflowNodeExecutionStateWireV1::Deferred => "DEFERRED",
-            app_core::WorkflowNodeExecutionStateWireV1::Disabled => "DISABLED",
-            app_core::WorkflowNodeExecutionStateWireV1::ProfileSkipped => "PROFILE SKIPPED",
-            app_core::WorkflowNodeExecutionStateWireV1::NotRequested => "NOT REQUESTED",
+            app_core::WorkflowNodeExecutionStateWire::Ready if run_completed => "COMPLETE",
+            app_core::WorkflowNodeExecutionStateWire::Ready => "WAITING",
+            app_core::WorkflowNodeExecutionStateWire::Deferred => "DEFERRED",
+            app_core::WorkflowNodeExecutionStateWire::Disabled => "DISABLED",
+            app_core::WorkflowNodeExecutionStateWire::ProfileSkipped => "PROFILE SKIPPED",
+            app_core::WorkflowNodeExecutionStateWire::NotRequested => "NOT REQUESTED",
         }
         .to_string(),
     )
@@ -293,7 +293,7 @@ fn has_selected_history_for_song(session: &StudioSessionView<'_>) -> bool {
 
 fn selected_workflow_wire(
     session: &StudioSessionView<'_>,
-) -> Option<app_core::WorkflowExecutionWireV1> {
+) -> Option<app_core::WorkflowExecutionWire> {
     let selected_history = session.selected_analysis_history.and_then(|id| {
         session.analysis_history.iter().find(|history| {
             history.id == id
@@ -351,7 +351,7 @@ fn selected_workflow_wire(
     session
         .workflow_snapshot
         .as_ref()
-        .and_then(|snapshot| app_core::WorkflowExecutionWireV1::from_snapshot(snapshot).ok())
+        .and_then(|snapshot| app_core::WorkflowExecutionWire::from_snapshot(snapshot).ok())
 }
 
 fn spawn_fact(
@@ -605,7 +605,7 @@ mod execution_status_tests {
     #[test]
     fn dual_output_presentation_nodes_report_the_shared_model() {
         let snapshot = app_core::compile_workflow(&app_core::default_workflow("song")).unwrap();
-        let workflow = app_core::WorkflowExecutionWireV1::from_snapshot(&snapshot).unwrap();
+        let workflow = app_core::WorkflowExecutionWire::from_snapshot(&snapshot).unwrap();
         let (vocal, vocal_capability, _) =
             workflow_node_for_presentation(&workflow, "vocal_bgm_split.vocal").unwrap();
         let (instrumental, instrumental_capability, _) =

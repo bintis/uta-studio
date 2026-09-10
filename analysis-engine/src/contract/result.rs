@@ -2,8 +2,8 @@ use std::path::{Component, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::{AudioQualityReportV1, EngineError, EngineErrorCode, EngineResult};
-use crate::quantization::QuantizationReportV1;
+use super::{AudioQualityReport, EngineError, EngineErrorCode, EngineResult};
+use crate::quantization::QuantizationReport;
 
 pub const ANALYSIS_RESULT_CONTRACT: &str = "uta.analysis-engine.result";
 pub const ANALYSIS_RESULT_VERSION: u32 = 1;
@@ -24,14 +24,14 @@ pub enum AnalysisStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArtifactRefV1 {
+pub struct ArtifactRef {
     pub path: PathBuf,
     pub media_type: String,
     pub sha256: String,
     pub bytes: u64,
 }
 
-impl ArtifactRefV1 {
+impl ArtifactRef {
     pub fn validate(&self) -> EngineResult<()> {
         if self.path.is_absolute()
             || self.path.as_os_str().is_empty()
@@ -58,31 +58,31 @@ impl ArtifactRefV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct AnalysisArtifactsV1 {
+pub struct AnalysisArtifacts {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub candidate_vocal_chart: Option<ArtifactRefV1>,
+    pub candidate_vocal_chart: Option<ArtifactRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pitch_evidence: Option<ArtifactRefV1>,
+    pub pitch_evidence: Option<ArtifactRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub technique_evidence: Option<ArtifactRefV1>,
+    pub technique_evidence: Option<ArtifactRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub singing_analysis: Option<ArtifactRefV1>,
+    pub singing_analysis: Option<ArtifactRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub transcript: Option<ArtifactRefV1>,
+    pub transcript: Option<ArtifactRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub alignment: Option<ArtifactRefV1>,
+    pub alignment: Option<ArtifactRef>,
     #[serde(default)]
-    pub stems: Vec<StemArtifactRefV1>,
+    pub stems: Vec<StemArtifactRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StemArtifactRefV1 {
+pub struct StemArtifactRef {
     pub role: super::AudioRole,
-    pub artifact: ArtifactRefV1,
+    pub artifact: ArtifactRef,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct DecodedAudioFactsV1 {
+pub struct DecodedAudioFacts {
     pub source_id: String,
     pub container: String,
     pub codec: String,
@@ -95,35 +95,35 @@ pub struct DecodedAudioFactsV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct AnalysisDiagnosticsV1 {
+pub struct AnalysisDiagnostics {
     #[serde(default)]
-    pub decoded_audio: Vec<DecodedAudioFactsV1>,
+    pub decoded_audio: Vec<DecodedAudioFacts>,
     #[serde(default)]
     pub warnings: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub quantization: Option<QuantizationReportV1>,
+    pub quantization: Option<QuantizationReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub audio_quality: Option<AudioQualityReportV1>,
+    pub audio_quality: Option<AudioQualityReport>,
     #[serde(default)]
     pub evidence: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum AnalysisReusePolicyV1 {
+pub enum AnalysisReusePolicy {
     Deterministic,
     PreservedRevisionOnly,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "decision_mode", rename_all = "snake_case")]
-pub enum FusionDecisionProvenanceV1 {
+pub enum FusionDecisionProvenance {
     Algorithm {
         selector: String,
         selector_version: String,
         candidate_set_digest: String,
         selected_candidate_ids: Vec<String>,
-        reuse_policy: AnalysisReusePolicyV1,
+        reuse_policy: AnalysisReusePolicy,
     },
     AiJudgment {
         adapter_resource: String,
@@ -134,11 +134,11 @@ pub enum FusionDecisionProvenanceV1 {
         candidate_set_digest: String,
         selected_candidate_ids: Vec<String>,
         response_digest: String,
-        reuse_policy: AnalysisReusePolicyV1,
+        reuse_policy: AnalysisReusePolicy,
     },
 }
 
-impl FusionDecisionProvenanceV1 {
+impl FusionDecisionProvenance {
     pub fn validate(&self) -> EngineResult<()> {
         let selected_candidate_ids = match self {
             Self::Algorithm {
@@ -150,7 +150,7 @@ impl FusionDecisionProvenanceV1 {
             } => {
                 if selector != HSMM_VITERBI_SELECTOR
                     || selector_version != crate::fingerprint::HSMM_VERSION
-                    || *reuse_policy != AnalysisReusePolicyV1::Deterministic
+                    || *reuse_policy != AnalysisReusePolicy::Deterministic
                 {
                     return Err(EngineError::new(
                         EngineErrorCode::OutputValidationFailed,
@@ -175,7 +175,7 @@ impl FusionDecisionProvenanceV1 {
                     || *adapter_protocol_version != FUSION_AGENT_PROTOCOL_VERSION
                     || adapter_identity.trim().is_empty()
                     || adapter_version.trim().is_empty()
-                    || *reuse_policy != AnalysisReusePolicyV1::PreservedRevisionOnly
+                    || *reuse_policy != AnalysisReusePolicy::PreservedRevisionOnly
                 {
                     return Err(EngineError::new(
                         EngineErrorCode::OutputValidationFailed,
@@ -201,20 +201,20 @@ impl FusionDecisionProvenanceV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct AnalysisProvenanceV1 {
+pub struct AnalysisProvenance {
     #[serde(default)]
-    pub resources: Vec<ResolvedResourceProvenanceV1>,
+    pub resources: Vec<ResolvedResourceProvenance>,
     pub calibration_version: String,
     pub fusion_version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fusion_decision: Option<FusionDecisionProvenanceV1>,
+    pub fusion_decision: Option<FusionDecisionProvenance>,
     pub quantization_version: String,
     pub audio_quality_version: String,
     pub postprocess_version: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ResolvedResourceProvenanceV1 {
+pub struct ResolvedResourceProvenance {
     pub resource: String,
     pub generation: String,
     pub content_digest: String,
@@ -227,20 +227,20 @@ pub struct ResolvedResourceProvenanceV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AnalysisResultManifestV1 {
+pub struct AnalysisResultManifest {
     pub contract: String,
     pub version: u32,
     pub request_id: String,
     pub status: AnalysisStatus,
-    pub artifacts: AnalysisArtifactsV1,
-    pub diagnostics: AnalysisDiagnosticsV1,
-    pub provenance: AnalysisProvenanceV1,
+    pub artifacts: AnalysisArtifacts,
+    pub diagnostics: AnalysisDiagnostics,
+    pub provenance: AnalysisProvenance,
     pub fingerprint: String,
     #[serde(default)]
     pub degraded_reasons: Vec<String>,
 }
 
-impl AnalysisResultManifestV1 {
+impl AnalysisResultManifest {
     pub fn validate(&self) -> EngineResult<()> {
         if self.contract != ANALYSIS_RESULT_CONTRACT || self.version != ANALYSIS_RESULT_VERSION {
             return Err(EngineError::new(
@@ -424,7 +424,7 @@ pub enum ExportFormat {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ExportRequestV1 {
+pub struct ExportRequest {
     pub contract: String,
     pub version: u32,
     pub request_id: String,
@@ -435,7 +435,7 @@ pub struct ExportRequestV1 {
     pub overwrite: bool,
 }
 
-impl ExportRequestV1 {
+impl ExportRequest {
     pub fn validate(&self) -> EngineResult<()> {
         if self.contract != EXPORT_REQUEST_CONTRACT || self.version != EXPORT_REQUEST_VERSION {
             return Err(EngineError::new(
@@ -475,15 +475,15 @@ mod tests {
 
     #[test]
     fn ai_result_manifest_serializes_truthful_decision_provenance_without_hsmm() {
-        let manifest = AnalysisResultManifestV1 {
+        let manifest = AnalysisResultManifest {
             contract: ANALYSIS_RESULT_CONTRACT.to_string(),
             version: ANALYSIS_RESULT_VERSION,
             request_id: "ai-result-1".to_string(),
             status: AnalysisStatus::Failed,
-            artifacts: AnalysisArtifactsV1::default(),
-            diagnostics: AnalysisDiagnosticsV1::default(),
-            provenance: AnalysisProvenanceV1 {
-                fusion_decision: Some(FusionDecisionProvenanceV1::AiJudgment {
+            artifacts: AnalysisArtifacts::default(),
+            diagnostics: AnalysisDiagnostics::default(),
+            provenance: AnalysisProvenance {
+                fusion_decision: Some(FusionDecisionProvenance::AiJudgment {
                     adapter_resource: FUSION_AGENT_ADAPTER_RESOURCE.to_string(),
                     adapter_protocol: FUSION_AGENT_PROTOCOL.to_string(),
                     adapter_protocol_version: FUSION_AGENT_PROTOCOL_VERSION,
@@ -492,9 +492,9 @@ mod tests {
                     candidate_set_digest: "a".repeat(64),
                     selected_candidate_ids: vec!["candidate-1".to_string()],
                     response_digest: "b".repeat(64),
-                    reuse_policy: AnalysisReusePolicyV1::PreservedRevisionOnly,
+                    reuse_policy: AnalysisReusePolicy::PreservedRevisionOnly,
                 }),
-                ..AnalysisProvenanceV1::default()
+                ..AnalysisProvenance::default()
             },
             fingerprint: "c".repeat(64),
             degraded_reasons: Vec::new(),
@@ -510,22 +510,22 @@ mod tests {
 
     #[test]
     fn fusion_decision_provenance_requires_exact_selector_and_adapter_protocol_versions() {
-        let algorithm = |selector_version: &str| FusionDecisionProvenanceV1::Algorithm {
+        let algorithm = |selector_version: &str| FusionDecisionProvenance::Algorithm {
             selector: HSMM_VITERBI_SELECTOR.to_string(),
             selector_version: selector_version.to_string(),
             candidate_set_digest: "a".repeat(64),
             selected_candidate_ids: vec!["candidate-1".to_string()],
-            reuse_policy: AnalysisReusePolicyV1::Deterministic,
+            reuse_policy: AnalysisReusePolicy::Deterministic,
         };
         algorithm(crate::fingerprint::HSMM_VERSION)
             .validate()
             .unwrap();
         assert_eq!(
-            algorithm("hsmm-v13").validate().unwrap_err().code,
+            algorithm("hsmm-unknown").validate().unwrap_err().code,
             EngineErrorCode::OutputValidationFailed
         );
 
-        let ai = |version| FusionDecisionProvenanceV1::AiJudgment {
+        let ai = |version| FusionDecisionProvenance::AiJudgment {
             adapter_resource: FUSION_AGENT_ADAPTER_RESOURCE.to_string(),
             adapter_protocol: FUSION_AGENT_PROTOCOL.to_string(),
             adapter_protocol_version: version,
@@ -534,7 +534,7 @@ mod tests {
             candidate_set_digest: "a".repeat(64),
             selected_candidate_ids: vec!["candidate-1".to_string()],
             response_digest: "b".repeat(64),
-            reuse_policy: AnalysisReusePolicyV1::PreservedRevisionOnly,
+            reuse_policy: AnalysisReusePolicy::PreservedRevisionOnly,
         };
         ai(FUSION_AGENT_PROTOCOL_VERSION).validate().unwrap();
         assert_eq!(
@@ -548,7 +548,7 @@ mod tests {
 
     #[test]
     fn artifact_references_are_confined() {
-        let artifact = ArtifactRefV1 {
+        let artifact = ArtifactRef {
             path: PathBuf::from("candidate/chart.json"),
             media_type: "application/json".to_string(),
             sha256: "a".repeat(64),
@@ -571,30 +571,30 @@ mod tests {
         // exportable-role whitelist, separate from the request-side one, and
         // silently rejecting a real engine result here previously surfaced
         // as "output_validation_failed" after a full analysis run completed.
-        let manifest = AnalysisResultManifestV1 {
+        let manifest = AnalysisResultManifest {
             contract: ANALYSIS_RESULT_CONTRACT.to_string(),
             version: ANALYSIS_RESULT_VERSION,
             request_id: "clean-lead-vocal-stem".to_string(),
             status: AnalysisStatus::Ok,
-            artifacts: AnalysisArtifactsV1 {
-                stems: vec![StemArtifactRefV1 {
+            artifacts: AnalysisArtifacts {
+                stems: vec![StemArtifactRef {
                     role: crate::contract::AudioRole::CleanLeadVocal,
-                    artifact: ArtifactRefV1 {
+                    artifact: ArtifactRef {
                         path: PathBuf::from("stems/clean_lead_vocal.flac"),
                         media_type: "audio/flac".to_string(),
                         sha256: "a".repeat(64),
                         bytes: 1,
                     },
                 }],
-                ..AnalysisArtifactsV1::default()
+                ..AnalysisArtifacts::default()
             },
-            diagnostics: AnalysisDiagnosticsV1::default(),
-            provenance: AnalysisProvenanceV1 {
+            diagnostics: AnalysisDiagnostics::default(),
+            provenance: AnalysisProvenance {
                 calibration_version: "1".to_string(),
                 fusion_version: "1".to_string(),
                 quantization_version: "1".to_string(),
                 postprocess_version: "1".to_string(),
-                ..AnalysisProvenanceV1::default()
+                ..AnalysisProvenance::default()
             },
             fingerprint: "c".repeat(64),
             degraded_reasons: Vec::new(),

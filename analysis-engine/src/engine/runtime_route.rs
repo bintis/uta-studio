@@ -1,12 +1,12 @@
 use super::{AnalysisEngine, EnginePlan, optional_execution_supported};
-use crate::artifact::{TranscriptArtifactV1, TranscriptAuthorityV1, TranscriptTokenV1};
+use crate::artifact::{TranscriptArtifact, TranscriptAuthority, TranscriptToken};
 use crate::contract::{
-    AnalyzeRequestV1, EngineError, EngineErrorCode, EngineResult, LyricTokenV1,
-    ResolvedResourceProvenanceV1,
+    AnalyzeRequest, EngineError, EngineErrorCode, EngineResult, LyricToken,
+    ResolvedResourceProvenance,
 };
 use crate::fusion::CanonicalLyrics;
 
-pub(super) fn cancelled(request: &AnalyzeRequestV1) -> EngineError {
+pub(super) fn cancelled(request: &AnalyzeRequest) -> EngineError {
     EngineError::new(EngineErrorCode::Cancelled, "analysis request was cancelled")
         .for_request(&request.request_id)
 }
@@ -14,7 +14,7 @@ pub(super) fn cancelled(request: &AnalyzeRequestV1) -> EngineError {
 /// Joins caller lyric tokens with an explicit newline between every token.
 /// Unlike the compact text used for reference comparison, the canonical
 /// artifact preserves caller-authored line boundaries for later local stages.
-fn caller_transcript_text(tokens: &[LyricTokenV1]) -> String {
+fn caller_transcript_text(tokens: &[LyricToken]) -> String {
     tokens
         .iter()
         .map(|token| token.text.as_str())
@@ -22,7 +22,7 @@ fn caller_transcript_text(tokens: &[LyricTokenV1]) -> String {
         .join("\n")
 }
 
-pub(super) fn caller_transcript(request: &AnalyzeRequestV1) -> EngineResult<TranscriptArtifactV1> {
+pub(super) fn caller_transcript(request: &AnalyzeRequest) -> EngineResult<TranscriptArtifact> {
     let text = caller_transcript_text(&request.lyrics.tokens);
     if text.is_empty() {
         return Err(EngineError::new(
@@ -30,17 +30,17 @@ pub(super) fn caller_transcript(request: &AnalyzeRequestV1) -> EngineResult<Tran
             "canonical lyrics contain no text",
         ));
     }
-    let artifact = TranscriptArtifactV1 {
+    let artifact = TranscriptArtifact {
         contract: "uta.analysis-engine.transcript".to_string(),
         version: 1,
-        authority: TranscriptAuthorityV1::CallerCanonical,
+        authority: TranscriptAuthority::CallerCanonical,
         language: request.lyrics.language.clone(),
         text,
         tokens: request
             .lyrics
             .tokens
             .iter()
-            .map(|token| TranscriptTokenV1 {
+            .map(|token| TranscriptToken {
                 id: token.id.clone(),
                 text: token.text.clone(),
                 confidence: None,
@@ -140,7 +140,7 @@ pub(super) fn firered_language_applicable(
     observed.any(|language| matches!(language.as_str(), "zh" | "yue" | "en"))
 }
 
-pub(super) fn request_lyrics_text(request: &AnalyzeRequestV1) -> String {
+pub(super) fn request_lyrics_text(request: &AnalyzeRequest) -> String {
     let separator = match request.lyrics.language.as_deref() {
         Some(language)
             if language.starts_with("zh")
@@ -160,7 +160,7 @@ pub(super) fn request_lyrics_text(request: &AnalyzeRequestV1) -> String {
         .join(separator)
 }
 
-pub(super) fn fingerprint_request(request: &AnalyzeRequestV1) -> EngineResult<serde_json::Value> {
+pub(super) fn fingerprint_request(request: &AnalyzeRequest) -> EngineResult<serde_json::Value> {
     let mut value = serde_json::to_value(request).map_err(|error| {
         EngineError::new(
             EngineErrorCode::InternalError,
@@ -187,7 +187,7 @@ pub(super) struct RoformerRoute {
 
 pub(super) fn resolve_roformer_route(
     model: &uta_runtime_manager::ResolvedModel,
-    request: &AnalyzeRequestV1,
+    request: &AnalyzeRequest,
 ) -> EngineResult<RoformerRoute> {
     if model.backend != uta_runtime_manager::NativeBackend::Ggml
         || model.runtime_id != "ggml_vulkan"
@@ -235,7 +235,7 @@ pub(super) fn roformer_dispatch_config(
 
 pub(super) fn model_dispatch(
     model: &uta_runtime_manager::ResolvedModel,
-    request: &AnalyzeRequestV1,
+    request: &AnalyzeRequest,
     semantic_output: &str,
 ) -> EngineResult<(&'static str, serde_json::Value)> {
     let route = resolve_roformer_route(model, request)?;
@@ -252,7 +252,7 @@ pub(super) fn model_dispatch(
 
 pub(super) fn pitch_dispatch(
     model: &uta_runtime_manager::ResolvedModel,
-    request: &AnalyzeRequestV1,
+    request: &AnalyzeRequest,
 ) -> EngineResult<(&'static str, serde_json::Value)> {
     model_dispatch(model, request, "pitch")
 }
@@ -263,8 +263,8 @@ pub(super) fn execution_device(_backend: uta_runtime_manager::NativeBackend) -> 
 
 pub(super) fn resource_provenance(
     resource: &uta_runtime_manager::ResolvedModel,
-) -> ResolvedResourceProvenanceV1 {
-    ResolvedResourceProvenanceV1 {
+) -> ResolvedResourceProvenance {
+    ResolvedResourceProvenance {
         resource: format!("model:{}", resource.model_id),
         generation: resource.generation.clone(),
         content_digest: resource.model_content_digest.clone(),
@@ -282,7 +282,7 @@ pub(super) fn resource_provenance(
 impl AnalysisEngine {
     pub(super) fn resolve_execution_resources(
         &self,
-        request: &AnalyzeRequestV1,
+        request: &AnalyzeRequest,
         plan: &EnginePlan,
     ) -> EngineResult<(Vec<uta_runtime_manager::ResolvedModel>, Vec<String>)> {
         let mut resolved = Vec::new();
@@ -342,8 +342,8 @@ impl AnalysisEngine {
 mod tests {
     use super::*;
 
-    fn token(id: &str, text: &str) -> LyricTokenV1 {
-        LyricTokenV1 {
+    fn token(id: &str, text: &str) -> LyricToken {
+        LyricToken {
             id: id.to_string(),
             text: text.to_string(),
             reading: None,

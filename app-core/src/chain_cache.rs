@@ -20,7 +20,7 @@ use crate::analysis_artifact::{
     record_artifact_revision, set_active_artifact_revision,
 };
 use crate::analysis_graph::{AnalysisNodeId, ArtifactKind};
-use crate::backend_cli::AudioRoleWireV1;
+use crate::backend_cli::AudioRoleWire;
 use crate::workflow::{ExecutionPolicy, WorkflowDefinition, WorkflowNodeInstance};
 
 pub const CHAIN_FINGERPRINTS_EXTENSION_KEY: &str = "uta.studio.chain_fingerprints";
@@ -39,7 +39,7 @@ pub struct ChainFingerprints {
 
 #[derive(Debug, Clone, Default)]
 pub struct ChainCacheDecision {
-    pub role: AudioRoleWireV1,
+    pub role: AudioRoleWire,
     pub source_path: Option<PathBuf>,
     /// Every matching Step 1 artifact is carried into the Engine request as
     /// a typed source. The deepest human-voice artifact becomes primary;
@@ -52,7 +52,7 @@ pub struct ChainCacheDecision {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CachedChainSource {
-    pub role: AudioRoleWireV1,
+    pub role: AudioRoleWire,
     pub path: PathBuf,
     pub identity: String,
 }
@@ -115,11 +115,11 @@ pub fn plan_chain_cache(file_hash: &str, workflow: &WorkflowDefinition) -> Chain
             && !revision.invalidated
             && revision.config_hash == separation_fingerprint
         {
-            decision.role = AudioRoleWireV1::GuideVocals;
+            decision.role = AudioRoleWire::GuideVocals;
             decision.source_path = Some(revision.path.clone());
             chain_input_hash = revision.content_hash.clone();
             decision.cached_sources.push(CachedChainSource {
-                role: AudioRoleWireV1::GuideVocals,
+                role: AudioRoleWire::GuideVocals,
                 path: revision.path,
                 identity: revision.content_hash,
             });
@@ -129,7 +129,7 @@ pub fn plan_chain_cache(file_hash: &str, workflow: &WorkflowDefinition) -> Chain
             && revision.config_hash == instrumental_fingerprint
         {
             decision.cached_sources.push(CachedChainSource {
-                role: AudioRoleWireV1::Instrumental,
+                role: AudioRoleWire::Instrumental,
                 path: revision.path,
                 identity: revision.content_hash,
             });
@@ -138,7 +138,7 @@ pub fn plan_chain_cache(file_hash: &str, workflow: &WorkflowDefinition) -> Chain
                 .push("audio.extract_instrumental".to_string());
         }
     }
-    if decision.role == AudioRoleWireV1::OriginalMix {
+    if decision.role == AudioRoleWire::OriginalMix {
         // Separation itself wasn't reusable, so nothing downstream can be
         // either: every later stage's real input depends on this one.
         return decision;
@@ -161,16 +161,16 @@ pub fn plan_chain_cache(file_hash: &str, workflow: &WorkflowDefinition) -> Chain
             && !revision.invalidated
             && revision.config_hash == isolate_fingerprint
         {
-            decision.role = AudioRoleWireV1::LeadVocal;
+            decision.role = AudioRoleWire::LeadVocal;
             decision.source_path = Some(revision.path.clone());
             chain_input_hash = revision.content_hash.clone();
             decision.cached_sources.push(CachedChainSource {
-                role: AudioRoleWireV1::LeadVocal,
+                role: AudioRoleWire::LeadVocal,
                 path: revision.path,
                 identity: revision.content_hash,
             });
         }
-        if decision.role != AudioRoleWireV1::LeadVocal {
+        if decision.role != AudioRoleWire::LeadVocal {
             // Isolate is enabled but not reusable this run -- it must
             // execute, so the injected source can't skip past its input.
             return decision;
@@ -211,10 +211,10 @@ pub fn plan_chain_cache(file_hash: &str, workflow: &WorkflowDefinition) -> Chain
         && !revision.invalidated
         && revision.config_hash == cleanup_fingerprint
     {
-        decision.role = AudioRoleWireV1::CleanLeadVocal;
+        decision.role = AudioRoleWire::CleanLeadVocal;
         decision.source_path = Some(revision.path.clone());
         decision.cached_sources.push(CachedChainSource {
-            role: AudioRoleWireV1::CleanLeadVocal,
+            role: AudioRoleWire::CleanLeadVocal,
             path: revision.path,
             identity: revision.content_hash,
         });
@@ -240,18 +240,18 @@ pub fn plan_chain_cache(file_hash: &str, workflow: &WorkflowDefinition) -> Chain
 /// The engine only publishes a stem artifact when its role appears in
 /// `requested_artifacts.stems` (see `engine.rs`'s per-role gates), so a
 /// checked box with no matching request would silently never get cached.
-pub fn stems_to_request_for_caching(workflow: &WorkflowDefinition) -> Vec<AudioRoleWireV1> {
+pub fn stems_to_request_for_caching(workflow: &WorkflowDefinition) -> Vec<AudioRoleWire> {
     let mut roles = Vec::new();
     let separation_node = find_node(workflow, "audio.separate_vocal_bgm");
     if separation_node.is_some_and(|node| {
         node.execution_policy != ExecutionPolicy::Disabled && node.skip_if_unchanged
     }) {
-        roles.push(AudioRoleWireV1::GuideVocals);
-        roles.push(AudioRoleWireV1::Instrumental);
+        roles.push(AudioRoleWire::GuideVocals);
+        roles.push(AudioRoleWire::Instrumental);
     }
     let isolate_node = find_node(workflow, "audio.lead_isolate");
     if enabled(isolate_node) && isolate_node.is_some_and(|node| node.skip_if_unchanged) {
-        roles.push(AudioRoleWireV1::LeadVocal);
+        roles.push(AudioRoleWire::LeadVocal);
     }
     let denoise_node = find_node(workflow, "audio.denoise");
     let dereverb_node = find_node(workflow, "audio.dereverb");
@@ -260,7 +260,7 @@ pub fn stems_to_request_for_caching(workflow: &WorkflowDefinition) -> Vec<AudioR
     let dereverb_wants_caching =
         enabled(dereverb_node) && dereverb_node.is_some_and(|node| node.skip_if_unchanged);
     if denoise_wants_caching || dereverb_wants_caching {
-        roles.push(AudioRoleWireV1::CleanLeadVocal);
+        roles.push(AudioRoleWire::CleanLeadVocal);
     }
     roles
 }
@@ -328,7 +328,7 @@ fn finalize_and_persist_stem(
         producer_node: AnalysisNodeId::new(node_id),
         input_revisions: Vec::new(),
         config_hash: fingerprint,
-        algorithm_version: format!("chain-cache-v1/app-{}", env!("CARGO_PKG_VERSION")),
+        algorithm_version: format!("chain-cache/app-{}", env!("CARGO_PKG_VERSION")),
         created_at_ms: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -562,7 +562,7 @@ mod tests {
         workflow.nodes[1].skip_if_unchanged = true;
 
         let decision = plan_chain_cache(file_hash, &workflow);
-        assert_eq!(decision.role, AudioRoleWireV1::OriginalMix);
+        assert_eq!(decision.role, AudioRoleWire::OriginalMix);
         assert!(decision.source_path.is_none());
         assert!(decision.fingerprints.separation.is_some());
     }
@@ -588,7 +588,7 @@ mod tests {
         );
 
         let decision = plan_chain_cache(file_hash, &workflow);
-        assert_eq!(decision.role, AudioRoleWireV1::GuideVocals);
+        assert_eq!(decision.role, AudioRoleWire::GuideVocals);
         assert_eq!(
             decision.source_path,
             Some(std::path::PathBuf::from("vocal-1.flac"))
@@ -631,7 +631,7 @@ mod tests {
         );
 
         let decision = plan_chain_cache(file_hash, &workflow);
-        assert_eq!(decision.role, AudioRoleWireV1::GuideVocals);
+        assert_eq!(decision.role, AudioRoleWire::GuideVocals);
         assert_eq!(decision.source_path, Some(revision.path));
     }
 
@@ -697,7 +697,7 @@ mod tests {
         );
 
         let decision = plan_chain_cache(file_hash, &workflow);
-        assert_eq!(decision.role, AudioRoleWireV1::CleanLeadVocal);
+        assert_eq!(decision.role, AudioRoleWire::CleanLeadVocal);
         assert_eq!(decision.source_path, Some(cleanup_revision.path));
     }
 
@@ -748,12 +748,12 @@ mod tests {
 
         let decision = plan_chain_cache(file_hash, &workflow);
         assert!(decision.cached_sources.contains(&CachedChainSource {
-            role: AudioRoleWireV1::GuideVocals,
+            role: AudioRoleWire::GuideVocals,
             path: std::path::PathBuf::from("vocal-pair.flac"),
             identity: "vocal-pair-content".to_string(),
         }));
         assert!(decision.cached_sources.contains(&CachedChainSource {
-            role: AudioRoleWireV1::Instrumental,
+            role: AudioRoleWire::Instrumental,
             path: std::path::PathBuf::from("instrumental-pair.flac"),
             identity: "instrumental-pair-content".to_string(),
         }));
@@ -785,7 +785,7 @@ mod tests {
         workflow.nodes[1].model_id = Some("a_different_model".to_string());
 
         let decision = plan_chain_cache(file_hash, &workflow);
-        assert_eq!(decision.role, AudioRoleWireV1::OriginalMix);
+        assert_eq!(decision.role, AudioRoleWire::OriginalMix);
         assert!(decision.source_path.is_none());
     }
 
@@ -810,7 +810,7 @@ mod tests {
         );
 
         let decision = plan_chain_cache(file_hash, &workflow);
-        assert_eq!(decision.role, AudioRoleWireV1::OriginalMix);
+        assert_eq!(decision.role, AudioRoleWire::OriginalMix);
     }
 
     #[test]
@@ -837,7 +837,7 @@ mod tests {
         // No AnalysisVocalStem published -- isolate itself has never run.
 
         let decision = plan_chain_cache(file_hash, &workflow);
-        assert_eq!(decision.role, AudioRoleWireV1::GuideVocals);
+        assert_eq!(decision.role, AudioRoleWire::GuideVocals);
         assert!(decision.fingerprints.isolate.is_some());
     }
 
@@ -890,7 +890,7 @@ mod tests {
         );
 
         let decision = plan_chain_cache(file_hash, &workflow);
-        assert_eq!(decision.role, AudioRoleWireV1::CleanLeadVocal);
+        assert_eq!(decision.role, AudioRoleWire::CleanLeadVocal);
         assert_eq!(
             decision.source_path,
             Some(std::path::PathBuf::from("cleanup-1.flac"))
@@ -906,9 +906,9 @@ mod tests {
                 .map(|source| source.role)
                 .collect::<Vec<_>>(),
             vec![
-                AudioRoleWireV1::GuideVocals,
-                AudioRoleWireV1::LeadVocal,
-                AudioRoleWireV1::CleanLeadVocal,
+                AudioRoleWire::GuideVocals,
+                AudioRoleWire::LeadVocal,
+                AudioRoleWire::CleanLeadVocal,
             ]
         );
     }
@@ -949,7 +949,7 @@ mod tests {
         );
 
         let decision = plan_chain_cache(file_hash, &workflow);
-        assert_eq!(decision.role, AudioRoleWireV1::GuideVocals);
+        assert_eq!(decision.role, AudioRoleWire::GuideVocals);
     }
 
     #[test]
@@ -958,11 +958,11 @@ mod tests {
         let mut workflow = default_workflow(file_hash);
         assert_eq!(
             stems_to_request_for_caching(&workflow),
-            vec![AudioRoleWireV1::GuideVocals, AudioRoleWireV1::Instrumental]
+            vec![AudioRoleWire::GuideVocals, AudioRoleWire::Instrumental]
         );
 
         workflow.nodes[3].execution_policy = ExecutionPolicy::Always;
         workflow.nodes[3].skip_if_unchanged = true;
-        assert!(stems_to_request_for_caching(&workflow).contains(&AudioRoleWireV1::CleanLeadVocal));
+        assert!(stems_to_request_for_caching(&workflow).contains(&AudioRoleWire::CleanLeadVocal));
     }
 }

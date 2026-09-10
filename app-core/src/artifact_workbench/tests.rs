@@ -123,7 +123,7 @@ mod tests {
     fn dummy_chart(hash: &str) -> crate::chart::ChartDocument {
         crate::chart::ChartDocument {
             file_hash: hash.to_string(),
-            vocal_chart: crate::VocalChartV1 {
+            vocal_chart: crate::VocalChart {
                 format: "uta.vocal-chart".into(),
                 format_version: utz::VOCAL_CHART_VERSION.into(),
                 timebase: utz::UTZ_TIMEBASE,

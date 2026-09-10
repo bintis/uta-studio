@@ -22,7 +22,7 @@ pub mod workflow_executor;
 
 pub use contract::*;
 pub use engine::AnalysisEngine;
-pub use events::{EngineEventSink, EngineLifecycleEventV1, EngineLifecycleKindV1};
+pub use events::{EngineEventSink, EngineLifecycleEvent, EngineLifecycleKind};
 pub use planner::{EnginePlan, Planner};
 
 pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -3,16 +3,16 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::artifact::{
-    TIMED_NOTE_EVIDENCE_CONTRACT, TIMED_NOTE_EVIDENCE_VERSION, TimedNoteExpertEvidenceV1,
-    TimedNoteHypothesisV1,
+    TIMED_NOTE_EVIDENCE_CONTRACT, TIMED_NOTE_EVIDENCE_VERSION, TimedNoteExpertEvidence,
+    TimedNoteHypothesis,
 };
 use crate::contract::{EngineError, EngineErrorCode, EngineResult};
 use crate::fusion::{EvidenceProvenance, ExpertTask, TimeRange};
 
 pub const JBM555_MODEL_ID: &str = "jbm555_cectc_80";
 pub const JBM555_FRONTEND_PROFILE: &str =
-    "jbm555-rust-logfft-44k1-hop1024-midi24-384x48-scales0.5-1-2-v1";
-pub const JBM555_DECODE_PROFILE: &str = "jbm555-cectc-onset0.32-offset0.70-v1";
+    "jbm555-rust-logfft-44k1-hop1024-midi24-384x48-scales0.5-1-2";
+pub const JBM555_DECODE_PROFILE: &str = "jbm555-cectc-onset0.32-offset0.70";
 pub const JBM555_ONSET_THRESHOLD: f32 = 0.32;
 pub const JBM555_OFFSET_THRESHOLD: f32 = 0.70;
 const MAX_EVIDENCE_BYTES: u64 = 256 * 1024 * 1024;
@@ -21,7 +21,7 @@ const MAX_EVIDENCE_BYTES: u64 = 256 * 1024 * 1024;
 /// mandatory because changing only the prepared vocal changes model evidence.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Jbm555NoteEvidenceV1 {
+pub struct Jbm555NoteEvidence {
     pub range: TimeRange,
     pub midi: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -34,7 +34,7 @@ pub struct Jbm555NoteEvidenceV1 {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Jbm555EvidenceV1 {
+pub struct Jbm555Evidence {
     pub schema_version: u32,
     pub model_id: String,
     pub upstream_revision: String,
@@ -54,11 +54,11 @@ pub struct Jbm555EvidenceV1 {
     pub decode_profile: String,
     pub onset_threshold: f32,
     pub offset_threshold: f32,
-    pub notes: Vec<Jbm555NoteEvidenceV1>,
+    pub notes: Vec<Jbm555NoteEvidence>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Jbm555ExpectedInputsV1<'a> {
+pub struct Jbm555ExpectedInputs<'a> {
     pub source_start: u64,
     pub source_duration: u64,
     pub mix_audio_identity: &'a str,
@@ -67,7 +67,7 @@ pub struct Jbm555ExpectedInputsV1<'a> {
     pub vocal_preparation_generation: &'a str,
 }
 
-impl Jbm555EvidenceV1 {
+impl Jbm555Evidence {
     pub fn validate(&self) -> EngineResult<()> {
         let source_end = self
             .source_start
@@ -122,10 +122,7 @@ impl Jbm555EvidenceV1 {
         Ok(())
     }
 
-    pub fn validate_expected_inputs(
-        &self,
-        expected: Jbm555ExpectedInputsV1<'_>,
-    ) -> EngineResult<()> {
+    pub fn validate_expected_inputs(&self, expected: Jbm555ExpectedInputs<'_>) -> EngineResult<()> {
         self.validate()?;
         if self.source_start != expected.source_start
             || self.source_duration != expected.source_duration
@@ -156,11 +153,11 @@ impl Jbm555EvidenceV1 {
 
     pub fn timed_note_evidence(
         &self,
-        expected: Jbm555ExpectedInputsV1<'_>,
-    ) -> EngineResult<TimedNoteExpertEvidenceV1> {
+        expected: Jbm555ExpectedInputs<'_>,
+    ) -> EngineResult<TimedNoteExpertEvidence> {
         self.validate_expected_inputs(expected)?;
         let _dependency_identity = self.input_dependency_identity()?;
-        let evidence = TimedNoteExpertEvidenceV1 {
+        let evidence = TimedNoteExpertEvidence {
             contract: TIMED_NOTE_EVIDENCE_CONTRACT.to_string(),
             version: TIMED_NOTE_EVIDENCE_VERSION,
             expert_id: self.model_id.clone(),
@@ -169,7 +166,7 @@ impl Jbm555EvidenceV1 {
             notes: self
                 .notes
                 .iter()
-                .map(|note| TimedNoteHypothesisV1 {
+                .map(|note| TimedNoteHypothesis {
                     source_id: self.model_id.clone(),
                     range: note.range,
                     midi: Some(note.midi),
@@ -204,14 +201,14 @@ impl Jbm555EvidenceV1 {
 
 pub fn parse_jbm555_evidence(
     path: &Path,
-    expected: Jbm555ExpectedInputsV1<'_>,
-) -> EngineResult<Jbm555EvidenceV1> {
+    expected: Jbm555ExpectedInputs<'_>,
+) -> EngineResult<Jbm555Evidence> {
     let metadata = std::fs::metadata(path)
         .map_err(|error| invalid(format!("JBM555 evidence is unavailable: {error}")))?;
     if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_EVIDENCE_BYTES {
         return Err(invalid("JBM555 evidence size is invalid"));
     }
-    let evidence: Jbm555EvidenceV1 = serde_json::from_slice(
+    let evidence: Jbm555Evidence = serde_json::from_slice(
         &std::fs::read(path)
             .map_err(|error| invalid(format!("could not read JBM555 evidence: {error}")))?,
     )
@@ -232,8 +229,8 @@ fn invalid(message: impl Into<String>) -> EngineError {
 mod tests {
     use super::*;
 
-    fn evidence() -> Jbm555EvidenceV1 {
-        Jbm555EvidenceV1 {
+    fn evidence() -> Jbm555Evidence {
+        Jbm555Evidence {
             schema_version: 1,
             model_id: JBM555_MODEL_ID.to_string(),
             upstream_revision: "upstream-revision".to_string(),
@@ -254,14 +251,14 @@ mod tests {
             onset_threshold: JBM555_ONSET_THRESHOLD,
             offset_threshold: JBM555_OFFSET_THRESHOLD,
             notes: vec![
-                Jbm555NoteEvidenceV1 {
+                Jbm555NoteEvidence {
                     range: TimeRange::new(1_000_000, 1_200_000).unwrap(),
                     midi: 69,
                     onset_score: Some(0.8),
                     offset_score: Some(0.9),
                     pitch_score: Some(0.7),
                 },
-                Jbm555NoteEvidenceV1 {
+                Jbm555NoteEvidence {
                     range: TimeRange::new(1_200_000, 1_500_000).unwrap(),
                     midi: 69,
                     onset_score: Some(0.75),
@@ -272,8 +269,8 @@ mod tests {
         }
     }
 
-    fn expected_inputs(evidence: &Jbm555EvidenceV1) -> Jbm555ExpectedInputsV1<'_> {
-        Jbm555ExpectedInputsV1 {
+    fn expected_inputs(evidence: &Jbm555Evidence) -> Jbm555ExpectedInputs<'_> {
+        Jbm555ExpectedInputs {
             source_start: evidence.source_start,
             source_duration: evidence.source_duration,
             mix_audio_identity: &evidence.mix_audio_identity,
@@ -331,7 +328,7 @@ mod tests {
     #[test]
     fn mismatched_expected_inputs_fail_closed() {
         let evidence = evidence();
-        let mismatched = Jbm555ExpectedInputsV1 {
+        let mismatched = Jbm555ExpectedInputs {
             vocal_audio_identity: "vocal-b",
             ..expected_inputs(&evidence)
         };

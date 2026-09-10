@@ -1,8 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::artifact::{
-    AcousticEvidenceV1, BasicPitchEvidenceV1, GameEvidenceV1, TechniqueEvidenceV1,
-};
+use crate::artifact::{AcousticEvidence, BasicPitchEvidence, GameEvidence, TechniqueEvidence};
 
 use super::candidate_states::{
     MAX_EXPANDED_CANDIDATES, expand_pitch_alternative_states, f0_consolidation_challengers,
@@ -11,7 +9,7 @@ use super::candidate_states::{
 };
 use super::{
     AcousticCandidateFeatures, BasicPitchCandidateFeatures, BoundaryAlternative,
-    BoundaryCandidateRole, BoundaryEvidenceKind, CanonicalWordBoundary, F0Point, HardBoundarySetV1,
+    BoundaryCandidateRole, BoundaryEvidenceKind, CanonicalWordBoundary, F0Point, HardBoundarySet,
     PitchAlternative, SegmentCandidate, TechniqueCandidateFeatures, TechniqueScores, TimeRange,
 };
 
@@ -20,7 +18,7 @@ pub struct SingingFusionEvidence {
     pub schema_version: u32,
     pub candidates: Vec<SegmentCandidate>,
     #[serde(default)]
-    pub hard_boundaries: HardBoundarySetV1,
+    pub hard_boundaries: HardBoundarySet,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -41,7 +39,7 @@ pub struct BoundaryEvidenceSet {
 }
 
 impl BoundaryEvidenceSet {
-    pub fn from_game(game: &GameEvidenceV1) -> Result<Self, String> {
+    pub fn from_game(game: &GameEvidence) -> Result<Self, String> {
         if game.notes.is_empty() {
             return Err("GAME produced no note/boundary evidence".to_string());
         }
@@ -55,7 +53,7 @@ impl BoundaryEvidenceSet {
                 .iter()
                 .map(|note| BoundarySegmentEvidence {
                     range: note.range,
-                    fractional_midi: Some(note.midi),
+                    fractional_midi: note.voiced.then_some(note.midi),
                     boundary_decision_parameter: Some(note.boundary_decision_threshold),
                     presence_decision_parameter: Some(note.presence_decision_threshold),
                 })
@@ -270,7 +268,7 @@ fn summarize_f0(
 
 fn summarize_acoustic(
     range: TimeRange,
-    evidence: &AcousticEvidenceV1,
+    evidence: &AcousticEvidence,
 ) -> Result<AcousticCandidateFeatures, String> {
     let window_duration = u64::from(evidence.window_samples)
         .checked_mul(1_000_000)
@@ -364,7 +362,7 @@ fn summarize_acoustic(
     })
 }
 
-fn validate_basic_pitch_evidence(evidence: &BasicPitchEvidenceV1) -> Result<(), String> {
+fn validate_basic_pitch_evidence(evidence: &BasicPitchEvidence) -> Result<(), String> {
     if evidence.frames.is_empty()
         || evidence
             .frames
@@ -388,7 +386,7 @@ fn validate_basic_pitch_evidence(evidence: &BasicPitchEvidenceV1) -> Result<(), 
 
 fn summarize_basic_pitch(
     range: TimeRange,
-    evidence: &BasicPitchEvidenceV1,
+    evidence: &BasicPitchEvidence,
 ) -> Result<BasicPitchCandidateFeatures, String> {
     const ONSET_WINDOW: u64 = 60_000;
     let onset_window_start = range.start.saturating_sub(ONSET_WINDOW);
@@ -436,7 +434,7 @@ fn summarize_basic_pitch(
 
 fn basic_pitch_onset_challengers(
     boundaries: &BoundaryEvidenceSet,
-    evidence: &BasicPitchEvidenceV1,
+    evidence: &BasicPitchEvidence,
 ) -> Result<Vec<BoundaryAlternative>, String> {
     validate_basic_pitch_evidence(evidence)?;
     const ONSET_THRESHOLD: f32 = 0.5;
@@ -654,7 +652,7 @@ fn f0_transition_challengers(
 
 fn acoustic_onset_challengers(
     boundaries: &BoundaryEvidenceSet,
-    evidence: &AcousticEvidenceV1,
+    evidence: &AcousticEvidence,
 ) -> Result<Vec<BoundaryAlternative>, String> {
     evidence.validate().map_err(|error| error.message)?;
     let mut cuts = Vec::new();
@@ -773,14 +771,14 @@ fn constraint_partition_challengers(
 }
 
 struct TechniqueEvidenceIndex<'a> {
-    artifact: &'a TechniqueEvidenceV1,
+    artifact: &'a TechniqueEvidence,
     vibrato: Option<usize>,
     glissando: Option<usize>,
     falsetto: Option<usize>,
 }
 
 fn index_technique_evidence(
-    evidence: &[TechniqueEvidenceV1],
+    evidence: &[TechniqueEvidence],
 ) -> Result<Vec<TechniqueEvidenceIndex<'_>>, String> {
     evidence
         .iter()
@@ -863,9 +861,9 @@ fn build_segment_candidate(
     rmvpe_grid: Option<PitchGrid>,
     fcpe_curve: &[F0Point],
     fcpe_grid: Option<PitchGrid>,
-    acoustic: Option<&AcousticEvidenceV1>,
+    acoustic: Option<&AcousticEvidence>,
     acoustic_onset_enabled: bool,
-    basic_pitch: Option<&BasicPitchEvidenceV1>,
+    basic_pitch: Option<&BasicPitchEvidence>,
     technique_evidence: &[TechniqueEvidenceIndex<'_>],
     all_boundary_evidence: &[BoundaryAlternative],
 ) -> Result<SegmentCandidate, String> {
@@ -1030,8 +1028,8 @@ pub fn fuse_singing_evidence(
     rmvpe_grid: Option<PitchGrid>,
     fcpe_curve: &[F0Point],
     fcpe_grid: Option<PitchGrid>,
-    acoustic: Option<&AcousticEvidenceV1>,
-    basic_pitch: Option<&BasicPitchEvidenceV1>,
+    acoustic: Option<&AcousticEvidence>,
+    basic_pitch: Option<&BasicPitchEvidence>,
 ) -> Result<SingingFusionEvidence, String> {
     fuse_singing_evidence_with_challengers(
         words,
@@ -1060,11 +1058,11 @@ pub(crate) fn fuse_singing_evidence_with_challengers(
     rmvpe_grid: Option<PitchGrid>,
     fcpe_curve: &[F0Point],
     fcpe_grid: Option<PitchGrid>,
-    acoustic: Option<&AcousticEvidenceV1>,
+    acoustic: Option<&AcousticEvidence>,
     acoustic_onset_enabled: bool,
-    basic_pitch: Option<&BasicPitchEvidenceV1>,
+    basic_pitch: Option<&BasicPitchEvidence>,
     boundary_challengers: &[BoundaryAlternative],
-    technique_evidence: &[TechniqueEvidenceV1],
+    technique_evidence: &[TechniqueEvidence],
 ) -> Result<SingingFusionEvidence, String> {
     if boundaries.source_expert.trim().is_empty() || boundaries.segments.is_empty() {
         return Err("note-length evidence is required for singing fusion".to_string());
@@ -1306,6 +1304,11 @@ pub(crate) fn fuse_singing_evidence_with_challengers(
     let indexed_technique_evidence = index_technique_evidence(technique_evidence)?;
     let mut candidates = Vec::with_capacity(candidate_duration_count);
     for (index, segment) in boundaries.segments.iter().enumerate() {
+        if segment.fractional_midi.is_none() {
+            // GAME rest regions stay on the timeline as gaps. They must not be
+            // forced into pitched note states.
+            continue;
+        }
         candidates.push(build_segment_candidate(
             words,
             &boundaries.source_expert,
@@ -1365,7 +1368,7 @@ pub(crate) fn fuse_singing_evidence_with_challengers(
     Ok(SingingFusionEvidence {
         schema_version: 1,
         candidates: expand_pitch_alternative_states(candidates)?,
-        hard_boundaries: HardBoundarySetV1::default(),
+        hard_boundaries: HardBoundarySet::default(),
     })
 }
 

@@ -1,8 +1,7 @@
 use super::*;
 use crate::artifact::{
-    ACOUSTIC_EVIDENCE_CONTRACT, ACOUSTIC_EVIDENCE_VERSION, AcousticEvidenceFrameV1,
-    BasicPitchEvidenceV1, BasicPitchFrameV1, GameNoteEvidenceV1, TechniqueEvidenceV1,
-    TechniqueIntervalV1,
+    ACOUSTIC_EVIDENCE_CONTRACT, ACOUSTIC_EVIDENCE_VERSION, AcousticEvidenceFrame,
+    BasicPitchEvidence, BasicPitchFrame, GameNoteEvidence, TechniqueEvidence, TechniqueInterval,
 };
 use crate::fingerprint::{ACOUSTIC_DSP_VERSION, FUSION_VERSION};
 use crate::fusion::{
@@ -10,8 +9,8 @@ use crate::fusion::{
     build_canonical_singing_track,
 };
 
-fn acoustic() -> AcousticEvidenceV1 {
-    AcousticEvidenceV1 {
+fn acoustic() -> AcousticEvidence {
+    AcousticEvidence {
         contract: ACOUSTIC_EVIDENCE_CONTRACT.to_string(),
         version: ACOUSTIC_EVIDENCE_VERSION,
         algorithm: ACOUSTIC_DSP_VERSION.to_string(),
@@ -23,7 +22,7 @@ fn acoustic() -> AcousticEvidenceV1 {
         semantic_audio_role: "lead_vocal".to_string(),
         decoded_audio_sha256: "a".repeat(64),
         frames: (0..60)
-            .map(|index| AcousticEvidenceFrameV1 {
+            .map(|index| AcousticEvidenceFrame {
                 start: index * 10_000,
                 rms: 0.2,
                 spectral_flux: (index > 0).then_some(if index == 10 { 0.3 } else { 0.01 }),
@@ -40,8 +39,8 @@ fn acoustic() -> AcousticEvidenceV1 {
     }
 }
 
-fn game(midi: f32) -> GameEvidenceV1 {
-    GameEvidenceV1 {
+fn game(midi: f32) -> GameEvidence {
+    GameEvidence {
         schema_version: 1,
         model_id: "game".to_string(),
         variant: "fixture".to_string(),
@@ -53,9 +52,10 @@ fn game(midi: f32) -> GameEvidenceV1 {
         sample_rate: 44_100,
         timestep_ms: 10,
         d3pm_steps: 8,
-        notes: vec![GameNoteEvidenceV1 {
+        notes: vec![GameNoteEvidence {
             range: TimeRange::new(100_000, 500_000).unwrap(),
             midi,
+            voiced: true,
             boundary_decision_threshold: 0.2,
             presence_decision_threshold: 0.2,
         }],
@@ -66,8 +66,8 @@ fn boundaries(midi: f32) -> BoundaryEvidenceSet {
     BoundaryEvidenceSet::from_game(&game(midi)).unwrap()
 }
 
-fn technique_evidence() -> TechniqueEvidenceV1 {
-    TechniqueEvidenceV1 {
+fn technique_evidence() -> TechniqueEvidence {
+    TechniqueEvidence {
         contract: "uta.analysis-engine.technique-evidence".to_string(),
         version: 1,
         model_id: "stars".to_string(),
@@ -77,7 +77,7 @@ fn technique_evidence() -> TechniqueEvidenceV1 {
             "falsetto".to_string(),
         ],
         calibration: "source_local_sigmoid_uncalibrated".to_string(),
-        intervals: vec![TechniqueIntervalV1 {
+        intervals: vec![TechniqueInterval {
             range: TimeRange::new(100_000, 500_000).unwrap(),
             phoneme_id: 1,
             raw_logits: vec![1.0, -1.0, -2.0],
@@ -99,7 +99,7 @@ fn technique_evidence() -> TechniqueEvidenceV1 {
 
 #[test]
 fn fractional_game_midi_is_retained_at_explicit_target_decision() {
-    assert_eq!(FUSION_VERSION, "fusion-v17");
+    assert_eq!(FUSION_VERSION, "fusion");
     let fused = fuse_singing_evidence(
         &[],
         &boundaries(69.25),
@@ -189,7 +189,7 @@ fn normalized_selected_scores_survive_dedup_and_canonicalization() {
             task: ExpertTask::NoteBoundary,
             model_hash: Some("a".repeat(64)),
             runtime_identity: Some("native-cpu".to_string()),
-            calibration_version: Some("calibration-v1".to_string()),
+            calibration_version: Some("calibration".to_string()),
             correlation_group: None,
             depends_on: Vec::new(),
         }],
@@ -364,16 +364,16 @@ fn fcpe_records_support_and_disagreement_without_replacing_rmvpe() {
 
 #[test]
 fn basic_pitch_is_source_local_onset_support_not_note_authority() {
-    let evidence = BasicPitchEvidenceV1 {
+    let evidence = BasicPitchEvidence {
         frames: vec![
-            BasicPitchFrameV1 {
+            BasicPitchFrame {
                 time: 110_000,
                 note_activation: 0.9,
                 onset_activation: 0.8,
                 contour_class: 42,
                 contour_activation: 0.7,
             },
-            BasicPitchFrameV1 {
+            BasicPitchFrame {
                 time: 300_000,
                 note_activation: 0.9,
                 onset_activation: 0.99,
@@ -413,23 +413,23 @@ fn basic_pitch_is_source_local_onset_support_not_note_authority() {
 
 #[test]
 fn basic_pitch_onset_creates_a_real_contextual_split_path() {
-    let evidence = BasicPitchEvidenceV1 {
+    let evidence = BasicPitchEvidence {
         frames: vec![
-            BasicPitchFrameV1 {
+            BasicPitchFrame {
                 time: 100_000,
                 note_activation: 0.8,
                 onset_activation: 0.1,
                 contour_class: 42,
                 contour_activation: 0.7,
             },
-            BasicPitchFrameV1 {
+            BasicPitchFrame {
                 time: 300_000,
                 note_activation: 0.9,
                 onset_activation: 0.95,
                 contour_class: 42,
                 contour_activation: 0.8,
             },
-            BasicPitchFrameV1 {
+            BasicPitchFrame {
                 time: 400_000,
                 note_activation: 0.8,
                 onset_activation: 0.1,
@@ -851,8 +851,8 @@ fn acoustic_evidence_is_optional() {
 
 #[test]
 fn basic_pitch_onset_survives_without_acoustic_dsp() {
-    let evidence = BasicPitchEvidenceV1 {
-        frames: vec![BasicPitchFrameV1 {
+    let evidence = BasicPitchEvidence {
+        frames: vec![BasicPitchFrame {
             time: 110_000,
             note_activation: 0.9,
             onset_activation: 0.8,

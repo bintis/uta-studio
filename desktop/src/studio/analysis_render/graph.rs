@@ -161,7 +161,7 @@ pub(crate) fn analysis_graph_center_target(
 /// running duration because the caller recorded it as if centering had
 /// succeeded, then only ever re-tried on the *next* node transition.
 pub(crate) fn estimated_analysis_graph_center_target(
-    workflow: Option<&app_core::WorkflowExecutionWireV1>,
+    workflow: Option<&app_core::WorkflowExecutionWire>,
     node_id: &str,
     zoom: f32,
     viewport_size: Vec2,
@@ -453,22 +453,26 @@ pub(crate) fn spawn_activity_center(
                                     spawn_activity_purpose_card(card, font.clone(), purpose, theme);
                                 }
                             } else if !failed && let Some(live) = task.live.as_ref() {
-                                let reported = live
-                                    .node_id
-                                    .as_deref()
-                                    .and_then(|node_id| {
-                                        find_matching_route(&live.stage_routes, node_id)
-                                    })
-                                    .and_then(super::nodes::worker_reported_progress);
-                                spawn_text(
-                                    card,
-                                    font.clone(),
-                                    reported
-                                        .map(|percent| format!("{} · {percent}%", live.operation))
-                                        .unwrap_or_else(|| format!("{} · Running", live.operation)),
-                                    9.0,
-                                    theme.primary,
-                                );
+                                let route = live.node_id.as_deref().and_then(|node_id| {
+                                    find_matching_route(&live.stage_routes, node_id)
+                                });
+                                let reported =
+                                    route.and_then(super::nodes::worker_reported_progress);
+                                let operation = compact_analysis_operation(&live.operation);
+                                let elapsed = node_elapsed_copy(route, unix_now_ms());
+                                let status = match (reported, elapsed.as_deref()) {
+                                    (Some(percent), Some(elapsed)) => {
+                                        format!("{operation} · {percent}% · {elapsed}")
+                                    }
+                                    (Some(percent), None) => {
+                                        format!("{operation} · {percent}%")
+                                    }
+                                    (None, Some(elapsed)) => {
+                                        format!("{operation} · Running · {elapsed}")
+                                    }
+                                    (None, None) => format!("{operation} · Running"),
+                                };
+                                spawn_text(card, font.clone(), status, 9.0, theme.primary);
                                 spawn_wrapped_text(
                                     card,
                                     font.clone(),
@@ -981,16 +985,48 @@ pub(crate) fn format_node_attempt_comparison(
 /// §7.4 "DURATION" inspector fact -- Phase 7's "Duration 检查器字段" gap
 /// closed by real per-node `started_at_ms`/`finished_at_ms`
 /// (native worker progress frames), not something inferred from transport
-/// receive time. `None`/incomplete data (still running, predates this
-/// field, or a corrupt `finished < started`) reads as "Not yet available"
-/// rather than a wrong or negative duration.
+/// receive time. A running node uses `started_at_ms` plus the render clock.
+/// Incomplete or corrupt timestamps (`finished < started`) still read as
+/// "Not yet available" rather than a wrong or negative duration.
 pub(crate) fn node_duration_copy(route: Option<&app_core::AnalysisStageRoute>) -> String {
-    match route.and_then(|r| r.started_at_ms.zip(r.finished_at_ms)) {
-        Some((started, finished)) if finished >= started => {
-            format_duration((finished - started) as f64 / 1000.0)
-        }
-        _ => "Not yet available".to_string(),
-    }
+    node_duration_copy_at(route, unix_now_ms())
+}
+
+pub(crate) fn node_duration_copy_at(
+    route: Option<&app_core::AnalysisStageRoute>,
+    now_ms: i64,
+) -> String {
+    node_elapsed_copy(route, now_ms).unwrap_or_else(|| "Not yet available".to_string())
+}
+
+pub(crate) fn node_elapsed_copy(
+    route: Option<&app_core::AnalysisStageRoute>,
+    now_ms: i64,
+) -> Option<String> {
+    let started = route.and_then(|route| route.started_at_ms)?;
+    let finished = route
+        .and_then(|route| route.finished_at_ms)
+        .unwrap_or(now_ms);
+    (finished >= started).then(|| format_duration((finished - started) as f64 / 1000.0))
+}
+
+pub(crate) fn unix_now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Compact cards never show the raw `studio-...` worker task id (§8).
+/// That identity stays on the Inspect "WORKER TASK" row.
+pub(crate) fn compact_analysis_operation(operation: &str) -> String {
+    let trimmed = operation.trim();
+    trimmed
+        .strip_prefix("[worker task ")
+        .and_then(|rest| rest.split_once("] "))
+        .map(|(_, message)| message.trim().to_string())
+        .filter(|message| !message.is_empty())
+        .unwrap_or_else(|| trimmed.to_string())
 }
 
 /// §8 detailed Inspect view "WORKER TASK" fact -- the one place the full

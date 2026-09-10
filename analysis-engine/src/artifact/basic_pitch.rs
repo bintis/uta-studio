@@ -7,14 +7,14 @@ use crate::contract::{CANONICAL_TIMEBASE, EngineError, EngineErrorCode, EngineRe
 const MAX_EVIDENCE_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct BasicPitchEvidenceV1 {
-    pub frames: Vec<BasicPitchFrameV1>,
+pub struct BasicPitchEvidence {
+    pub frames: Vec<BasicPitchFrame>,
     pub model_gguf_size_bytes: u64,
     pub runtime_manifest_sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct BasicPitchFrameV1 {
+pub struct BasicPitchFrame {
     pub time: u64,
     pub note_activation: f32,
     pub onset_activation: f32,
@@ -55,7 +55,7 @@ pub fn parse_basic_pitch_evidence(
     path: &Path,
     source_start: u64,
     source_duration: u64,
-) -> EngineResult<BasicPitchEvidenceV1> {
+) -> EngineResult<BasicPitchEvidence> {
     let metadata = std::fs::metadata(path)
         .map_err(|error| invalid(format!("Basic Pitch evidence is unavailable: {error}")))?;
     if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_EVIDENCE_BYTES {
@@ -106,7 +106,7 @@ pub fn parse_basic_pitch_evidence(
             return Err(invalid("Basic Pitch timeline is not strictly ordered"));
         }
         previous = Some(time);
-        frames.push(BasicPitchFrameV1 {
+        frames.push(BasicPitchFrame {
             time,
             note_activation: frame.note_max,
             onset_activation: frame.onset_max,
@@ -114,7 +114,7 @@ pub fn parse_basic_pitch_evidence(
             contour_activation: frame.contour_score,
         });
     }
-    Ok(BasicPitchEvidenceV1 {
+    Ok(BasicPitchEvidence {
         frames,
         model_gguf_size_bytes: raw.model_gguf_size_bytes,
         runtime_manifest_sha256: raw.runtime_manifest_sha256,

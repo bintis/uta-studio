@@ -172,7 +172,16 @@ pub(crate) fn refresh_analysis_activity(
     }
     let tasks = app_core::load_analysis_tasks();
     let history = app_core::load_analysis_history(100);
+    let analyzing = tasks
+        .iter()
+        .any(|task| matches!(task.status, app_core::QueuedStatus::Analyzing(_)));
     if tasks == analysis.analysis_tasks && history == analysis.analysis_history {
+        if analyzing && analysis_page_is_open(shell.route, library.library_view) {
+            // Elapsed model times are computed at render from started_at_ms.
+            // Rebuild while a run is visible so those clocks keep moving
+            // between worker progress frames.
+            invalidated.invalidate(UiDirtyRegion::Analysis);
+        }
         return;
     }
     let sidebar_count_changed =
@@ -272,7 +281,7 @@ pub(crate) fn follow_live_analysis_node(
             .map(|(workflow, _)| workflow)
             .or_else(|| {
                 analysis.workflow_snapshot.as_ref().and_then(|snapshot| {
-                    app_core::WorkflowExecutionWireV1::from_snapshot(snapshot).ok()
+                    app_core::WorkflowExecutionWire::from_snapshot(snapshot).ok()
                 })
             });
         // A real repro chased a `(0, 0)` fallback for a node's entire running

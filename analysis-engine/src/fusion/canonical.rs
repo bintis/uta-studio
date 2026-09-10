@@ -23,7 +23,7 @@ pub struct PitchBendPoint {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum FusionContextSignalV1 {
+pub enum FusionContextSignal {
     F0SegmentationFallback,
     BoundaryDisagreement,
     BasicPitchOnset,
@@ -35,7 +35,7 @@ pub enum FusionContextSignalV1 {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum PitchSelectionReasonV1 {
+pub enum PitchSelectionReason {
     #[default]
     Unknown,
     BoundaryProposal,
@@ -44,7 +44,7 @@ pub enum PitchSelectionReasonV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FusionDecisionTraceV1 {
+pub struct FusionDecisionTrace {
     pub policy_version: u32,
     pub continuous_f0_source: String,
     pub boundary_source: String,
@@ -53,15 +53,15 @@ pub struct FusionDecisionTraceV1 {
     #[serde(default)]
     pub considered_target_pitch_sources: Vec<String>,
     #[serde(default)]
-    pub pitch_selection_reason: PitchSelectionReasonV1,
+    pub pitch_selection_reason: PitchSelectionReason,
     #[serde(default)]
     pub onset_support_sources: Vec<String>,
     #[serde(default)]
-    pub context_signals: Vec<FusionContextSignalV1>,
+    pub context_signals: Vec<FusionContextSignal>,
     pub degraded_fallback: bool,
 }
 
-impl Default for FusionDecisionTraceV1 {
+impl Default for FusionDecisionTrace {
     fn default() -> Self {
         Self {
             policy_version: 1,
@@ -69,7 +69,7 @@ impl Default for FusionDecisionTraceV1 {
             boundary_source: "game".to_string(),
             selected_target_pitch_source: "unknown".to_string(),
             considered_target_pitch_sources: Vec::new(),
-            pitch_selection_reason: PitchSelectionReasonV1::Unknown,
+            pitch_selection_reason: PitchSelectionReason::Unknown,
             onset_support_sources: Vec::new(),
             context_signals: Vec::new(),
             degraded_fallback: false,
@@ -82,7 +82,7 @@ pub struct CanonicalNoteEvidence {
     #[serde(default)]
     pub source_experts: Vec<String>,
     #[serde(default)]
-    pub decision_trace: FusionDecisionTraceV1,
+    pub decision_trace: FusionDecisionTrace,
     #[serde(default = "legacy_game_source")]
     pub boundary_source: String,
     #[serde(default)]
@@ -500,7 +500,7 @@ pub fn validate_canonical_singing_track(track: &CanonicalSingingTrack) -> Result
 fn fusion_decision_trace(
     candidate: &SegmentCandidate,
     continuous_f0_source: &str,
-) -> FusionDecisionTraceV1 {
+) -> FusionDecisionTrace {
     let mut onset_support_sources = Vec::new();
     let mut context_signals = Vec::new();
     if candidate
@@ -509,7 +509,7 @@ fn fusion_decision_trace(
         .is_some_and(|features| features.onset_supported)
     {
         onset_support_sources.push("basic_pitch".to_string());
-        context_signals.push(FusionContextSignalV1::BasicPitchOnset);
+        context_signals.push(FusionContextSignal::BasicPitchOnset);
     }
     if candidate
         .acoustic
@@ -517,14 +517,14 @@ fn fusion_decision_trace(
         .is_some_and(|features| features.onset_supported == Some(true))
     {
         onset_support_sources.push("acoustic_dsp".to_string());
-        context_signals.push(FusionContextSignalV1::AcousticOnset);
+        context_signals.push(FusionContextSignal::AcousticOnset);
     }
     let degraded_fallback = candidate.boundary_kind == BoundaryEvidenceKind::F0Derived;
     if degraded_fallback {
-        context_signals.push(FusionContextSignalV1::F0SegmentationFallback);
+        context_signals.push(FusionContextSignal::F0SegmentationFallback);
     }
     if !candidate.boundary_alternatives.is_empty() {
-        context_signals.push(FusionContextSignalV1::BoundaryDisagreement);
+        context_signals.push(FusionContextSignal::BoundaryDisagreement);
     }
     if candidate.technique_evidence.iter().any(|observation| {
         observation
@@ -532,7 +532,7 @@ fn fusion_decision_trace(
             .to_ascii_lowercase()
             .contains("uncalibrated")
     }) {
-        context_signals.push(FusionContextSignalV1::TechniqueUncalibrated);
+        context_signals.push(FusionContextSignal::TechniqueUncalibrated);
     }
     let voiced_ratio = if continuous_f0_source == "rmvpe" {
         candidate.rmvpe_voiced_ratio
@@ -540,14 +540,14 @@ fn fusion_decision_trace(
         candidate.fcpe_observed_ratio
     };
     if voiced_ratio.is_some_and(|ratio| ratio < 0.35) {
-        context_signals.push(FusionContextSignalV1::LowPitchCoverage);
+        context_signals.push(FusionContextSignal::LowPitchCoverage);
     }
     if candidate.fcpe_supports_rmvpe == Some(false)
         || candidate
             .rmvpe_cents_difference
             .is_some_and(|cents| cents.abs() > 50.0)
     {
-        context_signals.push(FusionContextSignalV1::PitchDisagreement);
+        context_signals.push(FusionContextSignal::PitchDisagreement);
     }
     onset_support_sources.sort();
     onset_support_sources.dedup();
@@ -562,13 +562,13 @@ fn fusion_decision_trace(
     considered_target_pitch_sources.sort();
     considered_target_pitch_sources.dedup();
     let pitch_selection_reason = if candidate.boundary_kind == BoundaryEvidenceKind::F0Derived {
-        PitchSelectionReasonV1::F0DerivedProposal
+        PitchSelectionReason::F0DerivedProposal
     } else if candidate.target_pitch_source == candidate.boundary_source {
-        PitchSelectionReasonV1::BoundaryProposal
+        PitchSelectionReason::BoundaryProposal
     } else {
-        PitchSelectionReasonV1::GlobalPitchAlternative
+        PitchSelectionReason::GlobalPitchAlternative
     };
-    FusionDecisionTraceV1 {
+    FusionDecisionTrace {
         policy_version: 3,
         continuous_f0_source: continuous_f0_source.to_string(),
         boundary_source: candidate.boundary_source.clone(),

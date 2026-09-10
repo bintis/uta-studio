@@ -11,7 +11,7 @@ use super::*;
 pub(crate) fn exact_engine_capabilities_from_engine(
     engine: &app_core::EngineRunHistoryProjection,
 ) -> Option<std::collections::BTreeSet<String>> {
-    let plan: app_core::AnalysisPlanWireV1 = serde_json::from_str(&engine.plan_json).ok()?;
+    let plan: app_core::AnalysisPlanWire = serde_json::from_str(&engine.plan_json).ok()?;
     Some(
         plan.execution_nodes
             .into_iter()
@@ -23,17 +23,17 @@ pub(crate) fn exact_engine_capabilities_from_engine(
 pub(crate) fn exact_workflow_plan_from_engine(
     engine: &app_core::EngineRunHistoryProjection,
 ) -> Option<(
-    app_core::WorkflowExecutionWireV1,
-    Option<app_core::WorkflowExecutionPlanWireV1>,
+    app_core::WorkflowExecutionWire,
+    Option<app_core::WorkflowExecutionPlanWire>,
 )> {
-    let request: app_core::AnalyzeRequestWireV1 =
+    let request: app_core::AnalyzeRequestWire =
         serde_json::from_str(&engine.request_json).ok()?;
     let workflow = request
         .extensions
         .get(app_core::WORKFLOW_EXECUTION_EXTENSION_KEY)
         .cloned()
         .and_then(|value| serde_json::from_value(value).ok())?;
-    let plan = serde_json::from_str::<app_core::AnalysisPlanWireV1>(&engine.plan_json)
+    let plan = serde_json::from_str::<app_core::AnalysisPlanWire>(&engine.plan_json)
         .ok()
         .and_then(|plan| plan.workflow_execution);
     Some((workflow, plan))
@@ -83,7 +83,7 @@ pub(crate) fn workflow_graph_category(capability_id: Option<&str>) -> GraphNodeC
     }
 }
 
-fn local_state(node: &app_core::WorkflowNodeWireV1, quality: &str) -> GraphNodeState {
+fn local_state(node: &app_core::WorkflowNodeWire, quality: &str) -> GraphNodeState {
     match node.execution_policy.as_str() {
         "disabled" => GraphNodeState::Disabled,
         "maximum_only" if quality != "maximum" => GraphNodeState::ProfileSkipped,
@@ -92,15 +92,15 @@ fn local_state(node: &app_core::WorkflowNodeWireV1, quality: &str) -> GraphNodeS
     }
 }
 
-fn exact_state(state: app_core::WorkflowNodeExecutionStateWireV1) -> GraphNodeState {
+fn exact_state(state: app_core::WorkflowNodeExecutionStateWire) -> GraphNodeState {
     match state {
-        app_core::WorkflowNodeExecutionStateWireV1::Ready => GraphNodeState::Waiting,
-        app_core::WorkflowNodeExecutionStateWireV1::Deferred => GraphNodeState::Deferred,
-        app_core::WorkflowNodeExecutionStateWireV1::Disabled => GraphNodeState::Disabled,
-        app_core::WorkflowNodeExecutionStateWireV1::ProfileSkipped => {
+        app_core::WorkflowNodeExecutionStateWire::Ready => GraphNodeState::Waiting,
+        app_core::WorkflowNodeExecutionStateWire::Deferred => GraphNodeState::Deferred,
+        app_core::WorkflowNodeExecutionStateWire::Disabled => GraphNodeState::Disabled,
+        app_core::WorkflowNodeExecutionStateWire::ProfileSkipped => {
             GraphNodeState::ProfileSkipped
         }
-        app_core::WorkflowNodeExecutionStateWireV1::NotRequested => GraphNodeState::NotRequested,
+        app_core::WorkflowNodeExecutionStateWire::NotRequested => GraphNodeState::NotRequested,
     }
 }
 
@@ -253,8 +253,8 @@ fn group_parallel_expert_nodes(nodes: Vec<RenderNode>, edges: Vec<RenderEdge>) -
 /// selection states. For an editable current workflow, the persisted policy
 /// and quality mode provide the truthful local preview state.
 pub(crate) fn build_workflow_render_graph(
-    workflow: &app_core::WorkflowExecutionWireV1,
-    exact_plan: Option<&app_core::WorkflowExecutionPlanWireV1>,
+    workflow: &app_core::WorkflowExecutionWire,
+    exact_plan: Option<&app_core::WorkflowExecutionPlanWire>,
     exact_engine_capabilities: Option<&std::collections::BTreeSet<String>>,
     run_completed: bool,
 ) -> RenderGraph {
@@ -652,9 +652,9 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn wire(definition: &app_core::WorkflowDefinition) -> app_core::WorkflowExecutionWireV1 {
+    fn wire(definition: &app_core::WorkflowDefinition) -> app_core::WorkflowExecutionWire {
         let snapshot = app_core::compile_workflow(definition).unwrap();
-        app_core::WorkflowExecutionWireV1::from_snapshot(&snapshot).unwrap()
+        app_core::WorkflowExecutionWire::from_snapshot(&snapshot).unwrap()
     }
 
     #[test]
@@ -741,6 +741,23 @@ mod tests {
     }
 
     #[test]
+    fn dual_output_runtime_overlay_marks_the_invocation_running() {
+        let workflow = wire(&app_core::default_workflow("song"));
+        let mut graph = build_workflow_render_graph(&workflow, None, None, false);
+        let mut progress = runtime_route(Some("vocal_bgm_split"), "node_progress");
+        progress["finished_at_ms"] = json!(null);
+        let task = runtime_task(json!([progress]), "vocal_bgm_split");
+        overlay_workflow_runtime(&mut graph, &task);
+        assert_eq!(
+            graph
+                .node(&AnalysisNodeId::new("vocal_bgm_split"))
+                .unwrap()
+                .state,
+            GraphNodeState::Running
+        );
+    }
+
+    #[test]
     fn dual_output_separation_has_one_dag_node_per_inference() {
         let workflow = wire(&app_core::default_workflow("song"));
         let graph = build_workflow_render_graph(&workflow, None, None, false);
@@ -809,7 +826,7 @@ mod tests {
             .iter_mut()
             .find(|node| node.instance_id == "vocal_bgm_split")
             .unwrap();
-        separation.execution_invocations = vec![app_core::WorkflowExecutionInvocationWireV1 {
+        separation.execution_invocations = vec![app_core::WorkflowExecutionInvocationWire {
             invocation_id: "vocal-only-invocation".to_string(),
             provider_id: "vocal-only-provider".to_string(),
             capabilities: vec!["audio.extract_vocals".to_string()],
@@ -853,7 +870,7 @@ mod tests {
             .iter_mut()
             .find(|node| node.instance_id == "vocal_bgm_split")
             .unwrap();
-        separation.execution_invocations = vec![app_core::WorkflowExecutionInvocationWireV1 {
+        separation.execution_invocations = vec![app_core::WorkflowExecutionInvocationWire {
             invocation_id: "vocal_bgm_split".to_string(),
             provider_id: "dual-output-provider".to_string(),
             capabilities: vec![

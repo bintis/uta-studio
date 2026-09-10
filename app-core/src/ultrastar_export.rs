@@ -11,7 +11,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use utz::{LyricJoin, LyricToken, VocalChartV1, VocalNote, VocalTrack, VocalTrackRole};
+use utz::{LyricJoin, LyricToken, VocalChart, VocalNote, VocalTrack, VocalTrackRole};
 
 use crate::{
     audio_format::{export_extension as audio_export_extension, transcode_audio},
@@ -304,7 +304,7 @@ pub fn validate_ultrastar_text(content: &str) -> Result<(), UtaStudioError> {
 fn build_ultrastar_text(
     title: &str,
     artist: &str,
-    chart: &VocalChartV1,
+    chart: &VocalChart,
     audio_name: &str,
     vocals_name: Option<&str>,
     cover_name: Option<&str>,
@@ -434,7 +434,7 @@ fn write_track_notes(output: &mut String, track: &VocalTrack, timebase: u64) {
 /// number. A chart with no part assignments (solo charts, or ones authored
 /// outside Uta! Studio) falls back to every non-empty lead track in track
 /// order, matching the single-player and unnumbered-duet cases.
-fn player_tracks(chart: &VocalChartV1) -> Vec<&VocalTrack> {
+fn player_tracks(chart: &VocalChart) -> Vec<&VocalTrack> {
     let has_notes =
         |track: &&VocalTrack| track.phrases.iter().any(|phrase| !phrase.notes.is_empty());
     let mut parted = chart
@@ -575,7 +575,7 @@ mod tests {
         publish_staged_ultrastar_bundle, ultrastar_note_kind,
     };
     use crate::{editor::NoteKind, usdx::validate_usdx_str, vocal_chart::migrate_analyzer_chart};
-    use utz::VocalChartV1;
+    use utz::VocalChart;
 
     type TestNote<'a> = (f64, f64, u8, &'a str, &'a str);
 
@@ -607,7 +607,7 @@ mod tests {
         }
     }
 
-    fn chart(language: &str, phrases: &[&[TestNote<'_>]]) -> VocalChartV1 {
+    fn chart(language: &str, phrases: &[&[TestNote<'_>]]) -> VocalChart {
         let mut segments = Vec::new();
         let mut notes = Vec::new();
         for phrase in phrases {
@@ -734,7 +734,7 @@ mod tests {
 
     /// Splits a chart's notes over a second lead track, assigning both
     /// tracks contiguous duet parts the way `EditorDocument` would.
-    fn with_duet_track(chart: &mut VocalChartV1, singer: &str, notes: Vec<utz::VocalNote>) {
+    fn with_duet_track(chart: &mut VocalChart, singer: &str, notes: Vec<utz::VocalNote>) {
         chart.tracks[0].part = Some(1);
         chart.tracks.push(utz::VocalTrack {
             id: "duet".into(),

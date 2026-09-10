@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::{AudioRole, CapabilityId, SeparationStrategyV1, WorkflowPortSpec, WorkflowPortType};
+use super::{AudioRole, CapabilityId, SeparationStrategy, WorkflowPortSpec, WorkflowPortType};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -44,12 +44,12 @@ pub struct WorkflowModelOption {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SeparationOutputRoleV1 {
+pub enum SeparationOutputRole {
     Vocal,
     Instrumental,
 }
 
-impl SeparationOutputRoleV1 {
+impl SeparationOutputRole {
     pub const fn output_port(self) -> &'static str {
         match self {
             Self::Vocal => "vocal",
@@ -66,67 +66,66 @@ impl SeparationOutputRoleV1 {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SeparationProviderExecutionV1 {
+pub struct SeparationProviderExecution {
     pub provider_id: &'static str,
-    pub output_roles: &'static [SeparationOutputRoleV1],
+    pub output_roles: &'static [SeparationOutputRole],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SeparationStrategyOptionV1 {
-    pub strategy: SeparationStrategyV1,
+pub struct SeparationStrategyOption {
+    pub strategy: SeparationStrategy,
     pub label: &'static str,
     pub description: &'static str,
-    pub executions: &'static [SeparationProviderExecutionV1],
+    pub executions: &'static [SeparationProviderExecution],
 }
 
-const VOCAL_INSTRUMENTAL_ROLES: &[SeparationOutputRoleV1] = &[
-    SeparationOutputRoleV1::Vocal,
-    SeparationOutputRoleV1::Instrumental,
+const VOCAL_INSTRUMENTAL_ROLES: &[SeparationOutputRole] = &[
+    SeparationOutputRole::Vocal,
+    SeparationOutputRole::Instrumental,
 ];
-const LEAP_DUAL_OUTPUT_EXECUTION: &[SeparationProviderExecutionV1] =
-    &[SeparationProviderExecutionV1 {
-        provider_id: "bs_roformer_leap_xe90_vocals",
-        output_roles: VOCAL_INSTRUMENTAL_ROLES,
-    }];
-const LEAP_INSTRUMENTAL_DIRECT_EXECUTION: &[SeparationProviderExecutionV1] =
-    &[SeparationProviderExecutionV1 {
+const LEAP_DUAL_OUTPUT_EXECUTION: &[SeparationProviderExecution] = &[SeparationProviderExecution {
+    provider_id: "bs_roformer_leap_xe90_vocals",
+    output_roles: VOCAL_INSTRUMENTAL_ROLES,
+}];
+const LEAP_INSTRUMENTAL_DIRECT_EXECUTION: &[SeparationProviderExecution] =
+    &[SeparationProviderExecution {
         provider_id: "bs_roformer_leap_xe90_instrumental",
         output_roles: VOCAL_INSTRUMENTAL_ROLES,
     }];
-const POLARFORMER_DUAL_OUTPUT_EXECUTION: &[SeparationProviderExecutionV1] =
-    &[SeparationProviderExecutionV1 {
+const POLARFORMER_DUAL_OUTPUT_EXECUTION: &[SeparationProviderExecution] =
+    &[SeparationProviderExecution {
         provider_id: "bs_polarformer_public_instrumental",
         output_roles: VOCAL_INSTRUMENTAL_ROLES,
     }];
-const SEPARATION_STRATEGIES: &[SeparationStrategyOptionV1] = &[
-    SeparationStrategyOptionV1 {
-        strategy: SeparationStrategyV1::LeapDualOutput,
+const SEPARATION_STRATEGIES: &[SeparationStrategyOption] = &[
+    SeparationStrategyOption {
+        strategy: SeparationStrategy::LeapDualOutput,
         label: "Leap XE90 · Vocals + Instrumental",
         description: "Default. One Leap XE90 inference publishes the trained vocal estimate and its mix-minus-vocals Instrumental residual.",
         executions: LEAP_DUAL_OUTPUT_EXECUTION,
     },
-    SeparationStrategyOptionV1 {
-        strategy: SeparationStrategyV1::LeapInstrumentalDirect,
+    SeparationStrategyOption {
+        strategy: SeparationStrategy::LeapInstrumentalDirect,
         label: "Leap XE90 · Fuller BGM",
         description: "Optional. The instrumental-target model publishes its direct, fuller Instrumental estimate and a mix-minus-instrumental vocal residual. It may retain more vocal bleed than the default.",
         executions: LEAP_INSTRUMENTAL_DIRECT_EXECUTION,
     },
-    SeparationStrategyOptionV1 {
-        strategy: SeparationStrategyV1::PolarformerBoth,
+    SeparationStrategyOption {
+        strategy: SeparationStrategy::PolarformerBoth,
         label: "Experimental · PolarFormer · Vocals + Instrumental",
         description: "Disabled by default. One public PolarFormer inference publishes the trained vocal estimate and its mix-minus-vocals Instrumental residual for explicit A/B evaluation.",
         executions: POLARFORMER_DUAL_OUTPUT_EXECUTION,
     },
 ];
 
-pub fn separation_strategy_options() -> &'static [SeparationStrategyOptionV1] {
+pub fn separation_strategy_options() -> &'static [SeparationStrategyOption] {
     SEPARATION_STRATEGIES
 }
 
 pub fn separation_strategy_descriptor(
-    strategy: SeparationStrategyV1,
-) -> &'static SeparationStrategyOptionV1 {
-    if strategy == SeparationStrategyV1::Ep317VocalResidual {
+    strategy: SeparationStrategy,
+) -> &'static SeparationStrategyOption {
+    if strategy == SeparationStrategy::Ep317VocalResidual {
         return &SEPARATION_STRATEGIES[0];
     }
     SEPARATION_STRATEGIES

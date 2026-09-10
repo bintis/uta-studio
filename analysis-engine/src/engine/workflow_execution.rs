@@ -88,11 +88,11 @@ pub(super) fn publish_candidate_artifacts(
     request_vocal_chart: bool,
     preserve_continuous_pitch: bool,
     fingerprint: &str,
-    fusion_decision: Option<&FusionDecisionProvenanceV1>,
+    fusion_decision: Option<&FusionDecisionProvenance>,
     singing: Option<&SingingStagesOutput>,
     quantized_candidate_track: Option<&crate::fusion::CanonicalSingingTrack>,
-    quantization: Option<&crate::quantization::QuantizationReportV1>,
-    artifacts: &mut AnalysisArtifactsV1,
+    quantization: Option<&crate::quantization::QuantizationReport>,
+    artifacts: &mut AnalysisArtifacts,
     cancellation: &CancellationToken,
 ) -> EngineResult<()> {
     if !request_singing_analysis && !request_vocal_chart {
@@ -117,7 +117,7 @@ pub(super) fn publish_candidate_artifacts(
                 "requested SingingAnalysis has no final fusion decision provenance",
             )
         })?;
-        let analysis = SingingAnalysisV1::new(
+        let analysis = SingingAnalysis::new(
             &singing.track,
             singing.fusion.candidates.clone(),
             singing.fusion.hard_boundaries.clone(),
@@ -175,7 +175,7 @@ pub(super) fn optional_execution_supported(capability: &str) -> bool {
 }
 
 pub(super) fn workflow_cleanup_steps(
-    workflow: Option<&CompiledWorkflowExecutionPlanV1>,
+    workflow: Option<&CompiledWorkflowExecutionPlan>,
     resolved: &[uta_runtime_manager::ResolvedModel],
 ) -> Vec<(String, Option<String>)> {
     if let Some(workflow) = workflow {
@@ -190,7 +190,7 @@ pub(super) fn workflow_cleanup_steps(
         return workflow
             .nodes
             .iter()
-            .filter(|node| node.execution_state == WorkflowNodeExecutionStateV1::Ready)
+            .filter(|node| node.execution_state == WorkflowNodeExecutionState::Ready)
             .filter_map(|node| {
                 node.capabilities
                     .iter()
@@ -210,7 +210,7 @@ pub(super) fn workflow_cleanup_steps(
 }
 
 pub(super) fn record_workflow_audio(
-    workflow: Option<&CompiledWorkflowExecutionPlanV1>,
+    workflow: Option<&CompiledWorkflowExecutionPlan>,
     capability: &str,
     output_port: &str,
     artifacts: &mut BTreeMap<(String, String), (PathBuf, String)>,
@@ -232,7 +232,7 @@ pub(super) fn record_workflow_audio(
 /// embodies. These upstream nodes are intentionally `NotRequested`; their
 /// downstream bindings still need the reused semantic audio artifact.
 pub(super) fn record_reused_workflow_audio(
-    workflow: Option<&CompiledWorkflowExecutionPlanV1>,
+    workflow: Option<&CompiledWorkflowExecutionPlan>,
     role: crate::contract::AudioRole,
     artifacts: &mut BTreeMap<(String, String), (PathBuf, String)>,
     path: &Path,
@@ -256,7 +256,7 @@ pub(super) fn record_reused_workflow_audio(
     };
     for (capability, output_port) in satisfied_outputs {
         for node in workflow.nodes.iter().filter(|node| {
-            node.execution_state == WorkflowNodeExecutionStateV1::NotRequested
+            node.execution_state == WorkflowNodeExecutionState::NotRequested
                 && node.capabilities.iter().any(|item| item == capability)
         }) {
             artifacts.insert(
@@ -268,7 +268,7 @@ pub(super) fn record_reused_workflow_audio(
 }
 
 pub(super) fn workflow_bound_audio(
-    workflow: Option<&CompiledWorkflowExecutionPlanV1>,
+    workflow: Option<&CompiledWorkflowExecutionPlan>,
     capability: &str,
     artifacts: &BTreeMap<(String, String), (PathBuf, String)>,
     fallback_path: &Path,
@@ -317,7 +317,7 @@ pub(super) fn workflow_bound_audio(
 }
 
 fn resolve_workflow_audio(
-    workflow: &CompiledWorkflowExecutionPlanV1,
+    workflow: &CompiledWorkflowExecutionPlan,
     artifacts: &BTreeMap<(String, String), (PathBuf, String)>,
     from_node: &str,
     from_port: &str,
@@ -338,7 +338,7 @@ fn resolve_workflow_audio(
         .capabilities
         .iter()
         .any(|capability| matches!(capability.as_str(), "audio.denoise" | "audio.dereverb"));
-    if producer.execution_state == WorkflowNodeExecutionStateV1::Ready && !optional_cleanup {
+    if producer.execution_state == WorkflowNodeExecutionState::Ready && !optional_cleanup {
         return None;
     }
     let input = producer.input_bindings.iter().find(|binding| {
@@ -357,7 +357,7 @@ fn resolve_workflow_audio(
 }
 
 pub(super) fn workflow_transform_input(
-    workflow: Option<&CompiledWorkflowExecutionPlanV1>,
+    workflow: Option<&CompiledWorkflowExecutionPlan>,
     analysis_node: Option<&str>,
     artifacts: &BTreeMap<(String, String), (PathBuf, String)>,
     fallback_path: &Path,
@@ -436,6 +436,7 @@ pub(super) fn resolved_model<'a>(
 pub(super) fn run_ggml_dual_separation(
     task: &DenoiseTask<'_>,
     model_id: &str,
+    presentation_node_id: Option<&str>,
     cancellation: &CancellationToken,
 ) -> EngineResult<DualSeparationOutput> {
     let directory = create_task_dir(task.output_root, "worker/vocal-instrumental")?;
@@ -454,8 +455,8 @@ pub(super) fn run_ggml_dual_separation(
         },
         &NativeTask {
             task_id: task.task_id.to_string(),
-            node_id: "audio.separate_vocal_bgm".to_string(),
-            presentation_node_id: None,
+            node_id: "audio.extract_vocals".to_string(),
+            presentation_node_id: presentation_node_id.map(str::to_string),
             model_id: model_id.to_string(),
             input_artifacts: vec![task.input.to_path_buf()],
             output_dir: directory.clone(),
@@ -746,10 +747,10 @@ pub(super) fn run_ggml_workflow_cleanup(
 mod tests {
     use super::*;
     use crate::workflow::{
-        FusionModeV1, WorkflowBindingV1, WorkflowExecutionPolicyV1, WorkflowTerminalOutputV1,
+        FusionMode, WorkflowBinding, WorkflowExecutionPolicy, WorkflowTerminalOutput,
     };
     use crate::workflow_executor::{
-        WorkflowExecutionNodePlanV1, WorkflowNodeExecutionStateV1, WorkflowPlanIdentityV1,
+        WorkflowExecutionNodePlan, WorkflowNodeExecutionState, WorkflowPlanIdentity,
     };
 
     #[test]
@@ -769,13 +770,13 @@ mod tests {
         analysis_node: &str,
         capability: &str,
         input: Option<(&str, &str)>,
-    ) -> WorkflowExecutionNodePlanV1 {
-        WorkflowExecutionNodePlanV1 {
+    ) -> WorkflowExecutionNodePlan {
+        WorkflowExecutionNodePlan {
             instance_id: instance.to_string(),
             analysis_node: analysis_node.to_string(),
             capabilities: vec![capability.to_string()],
-            execution_policy: WorkflowExecutionPolicyV1::Always,
-            execution_state: WorkflowNodeExecutionStateV1::Ready,
+            execution_policy: WorkflowExecutionPolicy::Always,
+            execution_state: WorkflowNodeExecutionState::Ready,
             priority: 0,
             parameters: serde_json::Value::Object(Default::default()),
             execution_invocations: Vec::new(),
@@ -784,7 +785,7 @@ mod tests {
                 .unwrap_or_default(),
             input_bindings: input
                 .map(|(from, port)| {
-                    vec![WorkflowBindingV1 {
+                    vec![WorkflowBinding {
                         from_node: from.to_string(),
                         from_port: port.to_string(),
                         to_node: analysis_node.to_string(),
@@ -799,9 +800,9 @@ mod tests {
         }
     }
 
-    fn plan() -> CompiledWorkflowExecutionPlanV1 {
-        CompiledWorkflowExecutionPlanV1 {
-            identity: WorkflowPlanIdentityV1 {
+    fn plan() -> CompiledWorkflowExecutionPlan {
+        CompiledWorkflowExecutionPlan {
+            identity: WorkflowPlanIdentity {
                 contract: "uta.workflow-execution".to_string(),
                 version: 1,
                 workflow_schema_version: crate::workflow::WORKFLOW_SCHEMA_VERSION,
@@ -824,9 +825,9 @@ mod tests {
                     Some(("workflow.cleanup-a", "audio")),
                 ),
             ],
-            terminal_outputs: Vec::<WorkflowTerminalOutputV1>::new(),
+            terminal_outputs: Vec::<WorkflowTerminalOutput>::new(),
             fusion_policy: None,
-            fusion_mode: FusionModeV1::Algorithm,
+            fusion_mode: FusionMode::Algorithm,
         }
     }
 
@@ -869,7 +870,7 @@ mod tests {
             .find(|node| node.analysis_node == "workflow.cleanup-a")
             .unwrap();
         cleanup.depends_on = vec!["workflow.source".to_string()];
-        cleanup.input_bindings = vec![WorkflowBindingV1 {
+        cleanup.input_bindings = vec![WorkflowBinding {
             from_node: "workflow.source".to_string(),
             from_port: "mix".to_string(),
             to_node: cleanup.analysis_node.clone(),
@@ -906,14 +907,14 @@ mod tests {
             "audio.lead_isolate",
             Some(("vocal-split", "vocal")),
         );
-        lead.execution_state = WorkflowNodeExecutionStateV1::NotRequested;
+        lead.execution_state = WorkflowNodeExecutionState::NotRequested;
         let dereverb = node(
             "dereverb",
             "vocal_dereverb_1",
             "audio.dereverb",
             Some(("lead_isolate", "lead")),
         );
-        let plan = CompiledWorkflowExecutionPlanV1 {
+        let plan = CompiledWorkflowExecutionPlan {
             nodes: vec![lead, dereverb],
             ..plan()
         };
@@ -947,22 +948,22 @@ mod tests {
             "audio.lead_isolate",
             Some(("vocal-split", "vocal")),
         );
-        lead.execution_state = WorkflowNodeExecutionStateV1::NotRequested;
+        lead.execution_state = WorkflowNodeExecutionState::NotRequested;
         let mut vocal_cleanup = node(
             "vocal-cleanup",
             "vocal_cleanup",
             "audio.denoise",
             Some(("lead_isolate", "lead")),
         );
-        vocal_cleanup.execution_state = WorkflowNodeExecutionStateV1::NotRequested;
+        vocal_cleanup.execution_state = WorkflowNodeExecutionState::NotRequested;
         let mut bgm_cleanup = node(
             "bgm-cleanup",
             "bgm_cleanup",
             "audio.denoise",
             Some(("vocal-split", "instrumental")),
         );
-        bgm_cleanup.execution_state = WorkflowNodeExecutionStateV1::NotRequested;
-        let plan = CompiledWorkflowExecutionPlanV1 {
+        bgm_cleanup.execution_state = WorkflowNodeExecutionState::NotRequested;
+        let plan = CompiledWorkflowExecutionPlan {
             nodes: vec![lead, vocal_cleanup, bgm_cleanup],
             ..plan()
         };

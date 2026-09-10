@@ -644,7 +644,7 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "migrate_analyzer_chart",
         "read",
         true,
-        "Convert a legacy transcript + pitch notes pair into a VocalChartV1 document, without touching disk"
+        "Convert a legacy transcript + pitch notes pair into a VocalChart document, without touching disk"
     ),
     capability!("lyrics", "load_lyrics", "read", true, "Load local lyrics"),
     capability!(

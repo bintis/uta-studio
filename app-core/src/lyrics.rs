@@ -478,7 +478,7 @@ fn write_transcript_json(
 /// Provide LRC / Enhanced LRC for a not-yet-analyzed song, building the
 /// transcript directly from its line timestamps and skipping transcription
 /// entirely -- the chart is authored over the original mix, with no
-/// stem-separation pass queued (Engine v1 has no path to combine timed-LRC
+/// stem-separation pass queued (Engine has no path to combine timed-LRC
 /// authoring with a queued stem-separation job).
 pub fn provide_lrc(file_hash: &str, lrc_text: &str) -> Result<(), String> {
     if is_usdx_song(file_hash) {
@@ -502,7 +502,7 @@ pub fn provide_lrc(file_hash: &str, lrc_text: &str) -> Result<(), String> {
         .map_err(|e| format!("Failed to write transcript: {e}"))?;
     // Authoring over the original mix is a local Studio operation. It does not
     // launch the retired compatibility analyzer or pretend timed LRC is an
-    // Engine v1 alignment artifact.
+    // Engine alignment artifact.
     prepare_lrc_no_stems(file_hash).map_err(|e| e.to_string())?;
 
     // This transition (never-analyzed -> authoring-ready via Timed LRC) is

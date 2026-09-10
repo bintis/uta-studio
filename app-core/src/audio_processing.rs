@@ -7,8 +7,8 @@ use crate::audio_model::{
     AUDIO_CATALOG_SCHEMA_VERSION, AUDIO_CATALOG_VERSION, AudioModelCatalogSummary, AudioModelStatus,
 };
 use crate::backend_cli::{
-    InstallStateWireV1, NativeBackendWireV1, RuntimeCliClient, RuntimePolicyWireV1,
-    RuntimeResourceDetailsWireV1, RuntimeResourceRefWireV1, ValidationStateWireV1,
+    InstallStateWire, NativeBackendWire, RuntimeCliClient, RuntimePolicyWire,
+    RuntimeResourceDetailsWire, RuntimeResourceRefWire, ValidationStateWire,
 };
 
 fn studio_audio_operation(model_id: &str) -> Option<&'static str> {
@@ -96,19 +96,19 @@ fn get_audio_model_status_with_client(
 ) -> Result<AudioModelStatus, String> {
     let operation = studio_audio_operation(model_id)
         .ok_or_else(|| format!("unknown audio model id: {model_id}"))?;
-    let resource = RuntimeResourceRefWireV1::model(model_id)?;
+    let resource = RuntimeResourceRefWire::model(model_id)?;
     let details = client.show(&resource).map_err(|error| error.to_string())?;
     audio_model_status_from_details(details, model_id, operation)
 }
 
 fn audio_runtime_client() -> Result<RuntimeCliClient, String> {
     RuntimeCliClient::discover()
-        .map(|client| client.with_policy(RuntimePolicyWireV1::Production))
+        .map(|client| client.with_policy(RuntimePolicyWire::Production))
         .map_err(|error| error.to_string())
 }
 
 fn audio_model_status_from_details(
-    details: RuntimeResourceDetailsWireV1,
+    details: RuntimeResourceDetailsWire,
     model_id: &str,
     operation: &str,
 ) -> Result<AudioModelStatus, String> {
@@ -127,7 +127,7 @@ fn audio_model_status_from_details(
             .metadata
             .backends
             .iter()
-            .filter(|backend| backend.validation != ValidationStateWireV1::Unsupported)
+            .filter(|backend| backend.validation != ValidationStateWire::Unsupported)
             .map(|backend| native_backend_label(backend.backend).to_string())
             .collect(),
         license: details
@@ -149,24 +149,24 @@ fn audio_model_status_from_details(
     })
 }
 
-fn native_backend_label(backend: NativeBackendWireV1) -> &'static str {
+fn native_backend_label(backend: NativeBackendWire) -> &'static str {
     match backend {
-        NativeBackendWireV1::Ggml => "ggml",
+        NativeBackendWire::Ggml => "ggml",
     }
 }
 
-fn install_state_label(state: InstallStateWireV1) -> &'static str {
+fn install_state_label(state: InstallStateWire) -> &'static str {
     match state {
-        InstallStateWireV1::Absent => "missing",
-        InstallStateWireV1::Installed | InstallStateWireV1::Legacy => "installed",
-        InstallStateWireV1::Incomplete => "incomplete",
-        InstallStateWireV1::Corrupt => "integrity_failed",
+        InstallStateWire::Absent => "missing",
+        InstallStateWire::Installed | InstallStateWire::Legacy => "installed",
+        InstallStateWire::Incomplete => "incomplete",
+        InstallStateWire::Corrupt => "integrity_failed",
     }
 }
 
 pub fn install_audio_model(model_id: &str) -> Result<AudioModelStatus, String> {
     let client = audio_runtime_client()?;
-    let resource = RuntimeResourceRefWireV1::model(model_id)?;
+    let resource = RuntimeResourceRefWire::model(model_id)?;
     client.show(&resource).map_err(|error| error.to_string())?;
     client
         .install(&[resource])
@@ -178,7 +178,7 @@ pub fn install_audio_model(model_id: &str) -> Result<AudioModelStatus, String> {
 
 pub fn reinstall_audio_model(model_id: &str) -> Result<AudioModelStatus, String> {
     let client = audio_runtime_client()?;
-    let resource = RuntimeResourceRefWireV1::model(model_id)?;
+    let resource = RuntimeResourceRefWire::model(model_id)?;
     client.show(&resource).map_err(|error| error.to_string())?;
     client
         .reinstall(&[resource])
@@ -190,7 +190,7 @@ pub fn reinstall_audio_model(model_id: &str) -> Result<AudioModelStatus, String>
 
 pub fn remove_audio_model(model_id: &str) -> Result<(), String> {
     let client = audio_runtime_client()?;
-    let resource = RuntimeResourceRefWireV1::model(model_id)?;
+    let resource = RuntimeResourceRefWire::model(model_id)?;
     client.show(&resource).map_err(|error| error.to_string())?;
     let result = client
         .remove(std::slice::from_ref(&resource))
@@ -201,7 +201,7 @@ pub fn remove_audio_model(model_id: &str) -> Result<(), String> {
             .map_err(|error| error.to_string())?;
         if status
             .first()
-            .is_some_and(|status| status.install_state == InstallStateWireV1::Legacy)
+            .is_some_and(|status| status.install_state == InstallStateWire::Legacy)
         {
             return Err("legacy model data is not manager-owned; import or adopt it explicitly before removal".to_string());
         }

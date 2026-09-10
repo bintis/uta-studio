@@ -119,23 +119,23 @@ const fn default_timeline_step() -> u32 {
 }
 
 #[derive(Deserialize)]
-struct SingingAnalysisWireV1 {
+struct SingingAnalysisWire {
     contract: String,
     version: u32,
     format_version: String,
     timebase: u32,
-    candidate_evidence: Vec<SingingCandidateWireV1>,
+    candidate_evidence: Vec<SingingCandidateWire>,
     #[serde(default)]
-    candidate_hard_boundaries: SingingHardBoundarySetWireV1,
-    review_regions: Vec<SingingReviewRegionWireV1>,
-    provenance: SingingProvenanceWireV1,
+    candidate_hard_boundaries: SingingHardBoundarySetWire,
+    review_regions: Vec<SingingReviewRegionWire>,
+    provenance: SingingProvenanceWire,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SingingCandidateWireV1 {
+struct SingingCandidateWire {
     id: String,
-    range: SingingRangeWireV1,
+    range: SingingRangeWire,
     target_midi: u8,
     boundary_source: String,
     boundary_kind: String,
@@ -176,56 +176,56 @@ struct SingingCandidateWireV1 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     fcpe_supports_rmvpe: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    acoustic: Option<SingingAcousticCandidateWireV1>,
+    acoustic: Option<SingingAcousticCandidateWire>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    basic_pitch: Option<SingingBasicPitchCandidateWireV1>,
+    basic_pitch: Option<SingingBasicPitchCandidateWire>,
     #[serde(default)]
-    boundary_alternatives: Vec<SingingBoundaryAlternativeWireV1>,
+    boundary_alternatives: Vec<SingingBoundaryAlternativeWire>,
     #[serde(default)]
-    boundary_constraints: Vec<SingingBoundaryConstraintWireV1>,
+    boundary_constraints: Vec<SingingBoundaryConstraintWire>,
     #[serde(default)]
-    technique_evidence: Vec<SingingTechniqueCandidateWireV1>,
+    technique_evidence: Vec<SingingTechniqueCandidateWire>,
     #[serde(default)]
-    techniques: SingingTechniqueScoresWireV1,
+    techniques: SingingTechniqueScoresWire,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     word_id: Option<String>,
     #[serde(default)]
-    alternatives: Vec<SingingPitchAlternativeWireV1>,
+    alternatives: Vec<SingingPitchAlternativeWire>,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SingingRangeWireV1 {
+struct SingingRangeWire {
     start: u64,
     end: u64,
 }
 
 #[derive(Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SingingHardBoundarySetWireV1 {
+struct SingingHardBoundarySetWire {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    boundaries: Vec<SingingHardBoundaryWireV1>,
+    boundaries: Vec<SingingHardBoundaryWire>,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SingingHardBoundaryWireV1 {
+struct SingingHardBoundaryWire {
     source: String,
     level: String,
-    range: SingingRangeWireV1,
+    range: SingingRangeWire,
 }
 
 #[cfg(test)]
 #[derive(Serialize)]
-struct SingingCandidatePoolDigestWireV1<'a> {
+struct SingingCandidatePoolDigestWire<'a> {
     schema_version: u32,
-    candidates: &'a [SingingCandidateWireV1],
-    hard_boundaries: &'a SingingHardBoundarySetWireV1,
+    candidates: &'a [SingingCandidateWire],
+    hard_boundaries: &'a SingingHardBoundarySetWire,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SingingAcousticCandidateWireV1 {
+struct SingingAcousticCandidateWire {
     frame_count: usize,
     mean_rms: f32,
     mean_periodicity: f32,
@@ -252,7 +252,7 @@ struct SingingAcousticCandidateWireV1 {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SingingBasicPitchCandidateWireV1 {
+struct SingingBasicPitchCandidateWire {
     onset_activation: f32,
     #[serde(default)]
     note_activation: f32,
@@ -265,9 +265,9 @@ struct SingingBasicPitchCandidateWireV1 {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SingingBoundaryAlternativeWireV1 {
+struct SingingBoundaryAlternativeWire {
     source_expert: String,
-    range: SingingRangeWireV1,
+    range: SingingRangeWire,
     #[serde(default)]
     kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -280,7 +280,7 @@ struct SingingBoundaryAlternativeWireV1 {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SingingBoundaryConstraintWireV1 {
+struct SingingBoundaryConstraintWire {
     source_expert: String,
     kind: String,
     time: u64,
@@ -298,7 +298,7 @@ struct SingingBoundaryConstraintWireV1 {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SingingTechniqueCandidateWireV1 {
+struct SingingTechniqueCandidateWire {
     source_expert: String,
     calibration: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -311,7 +311,7 @@ struct SingingTechniqueCandidateWireV1 {
 
 #[derive(Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SingingTechniqueScoresWireV1 {
+struct SingingTechniqueScoresWire {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     vibrato: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -324,7 +324,7 @@ struct SingingTechniqueScoresWireV1 {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SingingPitchAlternativeWireV1 {
+struct SingingPitchAlternativeWire {
     source_expert: String,
     center_hz: f32,
     cents_from_target: f32,
@@ -365,7 +365,7 @@ fn valid_constraint_kind(kind: &str) -> bool {
     )
 }
 
-impl SingingCandidateWireV1 {
+impl SingingCandidateWire {
     fn validate(&self) -> Result<(), String> {
         let invalid_optional_unit =
             |value: Option<f32>| value.is_some_and(|v| !valid_unit_interval(v));
@@ -504,19 +504,19 @@ impl SingingCandidateWireV1 {
 }
 
 #[derive(Deserialize)]
-struct SingingReviewRegionWireV1 {
+struct SingingReviewRegionWire {
     id: String,
-    range: SingingRangeWireV1,
+    range: SingingRangeWire,
     #[serde(default)]
     confidence: Option<f32>,
-    reasons: Vec<SingingReviewReasonWireV1>,
+    reasons: Vec<SingingReviewReasonWire>,
     #[serde(default)]
     reviewed: bool,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum SingingReviewReasonWireV1 {
+enum SingingReviewReasonWire {
     UnknownConfidence,
     LowConfidence,
     PitchDisagreement,
@@ -539,16 +539,16 @@ enum SingingReviewReasonWireV1 {
 }
 
 #[derive(Deserialize)]
-struct SingingProvenanceWireV1 {
+struct SingingProvenanceWire {
     #[serde(rename = "execution_fingerprint")]
     _execution_fingerprint: String,
     fusion_algorithm: String,
-    fusion_decision: SingingDecisionWireV1,
+    fusion_decision: SingingDecisionWire,
 }
 
 #[derive(Deserialize)]
 #[serde(tag = "decision_mode", rename_all = "snake_case")]
-enum SingingDecisionWireV1 {
+enum SingingDecisionWire {
     Algorithm {
         selector: String,
         selector_version: String,
@@ -572,7 +572,7 @@ enum SingingDecisionWireV1 {
     },
 }
 
-impl SingingDecisionWireV1 {
+impl SingingDecisionWire {
     fn selected_candidate_ids(&self) -> &[String] {
         match self {
             Self::Algorithm {
@@ -595,7 +595,7 @@ impl SingingDecisionWireV1 {
                 reuse_policy,
                 ..
             } if selector == "hsmm_viterbi"
-                && selector_version == "hsmm-v15"
+                && selector_version == "hsmm"
                 && reuse_policy == "deterministic" =>
             {
                 Ok(())
@@ -855,8 +855,8 @@ fn validate_singing_analysis_wire_shape(value: &serde_json::Value) -> Result<(),
 }
 
 fn validate_selected_candidate_coverage(
-    candidates: &BTreeMap<String, SingingCandidateWireV1>,
-    selected: &[&SingingCandidateWireV1],
+    candidates: &BTreeMap<String, SingingCandidateWire>,
+    selected: &[&SingingCandidateWire],
 ) -> Result<(), String> {
     let mut primary_ranges = candidates
         .values()
@@ -927,7 +927,7 @@ pub fn singing_analysis_evidence_bundle(
     let value: serde_json::Value =
         serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
     validate_singing_analysis_wire_shape(&value)?;
-    let analysis: SingingAnalysisWireV1 =
+    let analysis: SingingAnalysisWire =
         serde_json::from_value(value).map_err(|error| error.to_string())?;
     if analysis.contract != CONTRACT
         || analysis.version != VERSION
@@ -936,7 +936,7 @@ pub fn singing_analysis_evidence_bundle(
     {
         return Err("unsupported SingingAnalysis evidence contract".to_string());
     }
-    if analysis.provenance.fusion_algorithm != "fusion-v17" {
+    if analysis.provenance.fusion_algorithm != "fusion" {
         return Err("invalid SingingAnalysis execution provenance".to_string());
     }
     analysis.provenance.fusion_decision.validate()?;
@@ -1035,15 +1035,15 @@ pub fn singing_analysis_evidence_bundle(
             "selected-rmvpe-f0",
             "RMVPE candidate F0",
             EvidenceKind::RmvpeF0,
-            (|candidate: &SingingCandidateWireV1| candidate.rmvpe_center_hz)
-                as fn(&SingingCandidateWireV1) -> Option<f32>,
+            (|candidate: &SingingCandidateWire| candidate.rmvpe_center_hz)
+                as fn(&SingingCandidateWire) -> Option<f32>,
         ),
         (
             "selected-fcpe-f0",
             "FCPE candidate F0",
             EvidenceKind::FcpeF0,
-            (|candidate: &SingingCandidateWireV1| candidate.fcpe_center_hz)
-                as fn(&SingingCandidateWireV1) -> Option<f32>,
+            (|candidate: &SingingCandidateWire| candidate.fcpe_center_hz)
+                as fn(&SingingCandidateWire) -> Option<f32>,
         ),
     ] {
         let track = f0_track(id, label, kind, &selected, &source, value);
@@ -1072,9 +1072,9 @@ fn f0_track(
     id: &str,
     label: &str,
     kind: EvidenceKind,
-    candidates: &[&SingingCandidateWireV1],
+    candidates: &[&SingingCandidateWire],
     source: &ArtifactRef,
-    value: fn(&SingingCandidateWireV1) -> Option<f32>,
+    value: fn(&SingingCandidateWire) -> Option<f32>,
 ) -> EvidenceTrack {
     let points = candidates
         .iter()
@@ -1100,7 +1100,7 @@ fn f0_track(
 }
 
 fn review_region(
-    region: SingingReviewRegionWireV1,
+    region: SingingReviewRegionWire,
     source: &ArtifactRef,
 ) -> Result<ReviewRegion, String> {
     if region.id.trim().is_empty()
@@ -1124,51 +1124,52 @@ fn review_region(
     })
 }
 
-fn review_reason(reason: SingingReviewReasonWireV1) -> ReviewReason {
+fn review_reason(reason: SingingReviewReasonWire) -> ReviewReason {
     match reason {
-        SingingReviewReasonWireV1::PitchDisagreement
-        | SingingReviewReasonWireV1::PitchInstability => ReviewReason::PitchDisagreement,
-        SingingReviewReasonWireV1::BoundaryDisagreement
-        | SingingReviewReasonWireV1::F0SegmentationFallback => ReviewReason::BoundaryDisagreement,
-        SingingReviewReasonWireV1::OctaveRisk => ReviewReason::OctaveRisk,
-        SingingReviewReasonWireV1::WordNoteMismatch => ReviewReason::WordNoteMismatch,
-        SingingReviewReasonWireV1::VoicingConflict => ReviewReason::VoicingConflict,
-        SingingReviewReasonWireV1::LeadHarmonyLeak
-        | SingingReviewReasonWireV1::VocalTopologyUnknown
-        | SingingReviewReasonWireV1::ForegroundOverlap
-        | SingingReviewReasonWireV1::SupportVocalActivity => ReviewReason::LeadHarmonyLeak,
-        SingingReviewReasonWireV1::TechniqueAmbiguous => ReviewReason::TechniqueAmbiguous,
-        SingingReviewReasonWireV1::UnknownConfidence
-        | SingingReviewReasonWireV1::LowConfidence
-        | SingingReviewReasonWireV1::LowPitchCoverage
-        | SingingReviewReasonWireV1::TranscriptLowConfidence => ReviewReason::LowConfidence,
-        SingingReviewReasonWireV1::TranscriptReferenceMismatch
-        | SingingReviewReasonWireV1::TranscriptLanguageMismatch
-        | SingingReviewReasonWireV1::TranscriptCoverageMismatch => {
+        SingingReviewReasonWire::PitchDisagreement | SingingReviewReasonWire::PitchInstability => {
+            ReviewReason::PitchDisagreement
+        }
+        SingingReviewReasonWire::BoundaryDisagreement
+        | SingingReviewReasonWire::F0SegmentationFallback => ReviewReason::BoundaryDisagreement,
+        SingingReviewReasonWire::OctaveRisk => ReviewReason::OctaveRisk,
+        SingingReviewReasonWire::WordNoteMismatch => ReviewReason::WordNoteMismatch,
+        SingingReviewReasonWire::VoicingConflict => ReviewReason::VoicingConflict,
+        SingingReviewReasonWire::LeadHarmonyLeak
+        | SingingReviewReasonWire::VocalTopologyUnknown
+        | SingingReviewReasonWire::ForegroundOverlap
+        | SingingReviewReasonWire::SupportVocalActivity => ReviewReason::LeadHarmonyLeak,
+        SingingReviewReasonWire::TechniqueAmbiguous => ReviewReason::TechniqueAmbiguous,
+        SingingReviewReasonWire::UnknownConfidence
+        | SingingReviewReasonWire::LowConfidence
+        | SingingReviewReasonWire::LowPitchCoverage
+        | SingingReviewReasonWire::TranscriptLowConfidence => ReviewReason::LowConfidence,
+        SingingReviewReasonWire::TranscriptReferenceMismatch
+        | SingingReviewReasonWire::TranscriptLanguageMismatch
+        | SingingReviewReasonWire::TranscriptCoverageMismatch => {
             ReviewReason::LyricBoundaryLowConfidence
         }
     }
 }
 
 #[derive(Deserialize)]
-struct TechniqueEvidenceWireV1 {
+struct TechniqueEvidenceWire {
     contract: String,
     version: u32,
     model_id: String,
     taxonomy: Vec<String>,
     calibration: String,
-    intervals: Vec<TechniqueIntervalWireV1>,
+    intervals: Vec<TechniqueIntervalWire>,
 }
 
 #[derive(Deserialize)]
-struct TechniqueIntervalWireV1 {
-    range: TechniqueRangeWireV1,
+struct TechniqueIntervalWire {
+    range: TechniqueRangeWire,
     raw_logits: Vec<f32>,
     source_local_scores: Vec<f32>,
 }
 
 #[derive(Deserialize)]
-struct TechniqueRangeWireV1 {
+struct TechniqueRangeWire {
     start: u64,
     end: u64,
 }
@@ -1177,7 +1178,7 @@ pub fn technique_evidence_track(
     bytes: &[u8],
     source: ArtifactRef,
 ) -> Result<EvidenceTrack, String> {
-    let evidence: TechniqueEvidenceWireV1 =
+    let evidence: TechniqueEvidenceWire =
         serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
     if evidence.contract != "uta.analysis-engine.technique-evidence"
         || evidence.version != 1
@@ -1254,10 +1255,10 @@ mod tests {
         center_pitch_hz: f32,
         rmvpe_center_hz: Option<f32>,
         fcpe_center_hz: Option<f32>,
-    ) -> SingingCandidateWireV1 {
-        SingingCandidateWireV1 {
+    ) -> SingingCandidateWire {
+        SingingCandidateWire {
             id: id.to_string(),
-            range: SingingRangeWireV1 {
+            range: SingingRangeWire {
                 start: 1_000_000,
                 end: 2_000_000,
             },
@@ -1288,7 +1289,7 @@ mod tests {
             boundary_alternatives: Vec::new(),
             boundary_constraints: Vec::new(),
             technique_evidence: Vec::new(),
-            techniques: SingingTechniqueScoresWireV1::default(),
+            techniques: SingingTechniqueScoresWire::default(),
             word_id: None,
             alternatives: Vec::new(),
         }
@@ -1299,8 +1300,8 @@ mod tests {
             candidate("selected", 440.0, Some(439.0), Some(441.0)),
             candidate("alternative", 880.0, None, None),
         ];
-        let hard_boundaries = SingingHardBoundarySetWireV1::default();
-        let candidate_pool = SingingCandidatePoolDigestWireV1 {
+        let hard_boundaries = SingingHardBoundarySetWire::default();
+        let candidate_pool = SingingCandidatePoolDigestWire {
             schema_version: 1,
             candidates: &candidates,
             hard_boundaries: &hard_boundaries,
@@ -1326,7 +1327,7 @@ mod tests {
             }],
             "provenance":{
                 "execution_fingerprint":"f".repeat(64),
-                "fusion_algorithm":"fusion-v17",
+                "fusion_algorithm":"fusion",
                 "fusion_decision":{
                     "decision_mode":"ai_judgment",
                     "adapter_resource":"tool:fusion_agent_adapter",
@@ -1345,11 +1346,11 @@ mod tests {
     }
 
     fn refresh_candidate_pool_digest(value: &mut serde_json::Value) {
-        let candidates: Vec<SingingCandidateWireV1> =
+        let candidates: Vec<SingingCandidateWire> =
             serde_json::from_value(value["candidate_evidence"].clone()).unwrap();
-        let hard_boundaries: SingingHardBoundarySetWireV1 =
+        let hard_boundaries: SingingHardBoundarySetWire =
             serde_json::from_value(value["candidate_hard_boundaries"].clone()).unwrap();
-        let pool = SingingCandidatePoolDigestWireV1 {
+        let pool = SingingCandidatePoolDigestWire {
             schema_version: 1,
             candidates: &candidates,
             hard_boundaries: &hard_boundaries,

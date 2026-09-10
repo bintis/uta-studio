@@ -1,6 +1,6 @@
 //! The editable chart document.
 //!
-//! [`EditorDocument`] owns a [`VocalChartV1`] and exposes flattened, index
+//! [`EditorDocument`] owns a [`VocalChart`] and exposes flattened, index
 //! addressed views so the timeline can render and mutate notes and lyrics
 //! without knowing how the format nests tracks, phrases, and lyric tokens.
 //!
@@ -10,7 +10,7 @@
 
 use std::collections::HashSet;
 
-use utz::{NoteBonus, NotePitch, ScoringMode, VocalChartV1, VocalMode, VocalNote, VocalTrackRole};
+use utz::{NoteBonus, NotePitch, ScoringMode, VocalChart, VocalMode, VocalNote, VocalTrackRole};
 
 /// The shortest authorable note. Matches the analyzer-era editor so existing
 /// charts keep their timing behaviour.
@@ -259,7 +259,7 @@ pub(crate) struct FlatNote {
 }
 
 pub struct EditorDocument {
-    pub(crate) chart: VocalChartV1,
+    pub(crate) chart: VocalChart,
     pub(crate) track: usize,
     pub(crate) revision: u64,
     pub(crate) used_ids: HashSet<String>,

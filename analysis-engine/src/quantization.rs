@@ -4,7 +4,7 @@
 //! and pitch-bend samples retain their original canonical timestamps so evidence
 //! never becomes grid-snapped or reinterpreted as target-note geometry.
 //!
-//! `rhythm-grid-dp-v1` interprets BPM as quarter-note beats per minute and
+//! `rhythm-grid-dp` interprets BPM as quarter-note beats per minute and
 //! anchors the selected subdivision to canonical time zero. It chooses a
 //! globally non-overlapping minimum-cost path, resolves exact cost ties toward
 //! the earlier range, requires one whole grid step of duration, preserves every
@@ -14,16 +14,16 @@
 use serde::{Deserialize, Serialize};
 
 use crate::contract::{
-    CANONICAL_TIMEBASE, EngineError, EngineErrorCode, EngineResult, MusicalContextV1,
-    QuantizationGridV1,
+    CANONICAL_TIMEBASE, EngineError, EngineErrorCode, EngineResult, MusicalContext,
+    QuantizationGrid,
 };
 use crate::fusion::{CanonicalSingingTrack, TimeRange, validate_canonical_singing_track};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct QuantizationReportV1 {
+pub struct QuantizationReport {
     pub algorithm: String,
     pub bpm: f64,
-    pub grid: QuantizationGridV1,
+    pub grid: QuantizationGrid,
     pub grid_step: u64,
     pub minimum_note_duration: u64,
     pub source_start: u64,
@@ -34,7 +34,7 @@ pub struct QuantizationReportV1 {
     pub maximum_shift: u64,
 }
 
-impl QuantizationReportV1 {
+impl QuantizationReport {
     pub fn validate(&self) -> EngineResult<()> {
         if self.algorithm != crate::fingerprint::QUANTIZATION_VERSION
             || !self.bpm.is_finite()
@@ -67,10 +67,10 @@ struct DynamicState {
 
 pub fn quantize_singing_track(
     track: &mut CanonicalSingingTrack,
-    context: &MusicalContextV1,
+    context: &MusicalContext,
     source_range: TimeRange,
     hard_boundaries: &[TimeRange],
-) -> EngineResult<QuantizationReportV1> {
+) -> EngineResult<QuantizationReport> {
     validate_canonical_singing_track(track).map_err(invalid_output)?;
     if source_range.end <= source_range.start {
         return Err(invalid_output("quantization source bounds are invalid"));
@@ -101,7 +101,7 @@ pub fn quantize_singing_track(
     hard_edges.sort_unstable();
     hard_edges.dedup();
     if original_ranges.is_empty() {
-        let report = QuantizationReportV1 {
+        let report = QuantizationReport {
             algorithm: crate::fingerprint::QUANTIZATION_VERSION.to_string(),
             bpm,
             grid,
@@ -224,7 +224,7 @@ pub fn quantize_singing_track(
     }
     validate_canonical_singing_track(track).map_err(invalid_output)?;
 
-    let report = QuantizationReportV1 {
+    let report = QuantizationReport {
         algorithm: crate::fingerprint::QUANTIZATION_VERSION.to_string(),
         bpm,
         grid,
@@ -241,7 +241,7 @@ pub fn quantize_singing_track(
     Ok(report)
 }
 
-fn grid_step(bpm: f64, grid: QuantizationGridV1) -> EngineResult<u64> {
+fn grid_step(bpm: f64, grid: QuantizationGrid) -> EngineResult<u64> {
     let units_per_beat = f64::from(CANONICAL_TIMEBASE) * 60.0 / bpm;
     let units = units_per_beat / f64::from(grid.steps_per_beat());
     if !units.is_finite() || units < 1.0 || units > u64::MAX as f64 {
@@ -356,19 +356,19 @@ fn invalid_output(message: impl Into<String>) -> EngineError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contract::{ContextAuthority, TimeSignatureV1};
+    use crate::contract::{ContextAuthority, TimeSignature};
     use crate::fusion::{
         BoundaryCandidateRole, BoundaryEvidenceKind, CanonicalLyrics, CanonicalNote,
         CanonicalNoteEvidence, CanonicalWordBoundary, F0Point, HarmonyMetadata, LyricsAuthority,
         PitchBendPoint, TechniqueScores, TranscriptTokenEvidence,
     };
 
-    fn context() -> MusicalContextV1 {
-        MusicalContextV1 {
+    fn context() -> MusicalContext {
+        MusicalContext {
             bpm: Some(120.0),
             key: None,
-            time_signature: Some(TimeSignatureV1 { beats: 4, unit: 4 }),
-            quantization_grid: Some(QuantizationGridV1::Sixteenth),
+            time_signature: Some(TimeSignature { beats: 4, unit: 4 }),
+            quantization_grid: Some(QuantizationGrid::Sixteenth),
             authority: ContextAuthority::Hint,
         }
     }

@@ -2,7 +2,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use super::{TranscriptArtifactV1, TranscriptAuthorityV1};
+use super::{TranscriptArtifact, TranscriptAuthority};
 use crate::contract::{EngineError, EngineErrorCode, EngineResult};
 
 const MAX_EVIDENCE_BYTES: u64 = 4 * 1024 * 1024;
@@ -49,7 +49,7 @@ struct RawWindow {
     token_ids: Vec<u32>,
 }
 
-pub fn parse_firered_transcript(path: &Path) -> EngineResult<TranscriptArtifactV1> {
+pub fn parse_firered_transcript(path: &Path) -> EngineResult<TranscriptArtifact> {
     let metadata = std::fs::metadata(path)
         .map_err(|error| invalid(format!("FireRed evidence is unavailable: {error}")))?;
     if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_EVIDENCE_BYTES {
@@ -102,10 +102,10 @@ pub fn parse_firered_transcript(path: &Path) -> EngineResult<TranscriptArtifactV
             "FireRed evidence identity or bounded contract is invalid",
         ));
     }
-    let artifact = TranscriptArtifactV1 {
+    let artifact = TranscriptArtifact {
         contract: "uta.analysis-engine.transcript".to_string(),
         version: 1,
-        authority: TranscriptAuthorityV1::Generated,
+        authority: TranscriptAuthority::Generated,
         language: None,
         text: raw.text,
         tokens: Vec::new(),

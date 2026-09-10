@@ -3,11 +3,11 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 
 use crate::contract::{
-    CANONICAL_TIMEBASE, EngineError, EngineErrorCode, EngineResult, FusionDecisionProvenanceV1,
+    CANONICAL_TIMEBASE, EngineError, EngineErrorCode, EngineResult, FusionDecisionProvenance,
 };
 use crate::fingerprint::{FUSION_VERSION, HSMM_VERSION};
 use crate::fusion::{
-    CanonicalSingingTrack, HardBoundarySetV1, SegmentCandidate, SingingReviewRegion,
+    CanonicalSingingTrack, HardBoundarySet, SegmentCandidate, SingingReviewRegion,
     validate_candidate_path_with_boundaries, validate_canonical_singing_track,
 };
 
@@ -16,11 +16,11 @@ pub const SINGING_ANALYSIS_VERSION: u32 = 1;
 pub const SINGING_ANALYSIS_FORMAT_VERSION: &str = "0.3.0";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SingingAnalysisProvenanceV1 {
+pub struct SingingAnalysisProvenance {
     pub execution_fingerprint: String,
     pub fusion_algorithm: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fusion_decision: Option<FusionDecisionProvenanceV1>,
+    pub fusion_decision: Option<FusionDecisionProvenance>,
     /// Deserialize-only compatibility for artifacts emitted before mode-specific
     /// decision provenance. New artifacts never write this unconditional HSMM claim.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -28,7 +28,7 @@ pub struct SingingAnalysisProvenanceV1 {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SingingAnalysisChartReferencesV1 {
+pub struct SingingAnalysisChartReferences {
     pub track_id: String,
     pub phrase_id: String,
     #[serde(default)]
@@ -37,7 +37,7 @@ pub struct SingingAnalysisChartReferencesV1 {
     pub lyric_token_ids: Vec<String>,
 }
 
-impl SingingAnalysisChartReferencesV1 {
+impl SingingAnalysisChartReferences {
     fn from_track(track: &CanonicalSingingTrack) -> Self {
         let linked = track
             .notes
@@ -90,13 +90,13 @@ impl SingingAnalysisChartReferencesV1 {
 /// note timeline. `track` is deserialize-only compatibility for legacy cache
 /// entries emitted before strict VocalChart publication.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SingingAnalysisV1 {
+pub struct SingingAnalysis {
     pub contract: String,
     pub version: u32,
     pub format_version: String,
     pub timebase: u32,
     #[serde(default)]
-    pub chart_references: SingingAnalysisChartReferencesV1,
+    pub chart_references: SingingAnalysisChartReferences,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub track: Option<CanonicalSingingTrack>,
     /// Complete pre-decode candidate set. Candidate ranges are proposal evidence,
@@ -105,20 +105,20 @@ pub struct SingingAnalysisV1 {
     pub candidate_evidence: Vec<SegmentCandidate>,
     /// Pool-level caller-authored hard boundary authority used by both selectors.
     #[serde(default)]
-    pub candidate_hard_boundaries: HardBoundarySetV1,
+    pub candidate_hard_boundaries: HardBoundarySet,
     #[serde(default)]
     pub review_regions: Vec<SingingReviewRegion>,
-    pub provenance: SingingAnalysisProvenanceV1,
+    pub provenance: SingingAnalysisProvenance,
 }
 
-impl SingingAnalysisV1 {
+impl SingingAnalysis {
     pub fn new(
         track: &CanonicalSingingTrack,
         candidate_evidence: Vec<SegmentCandidate>,
-        candidate_hard_boundaries: HardBoundarySetV1,
+        candidate_hard_boundaries: HardBoundarySet,
         review_regions: Vec<SingingReviewRegion>,
         execution_fingerprint: &str,
-        fusion_decision: &FusionDecisionProvenanceV1,
+        fusion_decision: &FusionDecisionProvenance,
     ) -> EngineResult<Self> {
         validate_canonical_singing_track(track).map_err(invalid)?;
         let artifact = Self {
@@ -126,12 +126,12 @@ impl SingingAnalysisV1 {
             version: SINGING_ANALYSIS_VERSION,
             format_version: SINGING_ANALYSIS_FORMAT_VERSION.to_string(),
             timebase: CANONICAL_TIMEBASE,
-            chart_references: SingingAnalysisChartReferencesV1::from_track(track),
+            chart_references: SingingAnalysisChartReferences::from_track(track),
             track: None,
             candidate_evidence,
             candidate_hard_boundaries,
             review_regions,
-            provenance: SingingAnalysisProvenanceV1 {
+            provenance: SingingAnalysisProvenance {
                 execution_fingerprint: execution_fingerprint.to_string(),
                 fusion_algorithm: FUSION_VERSION.to_string(),
                 fusion_decision: Some(fusion_decision.clone()),
@@ -178,11 +178,11 @@ impl SingingAnalysisV1 {
         }
         if let Some(decision) = self.provenance.fusion_decision.as_ref() {
             let selected_ids = match decision {
-                FusionDecisionProvenanceV1::Algorithm {
+                FusionDecisionProvenance::Algorithm {
                     selected_candidate_ids,
                     ..
                 }
-                | FusionDecisionProvenanceV1::AiJudgment {
+                | FusionDecisionProvenance::AiJudgment {
                     selected_candidate_ids,
                     ..
                 } => selected_candidate_ids,
@@ -238,14 +238,14 @@ fn invalid(message: impl Into<String>) -> EngineError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contract::AnalysisReusePolicyV1;
+    use crate::contract::AnalysisReusePolicy;
 
     #[test]
     fn ai_provenance_serialization_never_claims_hsmm_selection() {
-        let provenance = SingingAnalysisProvenanceV1 {
+        let provenance = SingingAnalysisProvenance {
             execution_fingerprint: "execution-fingerprint".to_string(),
             fusion_algorithm: FUSION_VERSION.to_string(),
-            fusion_decision: Some(FusionDecisionProvenanceV1::AiJudgment {
+            fusion_decision: Some(FusionDecisionProvenance::AiJudgment {
                 adapter_resource: "tool:fusion_agent_adapter".to_string(),
                 adapter_protocol: "uta.fusion_agent_request/uta.fusion_agent_response".to_string(),
                 adapter_protocol_version: crate::contract::FUSION_AGENT_PROTOCOL_VERSION,
@@ -254,7 +254,7 @@ mod tests {
                 candidate_set_digest: "a".repeat(64),
                 selected_candidate_ids: vec!["candidate-1".to_string()],
                 response_digest: "b".repeat(64),
-                reuse_policy: AnalysisReusePolicyV1::PreservedRevisionOnly,
+                reuse_policy: AnalysisReusePolicy::PreservedRevisionOnly,
             }),
             candidate_graph_algorithm: None,
         };

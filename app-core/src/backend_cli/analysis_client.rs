@@ -11,7 +11,7 @@ use super::error::BackendCliError;
 use super::process::{
     discover_executable, native_command, read_machine_frame, spawn_stderr_drain, stderr_text,
 };
-use super::runtime_wire::RuntimePolicyWireV1;
+use super::runtime_wire::RuntimePolicyWire;
 
 #[derive(Clone)]
 pub struct AnalysisCancelHandle {
@@ -262,7 +262,7 @@ pub struct AnalysisCliClient {
     stdout: BufReader<ChildStdout>,
     stderr: Arc<Mutex<Vec<u8>>>,
     stderr_thread: Option<std::thread::JoinHandle<()>>,
-    ready: AnalysisWorkerReadyV1,
+    ready: AnalysisWorkerReady,
     process_tree: Arc<AnalysisProcessTree>,
 }
 
@@ -327,7 +327,7 @@ impl AnalysisCliClient {
             stdout: BufReader::new(stdout),
             stderr,
             stderr_thread: Some(stderr_thread),
-            ready: AnalysisWorkerReadyV1 {
+            ready: AnalysisWorkerReady {
                 frame_type: String::new(),
                 protocol: 0,
                 protocol_identity: String::new(),
@@ -340,7 +340,7 @@ impl AnalysisCliClient {
         let frame = client
             .next_frame()?
             .ok_or_else(|| client.unexpected_exit("before ready handshake"))?;
-        let ready: AnalysisWorkerReadyV1 = serde_json::from_value(frame).map_err(|error| {
+        let ready: AnalysisWorkerReady = serde_json::from_value(frame).map_err(|error| {
             BackendCliError::MalformedFrame(format!("invalid analysis ready frame: {error}"))
         })?;
         validate_ready(&ready)?;
@@ -351,7 +351,7 @@ impl AnalysisCliClient {
     pub fn executable(&self) -> &Path {
         &self.executable
     }
-    pub fn ready(&self) -> &AnalysisWorkerReadyV1 {
+    pub fn ready(&self) -> &AnalysisWorkerReady {
         &self.ready
     }
 
@@ -366,20 +366,20 @@ impl AnalysisCliClient {
         stderr_text(&self.stderr)
     }
 
-    pub fn hello(&mut self) -> Result<AnalysisWorkerReadyV1, BackendCliError> {
+    pub fn hello(&mut self) -> Result<AnalysisWorkerReady, BackendCliError> {
         self.send(
             &serde_json::json!({"type":"hello", "protocol":ANALYSIS_WORKER_PROTOCOL_VERSION}),
         )?;
         let frame = self.required_frame("hello response")?;
-        let ready: AnalysisWorkerReadyV1 = decode(frame, "hello ready frame")?;
+        let ready: AnalysisWorkerReady = decode(frame, "hello ready frame")?;
         validate_ready(&ready)?;
         Ok(ready)
     }
 
     pub fn capabilities(
         &mut self,
-        runtime_policy: RuntimePolicyWireV1,
-    ) -> Result<Vec<CapabilityDescriptorWireV1>, BackendCliError> {
+        runtime_policy: RuntimePolicyWire,
+    ) -> Result<Vec<CapabilityDescriptorWire>, BackendCliError> {
         self.send(&serde_json::json!({
             "type":"capabilities",
             "protocol":ANALYSIS_WORKER_PROTOCOL_VERSION,
@@ -403,7 +403,7 @@ impl AnalysisCliClient {
         &mut self,
         request: &serde_json::Value,
         request_id: &str,
-    ) -> Result<AnalysisRequirementsWireV1, BackendCliError> {
+    ) -> Result<AnalysisRequirementsWire, BackendCliError> {
         let frame: serde_json::Value = self.request_command("requirements", request, request_id)?;
         decode_field(frame, "requirements", "requirements response")
     }
@@ -412,9 +412,9 @@ impl AnalysisCliClient {
         &mut self,
         request: &serde_json::Value,
         request_id: &str,
-    ) -> Result<AnalysisPlanWireV1, BackendCliError> {
+    ) -> Result<AnalysisPlanWire, BackendCliError> {
         let frame: serde_json::Value = self.request_command("plan", request, request_id)?;
-        let plan: AnalysisPlanWireV1 = decode_field(frame, "plan", "plan response")?;
+        let plan: AnalysisPlanWire = decode_field(frame, "plan", "plan response")?;
         if plan.schema != "uta.analysis-engine.plan" || plan.schema_version != 1 {
             return Err(BackendCliError::ContractMismatch(format!(
                 "unsupported analysis plan {}/{}",
@@ -435,7 +435,7 @@ impl AnalysisCliClient {
         request: &serde_json::Value,
         request_id: &str,
         output_dir: &Path,
-    ) -> Result<AnalysisResultManifestWireV1, BackendCliError> {
+    ) -> Result<AnalysisResultManifestWire, BackendCliError> {
         self.analyze_with_events(request, request_id, output_dir, |_| {})
     }
 
@@ -444,8 +444,8 @@ impl AnalysisCliClient {
         request: &serde_json::Value,
         request_id: &str,
         output_dir: &Path,
-        mut on_event: impl FnMut(AnalysisLifecycleFrameWireV1),
-    ) -> Result<AnalysisResultManifestWireV1, BackendCliError> {
+        mut on_event: impl FnMut(AnalysisLifecycleFrameWire),
+    ) -> Result<AnalysisResultManifestWire, BackendCliError> {
         self.send(&serde_json::json!({
             "type":"analyze", "protocol":ANALYSIS_WORKER_PROTOCOL_VERSION,
             "request":request, "output_dir":output_dir
@@ -483,9 +483,9 @@ impl AnalysisCliClient {
                     });
                 }
                 "error" => return Err(domain_error(frame, Some(request_id))?),
-                frame_type if AnalysisLifecycleFrameWireV1::is_lifecycle_type(frame_type) => {
+                frame_type if AnalysisLifecycleFrameWire::is_lifecycle_type(frame_type) => {
                     check_request_id(&frame, request_id)?;
-                    let event: AnalysisLifecycleFrameWireV1 =
+                    let event: AnalysisLifecycleFrameWire =
                         decode(frame, "analysis lifecycle frame")?;
                     validate_lifecycle_event(&event)?;
                     validate_worker_progress_monotonic(&event, &mut worker_progress)?;
@@ -624,7 +624,7 @@ fn write_command(
     stdin.flush().map_err(BackendCliError::from)
 }
 
-fn validate_ready(ready: &AnalysisWorkerReadyV1) -> Result<(), BackendCliError> {
+fn validate_ready(ready: &AnalysisWorkerReady) -> Result<(), BackendCliError> {
     if ready.frame_type != "ready"
         || ready.protocol != ANALYSIS_WORKER_PROTOCOL_VERSION
         || ready.protocol_identity != ANALYSIS_WORKER_IDENTITY
@@ -659,7 +659,7 @@ fn validate_ready(ready: &AnalysisWorkerReadyV1) -> Result<(), BackendCliError> 
 type WorkerProgressStates = BTreeMap<(String, String), (f32, Option<(u64, u64)>)>;
 
 fn validate_worker_progress_monotonic(
-    event: &AnalysisLifecycleFrameWireV1,
+    event: &AnalysisLifecycleFrameWire,
     states: &mut WorkerProgressStates,
 ) -> Result<(), BackendCliError> {
     let Some(task_id) = event.worker_task_id.as_ref() else {
@@ -690,7 +690,7 @@ fn validate_worker_progress_monotonic(
     Ok(())
 }
 
-fn validate_lifecycle_event(event: &AnalysisLifecycleFrameWireV1) -> Result<(), BackendCliError> {
+fn validate_lifecycle_event(event: &AnalysisLifecycleFrameWire) -> Result<(), BackendCliError> {
     let progress_valid = event
         .progress
         .is_none_or(|value| value.is_finite() && (0.0..=1.0).contains(&value));
@@ -776,7 +776,7 @@ fn domain_error(
     frame: serde_json::Value,
     expected_request_id: Option<&str>,
 ) -> Result<BackendCliError, BackendCliError> {
-    let error: AnalysisErrorWireV1 = decode(frame, "analysis error frame")?;
+    let error: AnalysisErrorWire = decode(frame, "analysis error frame")?;
     if let Some(expected) = expected_request_id
         && error.request_id.as_deref() != Some(expected)
     {
@@ -819,8 +819,8 @@ fn decode_field<T: DeserializeOwned>(
 mod progress_tests {
     use super::*;
 
-    fn event(progress: f32, completed: u64, total: u64) -> AnalysisLifecycleFrameWireV1 {
-        AnalysisLifecycleFrameWireV1 {
+    fn event(progress: f32, completed: u64, total: u64) -> AnalysisLifecycleFrameWire {
+        AnalysisLifecycleFrameWire {
             frame_type: "node_progress".to_string(),
             schema_version: 1,
             request_id: "request".to_string(),

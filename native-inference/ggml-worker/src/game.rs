@@ -73,7 +73,6 @@ pub fn infer(
         notes: output
             .notes
             .into_iter()
-            .filter(|note| note.voiced)
             .map(|note| GameNoteEvidence {
                 start: f64::from(note.offset_seconds),
                 duration: f64::from(note.duration_seconds),

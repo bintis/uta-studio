@@ -7,8 +7,8 @@ use crate::contract::{CANONICAL_TIMEBASE, EngineError, EngineErrorCode, EngineRe
 use crate::fusion::{EvidenceProvenance, ExpertTask, TimeRange};
 
 use super::timed_notes::{
-    TIMED_NOTE_EVIDENCE_CONTRACT, TIMED_NOTE_EVIDENCE_VERSION, TimedNoteExpertEvidenceV1,
-    TimedNoteHypothesisV1,
+    TIMED_NOTE_EVIDENCE_CONTRACT, TIMED_NOTE_EVIDENCE_VERSION, TimedNoteExpertEvidence,
+    TimedNoteHypothesis,
 };
 
 const MAX_EVIDENCE_BYTES: u64 = 256 * 1024 * 1024;
@@ -25,8 +25,8 @@ const STARS_CHECKPOINT: &str = "9159dd37516918448b0815ed86e1e3976d39c3044117da78
 const STARS_CONFIG: &str = "01e8a495ba2e47b47b21fccda8db2605c85ec76cdaae258768d10a459e4e7e91";
 #[cfg(test)]
 const ANNOTATION_RMVPE: &str = "19dc1809cf4cdb0a18db93441816bc327e14e5644b72eeaae5220560c6736fe2";
-const FRONTEND_PROFILE: &str = "shared-singing-frontend-24k-v1";
-const G2P_PROFILE: &str = "stars-chinese-g2p-pypinyin-0.55.0-v1";
+const FRONTEND_PROFILE: &str = "shared-singing-frontend-24k";
+const G2P_PROFILE: &str = "stars-chinese-g2p-pypinyin-0.55.0";
 #[cfg(test)]
 const G2P_ASSET_SHA256: &str = "433fcd2a7379cb9554a7a0dfe254746c3c7ee70bfd5de4fa18c1462757b888a5";
 const TECHNIQUE_TAXONOMY: [&str; 9] = [
@@ -79,7 +79,7 @@ pub struct DependencyIdentity {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AdvancedRawNoteV1 {
+pub struct AdvancedRawNote {
     pub start_frame: usize,
     pub end_frame: usize,
     pub pitch_logits: Vec<f32>,
@@ -89,7 +89,7 @@ pub struct AdvancedRawNoteV1 {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AdvancedNoteEvidenceV1 {
+pub struct AdvancedNoteEvidence {
     pub schema_version: u32,
     pub model_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -113,23 +113,23 @@ pub struct AdvancedNoteEvidenceV1 {
     pub valid_frames: usize,
     pub note_boundary_logits: Vec<f32>,
     pub regulated_note_boundaries: Vec<usize>,
-    pub notes: Vec<AdvancedRawNoteV1>,
+    pub notes: Vec<AdvancedRawNote>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub technique_taxonomy: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub technique_calibration: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub techniques: Option<Vec<AdvancedRawTechniqueV1>>,
+    pub techniques: Option<Vec<AdvancedRawTechnique>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub style_scope: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub styles: Option<Vec<AdvancedRawGlobalStyleV1>>,
+    pub styles: Option<Vec<AdvancedRawGlobalStyle>>,
     pub dependencies: Vec<DependencyIdentity>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AdvancedRawTechniqueV1 {
+pub struct AdvancedRawTechnique {
     pub start_frame: usize,
     pub end_frame: usize,
     pub phoneme_id: i64,
@@ -139,21 +139,21 @@ pub struct AdvancedRawTechniqueV1 {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AdvancedRawStyleHeadV1 {
+pub struct AdvancedRawStyleHead {
     pub taxonomy: Vec<String>,
     pub raw_logits: Vec<f32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AdvancedRawGlobalStyleV1 {
+pub struct AdvancedRawGlobalStyle {
     pub start_frame: usize,
     pub end_frame: usize,
-    pub heads: BTreeMap<String, AdvancedRawStyleHeadV1>,
+    pub heads: BTreeMap<String, AdvancedRawStyleHead>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TechniqueIntervalV1 {
+pub struct TechniqueInterval {
     pub range: TimeRange,
     pub phoneme_id: i64,
     pub raw_logits: Vec<f32>,
@@ -161,25 +161,25 @@ pub struct TechniqueIntervalV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct GlobalStyleIntervalV1 {
+pub struct GlobalStyleInterval {
     pub range: TimeRange,
-    pub heads: BTreeMap<String, AdvancedRawStyleHeadV1>,
+    pub heads: BTreeMap<String, AdvancedRawStyleHead>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TechniqueEvidenceV1 {
+pub struct TechniqueEvidence {
     pub contract: String,
     pub version: u32,
     pub model_id: String,
     pub taxonomy: Vec<String>,
     pub calibration: String,
-    pub intervals: Vec<TechniqueIntervalV1>,
+    pub intervals: Vec<TechniqueInterval>,
     pub style_scope: String,
-    pub styles: Vec<GlobalStyleIntervalV1>,
+    pub styles: Vec<GlobalStyleInterval>,
     pub provenance: EvidenceProvenance,
 }
 
-impl AdvancedNoteEvidenceV1 {
+impl AdvancedNoteEvidence {
     pub fn provenance(&self) -> EvidenceProvenance {
         let dependencies = self
             .dependencies
@@ -240,11 +240,11 @@ impl AdvancedNoteEvidenceV1 {
         &self,
         source_start: u64,
         source_duration: u64,
-    ) -> EngineResult<TimedNoteExpertEvidenceV1> {
+    ) -> EngineResult<TimedNoteExpertEvidence> {
         let notes = self
             .canonical_notes(source_start, source_duration)?
             .into_iter()
-            .map(|(range, midi)| TimedNoteHypothesisV1 {
+            .map(|(range, midi)| TimedNoteHypothesis {
                 source_id: self.model_id.clone(),
                 range,
                 midi,
@@ -254,7 +254,7 @@ impl AdvancedNoteEvidenceV1 {
                 calibrated_pitch_confidence: None,
             })
             .collect();
-        let evidence = TimedNoteExpertEvidenceV1 {
+        let evidence = TimedNoteExpertEvidence {
             contract: TIMED_NOTE_EVIDENCE_CONTRACT.to_string(),
             version: TIMED_NOTE_EVIDENCE_VERSION,
             expert_id: self.model_id.clone(),
@@ -271,7 +271,7 @@ impl AdvancedNoteEvidenceV1 {
         &self,
         source_start: u64,
         source_duration: u64,
-    ) -> EngineResult<Option<TechniqueEvidenceV1>> {
+    ) -> EngineResult<Option<TechniqueEvidence>> {
         let (Some(taxonomy), Some(calibration), Some(techniques), Some(style_scope), Some(styles)) = (
             self.technique_taxonomy.as_ref(),
             self.technique_calibration.as_ref(),
@@ -284,7 +284,7 @@ impl AdvancedNoteEvidenceV1 {
         let intervals = techniques
             .iter()
             .map(|technique| {
-                Ok(TechniqueIntervalV1 {
+                Ok(TechniqueInterval {
                     range: self.canonical_range(
                         technique.start_frame,
                         technique.end_frame,
@@ -300,7 +300,7 @@ impl AdvancedNoteEvidenceV1 {
         let styles = styles
             .iter()
             .map(|style| {
-                Ok(GlobalStyleIntervalV1 {
+                Ok(GlobalStyleInterval {
                     range: self.canonical_range(
                         style.start_frame,
                         style.end_frame,
@@ -311,7 +311,7 @@ impl AdvancedNoteEvidenceV1 {
                 })
             })
             .collect::<EngineResult<Vec<_>>>()?;
-        Ok(Some(TechniqueEvidenceV1 {
+        Ok(Some(TechniqueEvidence {
             contract: "uta.analysis-engine.technique-evidence".to_string(),
             version: 1,
             model_id: self.model_id.clone(),
@@ -362,13 +362,13 @@ impl AdvancedNoteEvidenceV1 {
 pub fn parse_advanced_note_evidence(
     path: &Path,
     expected_model: &str,
-) -> EngineResult<AdvancedNoteEvidenceV1> {
+) -> EngineResult<AdvancedNoteEvidence> {
     let metadata = std::fs::metadata(path)
         .map_err(|error| invalid(format!("advanced note evidence is unavailable: {error}")))?;
     if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_EVIDENCE_BYTES {
         return Err(invalid("advanced note evidence size is invalid"));
     }
-    let evidence: AdvancedNoteEvidenceV1 = serde_json::from_slice(
+    let evidence: AdvancedNoteEvidence = serde_json::from_slice(
         &std::fs::read(path)
             .map_err(|error| invalid(format!("could not read advanced note evidence: {error}")))?,
     )
@@ -450,7 +450,7 @@ pub fn parse_advanced_note_evidence(
     Ok(evidence)
 }
 
-fn validate_technique_contract(evidence: &AdvancedNoteEvidenceV1) -> EngineResult<()> {
+fn validate_technique_contract(evidence: &AdvancedNoteEvidence) -> EngineResult<()> {
     let enabled = evidence
         .capabilities
         .iter()

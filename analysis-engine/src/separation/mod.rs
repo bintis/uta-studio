@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use crate::artifact::artifact_ref_for_existing;
 use crate::audio::decode_audio;
-use crate::contract::{ArtifactRefV1, AudioRole, EngineError, EngineErrorCode, EngineResult};
+use crate::contract::{ArtifactRef, AudioRole, EngineError, EngineErrorCode, EngineResult};
 use crate::execution::CancellationToken;
 
 const MAX_LOG_BYTES: usize = 1024 * 1024;
@@ -27,7 +27,7 @@ pub struct SeparationTask<'a> {
 #[derive(Debug, Clone)]
 pub struct SeparationOutput {
     pub role: AudioRole,
-    pub artifact: ArtifactRefV1,
+    pub artifact: ArtifactRef,
 }
 
 /// Publishes a caller-supplied semantic Step 1 source into this run's

@@ -425,7 +425,7 @@ impl ProblemsFilter {
 #[derive(Clone)]
 pub(crate) struct ChartSnapshot {
     pub(crate) label: &'static str,
-    pub(crate) chart: app_core::VocalChartV1,
+    pub(crate) chart: app_core::VocalChart,
 }
 
 impl NativeEditor {

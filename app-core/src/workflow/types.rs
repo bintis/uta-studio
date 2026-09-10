@@ -171,7 +171,7 @@ pub enum ConditionalExecution {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum SeparationStrategyV1 {
+pub enum SeparationStrategy {
     /// Legacy serialized value. Loading maps it onto the current Leap XE90
     /// dual-output strategy.
     Ep317VocalResidual,
@@ -197,7 +197,7 @@ pub struct WorkflowNodeInstance {
     /// Typed separation execution topology. This is authoritative for
     /// `audio.separate_vocal_bgm`; Desktop must not infer roles from model IDs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub separation_strategy: Option<SeparationStrategyV1>,
+    pub separation_strategy: Option<SeparationStrategy>,
     #[serde(default)]
     pub parameters: BTreeMap<String, serde_json::Value>,
     #[serde(default)]

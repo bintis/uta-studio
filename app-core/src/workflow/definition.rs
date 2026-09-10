@@ -5,26 +5,26 @@ use crate::library_db;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    AnalyzerBinding, ExecutionPolicy, NodeCapability, StoredWorkflow, WorkflowCompileError,
-    WorkflowDefinition, WorkflowExecutionSnapshot, WorkflowLayout, builtin_capabilities,
-    compile_workflow, default_workflow,
+    NodeCapability, StoredWorkflow, WorkflowCompileError, WorkflowDefinition,
+    WorkflowExecutionSnapshot, WorkflowLayout, builtin_capabilities, compile_workflow,
+    default_workflow,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum ContinuousF0PolicyV1 {
+pub(crate) enum ContinuousF0Policy {
     Rmvpe,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum BoundaryFusionPolicyV1 {
+pub(crate) enum BoundaryFusionPolicy {
     F0Derived,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum OnsetFusionPolicyV1 {
+pub(crate) enum OnsetFusionPolicy {
     Automatic,
     Acoustic,
     BasicPitch,
@@ -32,44 +32,44 @@ pub(crate) enum OnsetFusionPolicyV1 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum FusionModeV1 {
+pub enum FusionMode {
     #[default]
     Algorithm,
     AiJudgment,
 }
 
-pub fn fusion_mode(definition: &WorkflowDefinition) -> FusionModeV1 {
+pub fn fusion_mode(definition: &WorkflowDefinition) -> FusionMode {
     let Some(node) = definition
         .nodes
         .iter()
         .find(|node| node.instance_id.as_str() == "evidence_fusion")
     else {
-        return FusionModeV1::default();
+        return FusionMode::default();
     };
     match node
         .parameters
         .get("fusion_mode")
         .and_then(serde_json::Value::as_str)
     {
-        Some("ai") => FusionModeV1::AiJudgment,
-        _ => FusionModeV1::Algorithm,
+        Some("ai") => FusionMode::AiJudgment,
+        _ => FusionMode::Algorithm,
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ExpertFusionPolicyV1 {
-    pub continuous_f0: ContinuousF0PolicyV1,
-    pub note_lengths: BoundaryFusionPolicyV1,
-    pub onset_support: OnsetFusionPolicyV1,
+pub(crate) struct ExpertFusionPolicy {
+    pub continuous_f0: ContinuousF0Policy,
+    pub note_lengths: BoundaryFusionPolicy,
+    pub onset_support: OnsetFusionPolicy,
 }
 
-impl Default for ExpertFusionPolicyV1 {
+impl Default for ExpertFusionPolicy {
     fn default() -> Self {
         Self {
-            continuous_f0: ContinuousF0PolicyV1::Rmvpe,
-            note_lengths: BoundaryFusionPolicyV1::F0Derived,
-            onset_support: OnsetFusionPolicyV1::Automatic,
+            continuous_f0: ContinuousF0Policy::Rmvpe,
+            note_lengths: BoundaryFusionPolicy::F0Derived,
+            onset_support: OnsetFusionPolicy::Automatic,
         }
     }
 }
@@ -79,7 +79,7 @@ impl Default for ExpertFusionPolicyV1 {
 /// ownership: the Engine may still construct and select challenger states.
 pub(crate) fn expert_fusion_policy(
     definition: &WorkflowDefinition,
-) -> Result<ExpertFusionPolicyV1, String> {
+) -> Result<ExpertFusionPolicy, String> {
     if !definition
         .nodes
         .iter()
@@ -95,10 +95,10 @@ pub(crate) fn expert_fusion_policy(
     if !enabled("rmvpe") {
         return Err("the RMVPE continuous F0 provider must remain enabled".to_string());
     }
-    Ok(ExpertFusionPolicyV1 {
-        continuous_f0: ContinuousF0PolicyV1::Rmvpe,
-        note_lengths: BoundaryFusionPolicyV1::F0Derived,
-        onset_support: OnsetFusionPolicyV1::Automatic,
+    Ok(ExpertFusionPolicy {
+        continuous_f0: ContinuousF0Policy::Rmvpe,
+        note_lengths: BoundaryFusionPolicy::F0Derived,
+        onset_support: OnsetFusionPolicy::Automatic,
     })
 }
 
@@ -117,9 +117,13 @@ pub fn load_song_workflow(file_hash: &str) -> Result<StoredWorkflow, String> {
     if let Some((json, updated_at_ms)) =
         library_db::song_workflow_get(file_hash).map_err(|error| error.to_string())?
     {
-        let mut stored: StoredWorkflow = serde_json::from_str(&json)
+        let stored: StoredWorkflow = serde_json::from_str(&json)
             .map_err(|error| format!("invalid saved workflow: {error}"))?;
-        migrate_stored_workflow(&mut stored)?;
+        if stored.definition.schema_version != super::WORKFLOW_SCHEMA_VERSION {
+            return Err("saved workflow schema is not current".to_string());
+        }
+        compile_workflow(&stored.definition).map_err(|error| error.to_string())?;
+        let mut stored = stored;
         stored.updated_at_ms = updated_at_ms;
         return Ok(stored);
     }
@@ -128,424 +132,6 @@ pub fn load_song_workflow(file_hash: &str) -> Result<StoredWorkflow, String> {
         layout: WorkflowLayout::default(),
         updated_at_ms: 0,
     })
-}
-
-pub fn migrate_stored_workflow(stored: &mut StoredWorkflow) -> Result<(), String> {
-    let previous_schema_version = stored.definition.schema_version;
-    match previous_schema_version {
-        1 => {
-            // Schema 1 serialized the ambiguous local role as `back_vocal`.
-            // AudioRole's serde alias reads it as the explicit BackingVocal role;
-            // newer schemas write `backing_vocal` and keep HarmonyVocal distinct.
-            stored.definition.schema_version = super::WORKFLOW_SCHEMA_VERSION;
-        }
-        2..=6 => {
-            stored.definition.schema_version = super::WORKFLOW_SCHEMA_VERSION;
-        }
-        version if version == super::WORKFLOW_SCHEMA_VERSION => {}
-        version => {
-            return Err(format!(
-                "unsupported saved workflow schema version {version}"
-            ));
-        }
-    }
-    if let Some(separation) = stored
-        .definition
-        .nodes
-        .iter_mut()
-        .find(|node| node.capability_id.as_str() == "audio.separate_vocal_bgm")
-    {
-        if previous_schema_version < 4 {
-            separation.skip_if_unchanged = true;
-        }
-        if separation.model_id.as_deref() == Some("bs_roformer_vocals_ep317") {
-            separation.model_id = Some("bs_roformer_leap_xe90_vocals".to_string());
-        }
-        if separation.separation_strategy == Some(super::SeparationStrategyV1::Ep317VocalResidual) {
-            separation.separation_strategy = Some(super::SeparationStrategyV1::LeapDualOutput);
-        }
-        if separation
-            .parameters
-            .get("instrumental_model_id")
-            .and_then(serde_json::Value::as_str)
-            == Some("bs_roformer_vocals_ep317")
-        {
-            // EP317 was retired as a Catalog resource outright. Legacy
-            // per-role fields are collapsed onto the current Leap XE90
-            // dual-output default below.
-            separation.parameters.insert(
-                "instrumental_model_id".to_string(),
-                serde_json::Value::String("bs_roformer_leap_xe90_vocals".to_string()),
-            );
-        }
-        if separation.separation_strategy.is_none() {
-            let instrumental = separation
-                .parameters
-                .get("instrumental_model_id")
-                .and_then(serde_json::Value::as_str);
-            separation.separation_strategy = match (separation.model_id.as_deref(), instrumental) {
-                (
-                    Some("bs_roformer_leap_xe90_vocals"),
-                    Some(
-                        "bs_roformer_leap_xe90_vocals"
-                        | "bs_polarformer_public_instrumental"
-                        | "melband_roformer_inst_v2",
-                    )
-                    | None,
-                ) => Some(super::SeparationStrategyV1::LeapDualOutput),
-                _ => {
-                    return Err(
-                        "legacy Vocal/BGM providers do not map to an executable typed strategy"
-                            .to_string(),
-                    );
-                }
-            };
-        }
-        separation.parameters.remove("instrumental_model_id");
-    }
-    for node in &mut stored.definition.nodes {
-        node.model_id = match node.model_id.as_deref() {
-            Some("game") => Some("game_1_0_3_medium".to_string()),
-            Some("jbm555") => Some("jbm555_cectc_80".to_string()),
-            _ => node.model_id.take(),
-        };
-    }
-    if let Some(fusion) = stored
-        .definition
-        .nodes
-        .iter_mut()
-        .find(|node| node.instance_id.as_str() == "evidence_fusion")
-    {
-        // Step 4 now owns only the final selector. Legacy owner parameters
-        // never rewrite Stage 3 expert participation during migration.
-        fusion.parameters.remove("pitch_owner");
-        fusion.parameters.remove("boundary_owner");
-        fusion.parameters.remove("onset_owner");
-        fusion
-            .parameters
-            .entry("fusion_mode".to_string())
-            .or_insert_with(|| serde_json::Value::String("algorithm".to_string()));
-    }
-    if previous_schema_version < 5 {
-        const RETAINED_MODELS: &[&str] = &[
-            "bs_roformer_leap_xe90_vocals",
-            "bs_roformer_leap_xe90_instrumental",
-            "bs_polarformer_public_instrumental",
-            "melband_roformer_harmony",
-            "melband_roformer_denoise_aufr33",
-            "melband_roformer_dereverb_anvuew",
-            "rmvpe",
-            "fcpe",
-        ];
-        stored.definition.nodes.retain(|node| {
-            node.model_id
-                .as_deref()
-                .is_none_or(|model| RETAINED_MODELS.contains(&model))
-                && !matches!(
-                    node.capability_id.as_str(),
-                    "fusion.transcript" | "analysis.forced_alignment"
-                )
-        });
-        let retained = stored
-            .definition
-            .nodes
-            .iter()
-            .map(|node| node.instance_id.clone())
-            .collect::<std::collections::BTreeSet<_>>();
-        stored
-            .definition
-            .edges
-            .retain(|edge| retained.contains(&edge.from.node) && retained.contains(&edge.to.node));
-        stored.definition.analyzer_bindings.retain(|binding| {
-            retained.contains(&binding.analyzer_node) && retained.contains(&binding.source.node)
-        });
-    }
-    if previous_schema_version < 6
-        && !stored
-            .definition
-            .nodes
-            .iter()
-            .any(|node| node.model_id.as_deref() == Some("fcpe"))
-    {
-        let rmvpe_binding = stored
-            .definition
-            .analyzer_bindings
-            .iter()
-            .find(|binding| binding.analyzer_node.as_str() == "f0_rmvpe")
-            .cloned()
-            .ok_or_else(|| {
-                "saved workflow has no RMVPE audio binding for FCPE migration".to_string()
-            })?;
-        stored.definition.nodes.push(super::WorkflowNodeInstance {
-            instance_id: super::WorkflowNodeId::new("f0_fcpe"),
-            capability_id: super::CapabilityId::new("analysis.pitch_f0"),
-            model_id: Some("fcpe".to_string()),
-            separation_strategy: None,
-            parameters: std::collections::BTreeMap::new(),
-            execution_policy: super::ExecutionPolicy::Conditional {
-                condition: super::ConditionalExecution::MaximumOnly,
-            },
-            priority: 670,
-            skip_if_unchanged: false,
-        });
-        stored.definition.edges.push(super::WorkflowEdge {
-            from: super::WorkflowPortRef {
-                node: super::WorkflowNodeId::new("f0_fcpe"),
-                port: "pitch".to_string(),
-            },
-            to: super::WorkflowPortRef {
-                node: super::WorkflowNodeId::new("evidence_fusion"),
-                port: "pitch".to_string(),
-            },
-        });
-        stored
-            .definition
-            .analyzer_bindings
-            .push(super::AnalyzerBinding {
-                analyzer_node: super::WorkflowNodeId::new("f0_fcpe"),
-                source: rmvpe_binding.source,
-                analyzer_input: rmvpe_binding.analyzer_input,
-            });
-    }
-    if previous_schema_version < 7 {
-        migrate_analysis_chain_v7(&mut stored.definition)?;
-    }
-    compile_workflow(&stored.definition).map_err(|error| error.to_string())?;
-    Ok(())
-}
-
-fn migrate_analysis_chain_v7(definition: &mut WorkflowDefinition) -> Result<(), String> {
-    let vocal_source = definition
-        .nodes
-        .iter()
-        .find(|node| node.model_id.as_deref() == Some("rmvpe"))
-        .and_then(|rmvpe| {
-            definition
-                .analyzer_bindings
-                .iter()
-                .find(|binding| binding.analyzer_node == rmvpe.instance_id)
-        })
-        .map(|binding| binding.source.clone())
-        .ok_or_else(|| "saved workflow has no analysis-ready vocal binding".to_string())?;
-    let evidence_fusion = definition
-        .nodes
-        .iter()
-        .find(|node| node.capability_id.as_str() == "fusion.singing_evidence")
-        .map(|node| node.instance_id.clone())
-        .ok_or_else(|| "saved workflow has no singing evidence fusion node".to_string())?;
-    let canonical = definition
-        .nodes
-        .iter()
-        .find(|node| node.capability_id.as_str() == "finalize.canonical_singing_track")
-        .map(|node| node.instance_id.clone())
-        .ok_or_else(|| "saved workflow has no canonical track node".to_string())?;
-
-    let asr = ensure_v7_node(
-        definition,
-        "asr_qwen",
-        "analysis.asr",
-        Some("qwen3_asr_1_7b"),
-        ExecutionPolicy::Always,
-        760,
-    )?;
-    let firered = ensure_v7_node(
-        definition,
-        "asr_firered",
-        "analysis.asr",
-        Some("firered_asr2_aed"),
-        ExecutionPolicy::Conditional {
-            condition: super::ConditionalExecution::MaximumOnly,
-        },
-        755,
-    )?;
-    let transcript = ensure_v7_node(
-        definition,
-        "transcript_fusion",
-        "fusion.transcript",
-        None,
-        ExecutionPolicy::Always,
-        750,
-    )?;
-    let aligner = ensure_v7_node(
-        definition,
-        "align_qwen",
-        "analysis.forced_alignment",
-        Some("qwen3_forced_aligner_0_6b"),
-        ExecutionPolicy::Always,
-        740,
-    )?;
-    let game = ensure_v7_node(
-        definition,
-        "game_notes",
-        "analysis.note_boundary",
-        Some("game_1_0_3_medium"),
-        ExecutionPolicy::Always,
-        660,
-    )?;
-    let basic_pitch = ensure_v7_node(
-        definition,
-        "basic_pitch_onsets",
-        "analysis.note_boundary",
-        Some("basic_pitch"),
-        ExecutionPolicy::Conditional {
-            condition: super::ConditionalExecution::OnDisagreement,
-        },
-        650,
-    )?;
-    let jbm555 = ensure_v7_node(
-        definition,
-        "jbm555_notes",
-        "analysis.note_boundary",
-        Some("jbm555_cectc_80"),
-        ExecutionPolicy::Conditional {
-            condition: super::ConditionalExecution::MaximumOnly,
-        },
-        640,
-    )?;
-    let stars = ensure_v7_node(
-        definition,
-        "stars_notes",
-        "analysis.note_boundary",
-        Some("stars"),
-        ExecutionPolicy::Conditional {
-            condition: super::ConditionalExecution::MaximumOnly,
-        },
-        630,
-    )?;
-    let stars_technique = ensure_v7_node(
-        definition,
-        "stars_technique",
-        "analysis.technique",
-        Some("stars"),
-        ExecutionPolicy::Conditional {
-            condition: super::ConditionalExecution::MaximumOnly,
-        },
-        620,
-    )?;
-    let rosvot = ensure_v7_node(
-        definition,
-        "rosvot_notes",
-        "analysis.note_boundary",
-        Some("rosvot"),
-        ExecutionPolicy::Conditional {
-            condition: super::ConditionalExecution::MaximumOnly,
-        },
-        610,
-    )?;
-
-    for analyzer in [
-        &asr,
-        &firered,
-        &aligner,
-        &game,
-        &basic_pitch,
-        &jbm555,
-        &stars,
-        &stars_technique,
-        &rosvot,
-    ] {
-        if !definition
-            .analyzer_bindings
-            .iter()
-            .any(|binding| binding.analyzer_node == *analyzer)
-        {
-            definition.analyzer_bindings.push(AnalyzerBinding {
-                analyzer_node: analyzer.clone(),
-                source: vocal_source.clone(),
-                analyzer_input: "audio".to_string(),
-            });
-        }
-    }
-    ensure_v7_edge(definition, &asr, "transcript", &transcript, "evidence");
-    ensure_v7_edge(definition, &firered, "transcript", &transcript, "evidence");
-    ensure_v7_edge(definition, &transcript, "lyrics", &aligner, "lyrics");
-    ensure_v7_edge(definition, &transcript, "lyrics", &canonical, "lyrics");
-    ensure_v7_edge(
-        definition,
-        &aligner,
-        "alignment",
-        &evidence_fusion,
-        "alignment",
-    );
-    for boundary in [&game, &basic_pitch, &jbm555, &stars, &rosvot] {
-        ensure_v7_edge(
-            definition,
-            boundary,
-            "boundaries",
-            &evidence_fusion,
-            "boundaries",
-        );
-    }
-    ensure_v7_edge(
-        definition,
-        &stars_technique,
-        "techniques",
-        &evidence_fusion,
-        "techniques",
-    );
-    Ok(())
-}
-
-fn ensure_v7_node(
-    definition: &mut WorkflowDefinition,
-    preferred_id: &str,
-    capability_id: &str,
-    model_id: Option<&str>,
-    execution_policy: ExecutionPolicy,
-    priority: i32,
-) -> Result<super::WorkflowNodeId, String> {
-    if let Some(node) = definition.nodes.iter().find(|node| {
-        node.capability_id.as_str() == capability_id && node.model_id.as_deref() == model_id
-    }) {
-        return Ok(node.instance_id.clone());
-    }
-    if definition
-        .nodes
-        .iter()
-        .any(|node| node.instance_id.as_str() == preferred_id)
-    {
-        return Err(format!(
-            "saved workflow already uses reserved v7 node id {preferred_id}"
-        ));
-    }
-    let instance_id = super::WorkflowNodeId::new(preferred_id);
-    definition.nodes.push(super::WorkflowNodeInstance {
-        instance_id: instance_id.clone(),
-        capability_id: super::CapabilityId::new(capability_id),
-        model_id: model_id.map(str::to_string),
-        separation_strategy: None,
-        parameters: std::collections::BTreeMap::new(),
-        execution_policy,
-        priority,
-        skip_if_unchanged: false,
-    });
-    Ok(instance_id)
-}
-
-fn ensure_v7_edge(
-    definition: &mut WorkflowDefinition,
-    from_node: &super::WorkflowNodeId,
-    from_port: &str,
-    to_node: &super::WorkflowNodeId,
-    to_port: &str,
-) {
-    if !definition.edges.iter().any(|edge| {
-        edge.from.node == *from_node
-            && edge.from.port == from_port
-            && edge.to.node == *to_node
-            && edge.to.port == to_port
-    }) {
-        definition.edges.push(super::WorkflowEdge {
-            from: super::WorkflowPortRef {
-                node: from_node.clone(),
-                port: from_port.to_string(),
-            },
-            to: super::WorkflowPortRef {
-                node: to_node.clone(),
-                port: to_port.to_string(),
-            },
-        });
-    }
 }
 
 pub fn save_song_workflow(
@@ -776,11 +362,11 @@ pub fn insert_audio_transformation_after_output(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OptionalWorkflowCardV1 {
+pub enum OptionalWorkflowCard {
     AcousticDsp,
 }
 
-impl OptionalWorkflowCardV1 {
+impl OptionalWorkflowCard {
     pub fn label(self) -> &'static str {
         match self {
             Self::AcousticDsp => "Acoustic DSP evidence",
@@ -816,7 +402,7 @@ impl OptionalWorkflowCardV1 {
 
 pub fn workflow_has_optional_card(
     definition: &WorkflowDefinition,
-    card: OptionalWorkflowCardV1,
+    card: OptionalWorkflowCard,
 ) -> bool {
     let (capability, model, ..) = card.spec();
     definition.nodes.iter().any(|node| {
@@ -834,7 +420,7 @@ pub fn workflow_has_optional_card(
 pub fn add_optional_workflow_card(
     definition: &mut WorkflowDefinition,
     audio_source: super::WorkflowPortRef,
-    card: OptionalWorkflowCardV1,
+    card: OptionalWorkflowCard,
 ) -> Result<super::WorkflowNodeId, String> {
     if workflow_has_optional_card(definition, card) {
         return Err(format!("{} is already present", card.label()));
@@ -1037,7 +623,7 @@ pub fn remove_workflow_node(
 pub fn set_workflow_separation_strategy(
     definition: &mut WorkflowDefinition,
     node_id: &super::WorkflowNodeId,
-    strategy: super::SeparationStrategyV1,
+    strategy: super::SeparationStrategy,
 ) -> Result<(), String> {
     let original = definition.clone();
     let node = definition

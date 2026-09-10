@@ -16,12 +16,12 @@ use serde::{Deserialize, Serialize};
 use crate::contract::{AnalysisProfile, EngineError, EngineErrorCode, EngineResult};
 use crate::execution::CancellationToken;
 use crate::workflow::{
-    ExpertFusionPolicyV1, FusionModeV1, WorkflowBindingV1, WorkflowExecutionInvocationV1,
-    WorkflowExecutionPolicyV1, WorkflowExecutionV1, engine_capabilities,
+    ExpertFusionPolicy, FusionMode, WorkflowBinding, WorkflowExecution,
+    WorkflowExecutionInvocation, WorkflowExecutionPolicy, engine_capabilities,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkflowPlanIdentityV1 {
+pub struct WorkflowPlanIdentity {
     pub contract: String,
     pub version: u32,
     pub workflow_schema_version: u32,
@@ -32,7 +32,7 @@ pub struct WorkflowPlanIdentityV1 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum WorkflowNodeExecutionStateV1 {
+pub enum WorkflowNodeExecutionState {
     Ready,
     Deferred,
     Disabled,
@@ -41,37 +41,37 @@ pub enum WorkflowNodeExecutionStateV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkflowExecutionNodePlanV1 {
+pub struct WorkflowExecutionNodePlan {
     pub instance_id: String,
     pub analysis_node: String,
     pub capabilities: Vec<String>,
-    pub execution_policy: WorkflowExecutionPolicyV1,
-    pub execution_state: WorkflowNodeExecutionStateV1,
+    pub execution_policy: WorkflowExecutionPolicy,
+    pub execution_state: WorkflowNodeExecutionState,
     pub priority: i32,
     #[serde(default)]
     pub parameters: serde_json::Value,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub execution_invocations: Vec<WorkflowExecutionInvocationV1>,
+    pub execution_invocations: Vec<WorkflowExecutionInvocation>,
     pub depends_on: Vec<String>,
-    pub input_bindings: Vec<WorkflowBindingV1>,
+    pub input_bindings: Vec<WorkflowBinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CompiledWorkflowExecutionPlanV1 {
-    pub identity: WorkflowPlanIdentityV1,
-    pub nodes: Vec<WorkflowExecutionNodePlanV1>,
-    pub terminal_outputs: Vec<crate::workflow::WorkflowTerminalOutputV1>,
+pub struct CompiledWorkflowExecutionPlan {
+    pub identity: WorkflowPlanIdentity,
+    pub nodes: Vec<WorkflowExecutionNodePlan>,
+    pub terminal_outputs: Vec<crate::workflow::WorkflowTerminalOutput>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fusion_policy: Option<ExpertFusionPolicyV1>,
+    pub fusion_policy: Option<ExpertFusionPolicy>,
     /// Exact Stage 4 decision intent from the validated workflow snapshot.
     /// This field is deliberately required when decoding an Engine Plan so a
     /// missing backend projection cannot masquerade as Algorithm mode.
-    pub fusion_mode: FusionModeV1,
+    pub fusion_mode: FusionMode,
 }
 
-impl CompiledWorkflowExecutionPlanV1 {
+impl CompiledWorkflowExecutionPlan {
     pub fn compile(
-        workflow: &WorkflowExecutionV1,
+        workflow: &WorkflowExecution,
         profile: AnalysisProfile,
         requested_capabilities: Option<&BTreeSet<String>>,
         force_lead_output: bool,
@@ -147,19 +147,17 @@ impl CompiledWorkflowExecutionPlanV1 {
                         .iter()
                         .any(|capability| capability == "audio.lead_isolate");
                 let execution_state = match node.execution_policy {
-                    _ if forced_lead_output => WorkflowNodeExecutionStateV1::Ready,
-                    WorkflowExecutionPolicyV1::Disabled => WorkflowNodeExecutionStateV1::Disabled,
-                    _ if !requested => WorkflowNodeExecutionStateV1::NotRequested,
-                    WorkflowExecutionPolicyV1::Always => WorkflowNodeExecutionStateV1::Ready,
-                    WorkflowExecutionPolicyV1::MaximumOnly
-                        if profile != AnalysisProfile::Maximum =>
-                    {
-                        WorkflowNodeExecutionStateV1::ProfileSkipped
+                    _ if forced_lead_output => WorkflowNodeExecutionState::Ready,
+                    WorkflowExecutionPolicy::Disabled => WorkflowNodeExecutionState::Disabled,
+                    _ if !requested => WorkflowNodeExecutionState::NotRequested,
+                    WorkflowExecutionPolicy::Always => WorkflowNodeExecutionState::Ready,
+                    WorkflowExecutionPolicy::MaximumOnly if profile != AnalysisProfile::Maximum => {
+                        WorkflowNodeExecutionState::ProfileSkipped
                     }
-                    WorkflowExecutionPolicyV1::MaximumOnly => WorkflowNodeExecutionStateV1::Ready,
-                    WorkflowExecutionPolicyV1::OnDisagreement
-                    | WorkflowExecutionPolicyV1::DisagreementWindows => {
-                        WorkflowNodeExecutionStateV1::Deferred
+                    WorkflowExecutionPolicy::MaximumOnly => WorkflowNodeExecutionState::Ready,
+                    WorkflowExecutionPolicy::OnDisagreement
+                    | WorkflowExecutionPolicy::DisagreementWindows => {
+                        WorkflowNodeExecutionState::Deferred
                     }
                 };
                 let mut input_bindings = workflow
@@ -194,7 +192,7 @@ impl CompiledWorkflowExecutionPlanV1 {
                     })
                     .cloned()
                     .collect();
-                WorkflowExecutionNodePlanV1 {
+                WorkflowExecutionNodePlan {
                     instance_id: node.instance_id.clone(),
                     analysis_node: node.instance_id.clone(),
                     capabilities,
@@ -210,7 +208,7 @@ impl CompiledWorkflowExecutionPlanV1 {
             .collect();
 
         Ok(Self {
-            identity: WorkflowPlanIdentityV1 {
+            identity: WorkflowPlanIdentity {
                 contract: workflow.contract.clone(),
                 version: workflow.version,
                 workflow_schema_version: workflow.workflow_schema_version,
@@ -225,17 +223,17 @@ impl CompiledWorkflowExecutionPlanV1 {
         })
     }
 
-    pub fn node_for_capability(&self, capability: &str) -> Option<&WorkflowExecutionNodePlanV1> {
+    pub fn node_for_capability(&self, capability: &str) -> Option<&WorkflowExecutionNodePlan> {
         self.nodes
             .iter()
             .filter(|node| node.capabilities.iter().any(|item| item == capability))
             .max_by_key(|node| {
                 let state_rank = match node.execution_state {
-                    WorkflowNodeExecutionStateV1::Ready => 4,
-                    WorkflowNodeExecutionStateV1::Deferred => 3,
-                    WorkflowNodeExecutionStateV1::ProfileSkipped => 2,
-                    WorkflowNodeExecutionStateV1::NotRequested => 1,
-                    WorkflowNodeExecutionStateV1::Disabled => 0,
+                    WorkflowNodeExecutionState::Ready => 4,
+                    WorkflowNodeExecutionState::Deferred => 3,
+                    WorkflowNodeExecutionState::ProfileSkipped => 2,
+                    WorkflowNodeExecutionState::NotRequested => 1,
+                    WorkflowNodeExecutionState::Disabled => 0,
                 };
                 (state_rank, node.priority)
             })
@@ -244,9 +242,9 @@ impl CompiledWorkflowExecutionPlanV1 {
     pub fn ready_nodes_for_capability(
         &self,
         capability: &str,
-    ) -> impl Iterator<Item = &WorkflowExecutionNodePlanV1> {
+    ) -> impl Iterator<Item = &WorkflowExecutionNodePlan> {
         self.nodes.iter().filter(move |node| {
-            node.execution_state == WorkflowNodeExecutionStateV1::Ready
+            node.execution_state == WorkflowNodeExecutionState::Ready
                 && node.capabilities.iter().any(|item| item == capability)
         })
     }
@@ -260,11 +258,11 @@ impl CompiledWorkflowExecutionPlanV1 {
         mut execute: F,
     ) -> EngineResult<Vec<(String, T)>>
     where
-        F: FnMut(&WorkflowExecutionNodePlanV1) -> EngineResult<T>,
+        F: FnMut(&WorkflowExecutionNodePlan) -> EngineResult<T>,
     {
         let mut staged = Vec::new();
         for node in &self.nodes {
-            if node.execution_state != WorkflowNodeExecutionStateV1::Ready {
+            if node.execution_state != WorkflowNodeExecutionState::Ready {
                 continue;
             }
             if cancellation.is_cancelled() {
@@ -290,9 +288,9 @@ mod tests {
     use super::*;
     use crate::contract::AudioRole;
     use crate::contract::request::tests::valid_request;
-    use crate::workflow::{WORKFLOW_EXECUTION_EXTENSION_KEY, WorkflowExecutionV1};
+    use crate::workflow::{WORKFLOW_EXECUTION_EXTENSION_KEY, WorkflowExecution};
 
-    fn workflow() -> WorkflowExecutionV1 {
+    fn workflow() -> WorkflowExecution {
         let mut request = valid_request(AudioRole::OriginalMix);
         request.requested_artifacts.vocal_chart = false;
         request.requested_artifacts.singing_analysis = false;
@@ -326,14 +324,12 @@ mod tests {
                 "terminal_outputs":[{"node":"pitch","port":"pitch","semantic_type":"pitch_evidence"}]
             }),
         );
-        WorkflowExecutionV1::from_request(&request)
-            .unwrap()
-            .unwrap()
+        WorkflowExecution::from_request(&request).unwrap().unwrap()
     }
 
     #[test]
     fn dependencies_order_nodes_and_duplicate_instances_remain_distinct() {
-        let plan = CompiledWorkflowExecutionPlanV1::compile(
+        let plan = CompiledWorkflowExecutionPlan::compile(
             &workflow(),
             AnalysisProfile::Balanced,
             None,
@@ -350,27 +346,27 @@ mod tests {
                 < order.iter().position(|id| *id == "denoise-b").unwrap()
         );
         assert_eq!(plan.ready_nodes_for_capability("audio.denoise").count(), 2);
-        assert_eq!(plan.fusion_mode, FusionModeV1::Algorithm);
+        assert_eq!(plan.fusion_mode, FusionMode::Algorithm);
         assert_eq!(
             plan.node_for_capability("pitch.track")
                 .unwrap()
                 .execution_state,
-            WorkflowNodeExecutionStateV1::Ready
+            WorkflowNodeExecutionState::Ready
         );
     }
 
     #[test]
     fn compiled_plan_preserves_explicit_ai_judgment_mode() {
         let mut workflow = workflow();
-        workflow.fusion_mode = FusionModeV1::AiJudgment;
-        let plan = CompiledWorkflowExecutionPlanV1::compile(
+        workflow.fusion_mode = FusionMode::AiJudgment;
+        let plan = CompiledWorkflowExecutionPlan::compile(
             &workflow,
             AnalysisProfile::Balanced,
             None,
             false,
         )
         .unwrap();
-        assert_eq!(plan.fusion_mode, FusionModeV1::AiJudgment);
+        assert_eq!(plan.fusion_mode, FusionMode::AiJudgment);
     }
 
     #[test]
@@ -381,7 +377,7 @@ mod tests {
             .iter_mut()
             .find(|node| node.instance_id == "split")
             .unwrap();
-        split.execution_invocations = vec![crate::workflow::WorkflowExecutionInvocationV1 {
+        split.execution_invocations = vec![crate::workflow::WorkflowExecutionInvocation {
             invocation_id: "split.dual".to_string(),
             provider_id: "dual-output-provider".to_string(),
             capabilities: vec![
@@ -390,7 +386,7 @@ mod tests {
             ],
             output_ports: vec!["vocal".to_string(), "instrumental".to_string()],
         }];
-        let plan = CompiledWorkflowExecutionPlanV1::compile(
+        let plan = CompiledWorkflowExecutionPlan::compile(
             &workflow,
             AnalysisProfile::Balanced,
             None,
@@ -414,14 +410,14 @@ mod tests {
             .unwrap();
         split
             .execution_invocations
-            .push(crate::workflow::WorkflowExecutionInvocationV1 {
+            .push(crate::workflow::WorkflowExecutionInvocation {
                 invocation_id: "split.instrumental-only".to_string(),
                 provider_id: "instrumental-provider".to_string(),
                 capabilities: vec!["audio.extract_instrumental".to_string()],
                 output_ports: vec!["instrumental".to_string()],
             });
         let requested = BTreeSet::from(["audio.extract_vocals".to_string()]);
-        let partial = CompiledWorkflowExecutionPlanV1::compile(
+        let partial = CompiledWorkflowExecutionPlan::compile(
             &workflow,
             AnalysisProfile::Balanced,
             Some(&requested),
@@ -451,9 +447,9 @@ mod tests {
             .iter_mut()
             .find(|node| node.capability_id == "audio.lead_isolate")
             .unwrap()
-            .execution_policy = WorkflowExecutionPolicyV1::OnDisagreement;
+            .execution_policy = WorkflowExecutionPolicy::OnDisagreement;
         let requested = BTreeSet::from(["audio.lead_isolate".to_string()]);
-        let conditional = CompiledWorkflowExecutionPlanV1::compile(
+        let conditional = CompiledWorkflowExecutionPlan::compile(
             &workflow,
             AnalysisProfile::Balanced,
             Some(&requested),
@@ -465,9 +461,9 @@ mod tests {
                 .node_for_capability("audio.lead_isolate")
                 .unwrap()
                 .execution_state,
-            WorkflowNodeExecutionStateV1::Deferred
+            WorkflowNodeExecutionState::Deferred
         );
-        let forced = CompiledWorkflowExecutionPlanV1::compile(
+        let forced = CompiledWorkflowExecutionPlan::compile(
             &workflow,
             AnalysisProfile::Balanced,
             Some(&requested),
@@ -475,16 +471,16 @@ mod tests {
         )
         .unwrap();
         let lead = forced.node_for_capability("audio.lead_isolate").unwrap();
-        assert_eq!(lead.execution_state, WorkflowNodeExecutionStateV1::Ready);
+        assert_eq!(lead.execution_state, WorkflowNodeExecutionState::Ready);
         assert_eq!(
             lead.execution_policy,
-            WorkflowExecutionPolicyV1::OnDisagreement
+            WorkflowExecutionPolicy::OnDisagreement
         );
     }
 
     #[test]
     fn analyzer_attachment_and_priority_are_truthful() {
-        let plan = CompiledWorkflowExecutionPlanV1::compile(
+        let plan = CompiledWorkflowExecutionPlan::compile(
             &workflow(),
             AnalysisProfile::Balanced,
             None,
@@ -506,7 +502,7 @@ mod tests {
 
     #[test]
     fn cancellation_discards_staged_control_plane_results() {
-        let plan = CompiledWorkflowExecutionPlanV1::compile(
+        let plan = CompiledWorkflowExecutionPlan::compile(
             &workflow(),
             AnalysisProfile::Balanced,
             None,

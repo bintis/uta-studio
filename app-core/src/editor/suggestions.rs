@@ -150,7 +150,7 @@ mod tests {
     use crate::editor::evidence::{EvidencePoint, ReviewRegion, ReviewSeverity};
     use utz::{
         DEFAULT_TIMEBASE, LyricJoin, LyricTextToken, LyricToken, NoteBonus, NotePitch, NoteScoring,
-        ScoringMode, VocalChartV1, VocalMode, VocalNote, VocalPhrase, VocalTrack, VocalTrackRole,
+        ScoringMode, VocalChart, VocalMode, VocalNote, VocalPhrase, VocalTrack, VocalTrackRole,
     };
 
     fn evidence_point(time: f64, hz: f32) -> EvidencePoint {
@@ -213,7 +213,7 @@ mod tests {
                 })],
             }],
         };
-        let mut chart = VocalChartV1::new(vec![VocalTrack {
+        let mut chart = VocalChart::new(vec![VocalTrack {
             id: "lead".into(),
             role: VocalTrackRole::Lead,
             part: None,

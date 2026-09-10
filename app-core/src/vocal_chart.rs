@@ -10,7 +10,7 @@ use crate::{
 };
 use utz::{
     DEFAULT_TIMEBASE, LyricJoin, LyricTextToken, LyricToken, NoteBonus, NotePitch, NoteScoring,
-    ScoringMode, VocalChartV1, VocalMode, VocalNote, VocalPhrase, VocalTrack, VocalTrackRole,
+    ScoringMode, VocalChart, VocalMode, VocalNote, VocalPhrase, VocalTrack, VocalTrackRole,
 };
 
 use crate::error::UtaStudioError;
@@ -40,7 +40,7 @@ struct MigratedNote {
 /// tokens, and per-note scoring intent, none of which survive a re-migration.
 /// Only a song that has never been edited falls back to migrating analyzer
 /// output.
-pub(crate) fn load_authoring_chart(file_hash: &str) -> Result<VocalChartV1, UtaStudioError> {
+pub(crate) fn load_authoring_chart(file_hash: &str) -> Result<VocalChart, UtaStudioError> {
     if let Some(chart) = load_saved_or_candidate_chart(file_hash)? {
         return Ok(chart);
     }
@@ -59,7 +59,7 @@ pub(crate) fn load_authoring_chart(file_hash: &str) -> Result<VocalChartV1, UtaS
 /// directly so an Engine publication does not depend on compatibility files.
 pub(crate) fn load_saved_or_candidate_chart(
     file_hash: &str,
-) -> Result<Option<VocalChartV1>, UtaStudioError> {
+) -> Result<Option<VocalChart>, UtaStudioError> {
     let cache = CacheDir::new();
 
     if let Some(chart) = load_active_chart(file_hash, ArtifactKind::AuthoredChart)? {
@@ -84,7 +84,7 @@ pub(crate) fn load_saved_or_candidate_chart(
 fn load_active_chart(
     file_hash: &str,
     kind: ArtifactKind,
-) -> Result<Option<VocalChartV1>, UtaStudioError> {
+) -> Result<Option<VocalChart>, UtaStudioError> {
     let Some(revision) = load_active_artifact(file_hash, kind) else {
         return Ok(None);
     };
@@ -101,7 +101,7 @@ pub(crate) fn validate_candidate_chart_path(path: &std::path::Path) -> Result<()
     load_chart_path(path).map(|_| ())
 }
 
-fn load_chart_path(path: &std::path::Path) -> Result<VocalChartV1, UtaStudioError> {
+fn load_chart_path(path: &std::path::Path) -> Result<VocalChart, UtaStudioError> {
     let mut value: Value = serde_json::from_str(&std::fs::read_to_string(path)?)?;
     if value.get("contract").and_then(Value::as_str)
         == Some("uta.analysis-engine.candidate-vocal-chart")
@@ -117,7 +117,7 @@ fn load_chart_path(path: &std::path::Path) -> Result<VocalChartV1, UtaStudioErro
         value["format_version"] = Value::String(utz::VOCAL_CHART_VERSION.to_string());
         value["timebase"] = Value::from(utz::UTZ_TIMEBASE);
     }
-    let chart: VocalChartV1 = serde_json::from_value(value)?;
+    let chart: VocalChart = serde_json::from_value(value)?;
     chart
         .validate()
         .map_err(|error| UtaStudioError::Other(error.to_string()))?;
@@ -129,7 +129,7 @@ fn load_chart_path(path: &std::path::Path) -> Result<VocalChartV1, UtaStudioErro
 /// UTZ notes must own real lyric tokens, so they are not fabricated as lyrics.
 pub(crate) fn migrate_engine_candidate_chart(
     candidate: &Value,
-) -> Result<VocalChartV1, UtaStudioError> {
+) -> Result<VocalChart, UtaStudioError> {
     if candidate.get("contract").and_then(Value::as_str)
         != Some("uta.analysis-engine.candidate-vocal-chart")
         || candidate.get("version").and_then(Value::as_u64) != Some(1)
@@ -342,7 +342,7 @@ pub(crate) fn migrate_engine_candidate_chart(
             "Engine candidate contains no lyric-owned notes".to_string(),
         ));
     }
-    let mut chart = VocalChartV1::new(vec![VocalTrack {
+    let mut chart = VocalChart::new(vec![VocalTrack {
         id: "lead".into(),
         role: VocalTrackRole::Lead,
         part: None,
@@ -436,7 +436,7 @@ fn required_range(value: &Value, label: &str) -> Result<(u64, u64), UtaStudioErr
 pub fn migrate_analyzer_chart(
     transcript: &Value,
     pitch_notes: &Value,
-) -> Result<VocalChartV1, UtaStudioError> {
+) -> Result<VocalChart, UtaStudioError> {
     let language = transcript
         .get("language")
         .and_then(Value::as_str)
@@ -556,7 +556,7 @@ pub fn migrate_analyzer_chart(
             .push(migrated.note);
     }
 
-    let mut chart = VocalChartV1::new(vec![VocalTrack {
+    let mut chart = VocalChart::new(vec![VocalTrack {
         id: "lead".into(),
         role: VocalTrackRole::Lead,
         part: None,
@@ -644,7 +644,7 @@ fn best_overlapping_analyzer_note(notes: &[MigratedNote], word: &AnalyzerWord) -
 /// Evidence is an editor aid and a visualization source, never scoring data:
 /// the chart's authored note targets stay authoritative, and nothing here is
 /// ever written back into a note.
-pub fn migrate_pitch_evidence(track: &Value) -> Option<utz::PitchEvidenceV1> {
+pub fn migrate_pitch_evidence(track: &Value) -> Option<utz::PitchEvidence> {
     let frames = track.get("frames")?.as_array()?;
     let first = frames.first()?;
     let start_seconds = number(first, "time")?;
@@ -684,7 +684,7 @@ pub fn migrate_pitch_evidence(track: &Value) -> Option<utz::PitchEvidenceV1> {
         return None;
     }
 
-    let evidence = utz::PitchEvidenceV1 {
+    let evidence = utz::PitchEvidence {
         format: utz::PITCH_EVIDENCE_FORMAT.to_string(),
         format_version: utz::PITCH_EVIDENCE_VERSION.to_string(),
         timebase: DEFAULT_TIMEBASE,

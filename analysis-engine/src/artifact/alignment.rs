@@ -10,12 +10,12 @@ use crate::contract::{
 const MAX_ALIGNMENT_BYTES: u64 = 128 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AlignmentArtifactV1 {
+pub struct AlignmentArtifact {
     pub contract: String,
     pub version: u32,
     pub transcript: String,
     pub language: Option<String>,
-    pub items: Vec<AlignmentItemV1>,
+    pub items: Vec<AlignmentItem>,
     pub source_expert: String,
     pub model_sha256: String,
     pub runtime_manifest_sha256: String,
@@ -23,7 +23,7 @@ pub struct AlignmentArtifactV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AlignmentItemV1 {
+pub struct AlignmentItem {
     pub id: String,
     pub text: String,
     pub level: BoundaryLevel,
@@ -34,7 +34,7 @@ pub struct AlignmentItemV1 {
     pub authority: BoundaryAuthority,
 }
 
-impl AlignmentArtifactV1 {
+impl AlignmentArtifact {
     pub fn validate(&self, source_start: u64, source_duration: u64) -> EngineResult<()> {
         let source_end = source_start
             .checked_add(source_duration)
@@ -82,13 +82,13 @@ pub fn parse_alignment_artifact(
     path: &Path,
     source_start: u64,
     source_duration: u64,
-) -> EngineResult<AlignmentArtifactV1> {
+) -> EngineResult<AlignmentArtifact> {
     let metadata = std::fs::metadata(path)
         .map_err(|error| invalid(format!("alignment evidence is unavailable: {error}")))?;
     if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_ALIGNMENT_BYTES {
         return Err(invalid("alignment evidence size is invalid"));
     }
-    let artifact: AlignmentArtifactV1 = serde_json::from_slice(
+    let artifact: AlignmentArtifact = serde_json::from_slice(
         &std::fs::read(path)
             .map_err(|error| invalid(format!("could not read alignment evidence: {error}")))?,
     )

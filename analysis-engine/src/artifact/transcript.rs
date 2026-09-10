@@ -8,23 +8,23 @@ const MAX_TRANSCRIPT_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
-pub enum TranscriptAuthorityV1 {
+pub enum TranscriptAuthority {
     CallerCanonical,
     #[default]
     Generated,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TranscriptArtifactV1 {
+pub struct TranscriptArtifact {
     pub contract: String,
     pub version: u32,
     #[serde(default)]
-    pub authority: TranscriptAuthorityV1,
+    pub authority: TranscriptAuthority,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
     pub text: String,
     #[serde(default)]
-    pub tokens: Vec<TranscriptTokenV1>,
+    pub tokens: Vec<TranscriptToken>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<f32>,
     pub source_experts: Vec<String>,
@@ -38,14 +38,14 @@ pub struct TranscriptArtifactV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TranscriptTokenV1 {
+pub struct TranscriptToken {
     pub id: String,
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<f32>,
 }
 
-impl TranscriptArtifactV1 {
+impl TranscriptArtifact {
     pub fn validate(&self) -> EngineResult<()> {
         if self.contract != "uta.analysis-engine.transcript"
             || self.version != 1
@@ -70,7 +70,7 @@ impl TranscriptArtifactV1 {
             return Err(invalid("transcript artifact is invalid"));
         }
         match self.authority {
-            TranscriptAuthorityV1::CallerCanonical => {
+            TranscriptAuthority::CallerCanonical => {
                 if self.confidence.is_some()
                     || self.model_sha256.is_some()
                     || self.runtime_manifest_sha256.is_some()
@@ -81,7 +81,7 @@ impl TranscriptArtifactV1 {
                     ));
                 }
             }
-            TranscriptAuthorityV1::Generated => {
+            TranscriptAuthority::Generated => {
                 if self.model_sha256.is_none() || self.runtime_manifest_sha256.is_none() {
                     return Err(invalid("generated transcript provenance is incomplete"));
                 }
@@ -91,13 +91,13 @@ impl TranscriptArtifactV1 {
     }
 }
 
-pub fn parse_transcript_artifact(path: &Path) -> EngineResult<TranscriptArtifactV1> {
+pub fn parse_transcript_artifact(path: &Path) -> EngineResult<TranscriptArtifact> {
     let metadata = std::fs::metadata(path)
         .map_err(|error| invalid(format!("transcript evidence is unavailable: {error}")))?;
     if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_TRANSCRIPT_BYTES {
         return Err(invalid("transcript evidence size is invalid"));
     }
-    let artifact: TranscriptArtifactV1 = serde_json::from_slice(
+    let artifact: TranscriptArtifact = serde_json::from_slice(
         &std::fs::read(path)
             .map_err(|error| invalid(format!("could not read transcript evidence: {error}")))?,
     )

@@ -200,8 +200,8 @@ pub(super) fn spawn_fusion_stage_card(
     adapter_readiness: FusionAdapterReadinessUi,
 ) {
     let fusion_mode = app_core::fusion_mode(&stored.definition);
-    let algorithm_selected = fusion_mode == app_core::FusionModeV1::Algorithm;
-    let ai_selected = fusion_mode == app_core::FusionModeV1::AiJudgment;
+    let algorithm_selected = fusion_mode == app_core::FusionMode::Algorithm;
+    let ai_selected = fusion_mode == app_core::FusionMode::AiJudgment;
     let ai_available = adapter_readiness == FusionAdapterReadinessUi::Usable;
     let selected_label = if algorithm_selected {
         "Algorithm"

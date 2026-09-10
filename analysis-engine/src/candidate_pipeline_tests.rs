@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use super::*;
 use crate::artifact::{
-    ACOUSTIC_EVIDENCE_CONTRACT, ACOUSTIC_EVIDENCE_VERSION, AcousticEvidenceFrameV1,
-    BasicPitchFrameV1, GameNoteEvidenceV1,
+    ACOUSTIC_EVIDENCE_CONTRACT, ACOUSTIC_EVIDENCE_VERSION, AcousticEvidenceFrame, BasicPitchFrame,
+    GameNoteEvidence,
 };
 use crate::fingerprint::ACOUSTIC_DSP_VERSION;
 use crate::fusion::{LyricsAuthority, SingingReviewReason, TimeRange};
@@ -23,9 +23,9 @@ fn write_executable(path: &std::path::Path, body: &str) {
     std::fs::rename(staging, path).unwrap();
 }
 
-fn transcript(authority: TranscriptAuthorityV1) -> TranscriptArtifactV1 {
-    let caller = authority == TranscriptAuthorityV1::CallerCanonical;
-    TranscriptArtifactV1 {
+fn transcript(authority: TranscriptAuthority) -> TranscriptArtifact {
+    let caller = authority == TranscriptAuthority::CallerCanonical;
+    TranscriptArtifact {
         contract: "uta.analysis-engine.transcript".to_string(),
         version: 1,
         authority,
@@ -33,12 +33,12 @@ fn transcript(authority: TranscriptAuthorityV1) -> TranscriptArtifactV1 {
         text: "sing now".to_string(),
         tokens: if caller {
             vec![
-                TranscriptTokenV1 {
+                TranscriptToken {
                     id: "caller-1".to_string(),
                     text: "sing".to_string(),
                     confidence: None,
                 },
-                TranscriptTokenV1 {
+                TranscriptToken {
                     id: "caller-2".to_string(),
                     text: "now".to_string(),
                     confidence: None,
@@ -60,14 +60,14 @@ fn transcript(authority: TranscriptAuthorityV1) -> TranscriptArtifactV1 {
     }
 }
 
-fn alignment() -> AlignmentArtifactV1 {
-    AlignmentArtifactV1 {
+fn alignment() -> AlignmentArtifact {
+    AlignmentArtifact {
         contract: "uta.analysis-engine.alignment".to_string(),
         version: 1,
         transcript: "sing now".to_string(),
         language: Some("en".to_string()),
         items: vec![
-            AlignmentItemV1 {
+            AlignmentItem {
                 id: "word-0".to_string(),
                 text: "sing".to_string(),
                 level: BoundaryLevel::Word,
@@ -76,7 +76,7 @@ fn alignment() -> AlignmentArtifactV1 {
                 confidence: None,
                 authority: BoundaryAuthority::Soft,
             },
-            AlignmentItemV1 {
+            AlignmentItem {
                 id: "word-1".to_string(),
                 text: "now".to_string(),
                 level: BoundaryLevel::Word,
@@ -93,7 +93,7 @@ fn alignment() -> AlignmentArtifactV1 {
     }
 }
 
-fn pitch(octave_disagreement: bool) -> PitchEvidenceV03 {
+fn pitch(octave_disagreement: bool) -> PitchEvidence {
     let mut frequency_hz = vec![None; 100];
     let mut confidence = vec![Some(0.1); 100];
     for index in 10..40 {
@@ -104,7 +104,7 @@ fn pitch(octave_disagreement: bool) -> PitchEvidenceV03 {
         frequency_hz[index] = Some(493.88);
         confidence[index] = Some(0.8);
     }
-    PitchEvidenceV03 {
+    PitchEvidence {
         format: "uta.pitch-evidence".to_string(),
         format_version: "0.3.0".to_string(),
         timebase: 1_000_000,
@@ -116,8 +116,8 @@ fn pitch(octave_disagreement: bool) -> PitchEvidenceV03 {
     }
 }
 
-fn game() -> GameEvidenceV1 {
-    GameEvidenceV1 {
+fn game() -> GameEvidence {
+    GameEvidence {
         schema_version: 1,
         model_id: "game".to_string(),
         variant: "fixture".to_string(),
@@ -130,15 +130,17 @@ fn game() -> GameEvidenceV1 {
         timestep_ms: 10,
         d3pm_steps: 8,
         notes: vec![
-            GameNoteEvidenceV1 {
+            GameNoteEvidence {
                 range: TimeRange::new(100_000, 400_000).unwrap(),
                 midi: 69.25,
+                voiced: true,
                 boundary_decision_threshold: 0.2,
                 presence_decision_threshold: 0.2,
             },
-            GameNoteEvidenceV1 {
+            GameNoteEvidence {
                 range: TimeRange::new(500_000, 900_000).unwrap(),
                 midi: 71.1,
+                voiced: true,
                 boundary_decision_threshold: 0.2,
                 presence_decision_threshold: 0.2,
             },
@@ -146,17 +148,17 @@ fn game() -> GameEvidenceV1 {
     }
 }
 
-fn basic_pitch() -> BasicPitchEvidenceV1 {
-    BasicPitchEvidenceV1 {
+fn basic_pitch() -> BasicPitchEvidence {
+    BasicPitchEvidence {
         frames: vec![
-            BasicPitchFrameV1 {
+            BasicPitchFrame {
                 time: 110_000,
                 note_activation: 0.9,
                 onset_activation: 0.8,
                 contour_class: 42,
                 contour_activation: 0.7,
             },
-            BasicPitchFrameV1 {
+            BasicPitchFrame {
                 time: 510_000,
                 note_activation: 0.9,
                 onset_activation: 0.8,
@@ -169,8 +171,8 @@ fn basic_pitch() -> BasicPitchEvidenceV1 {
     }
 }
 
-fn acoustic() -> AcousticEvidenceV1 {
-    AcousticEvidenceV1 {
+fn acoustic() -> AcousticEvidence {
+    AcousticEvidence {
         contract: ACOUSTIC_EVIDENCE_CONTRACT.to_string(),
         version: ACOUSTIC_EVIDENCE_VERSION,
         algorithm: ACOUSTIC_DSP_VERSION.to_string(),
@@ -182,7 +184,7 @@ fn acoustic() -> AcousticEvidenceV1 {
         semantic_audio_role: "lead_vocal".to_string(),
         decoded_audio_sha256: "2".repeat(64),
         frames: (0..100)
-            .map(|index| AcousticEvidenceFrameV1 {
+            .map(|index| AcousticEvidenceFrame {
                 start: index * 10_000,
                 rms: 0.2,
                 spectral_flux: (index > 0).then_some(if index == 10 || index == 50 {
@@ -206,14 +208,14 @@ fn acoustic() -> AcousticEvidenceV1 {
 fn fused_inputs(
     octave_disagreement: bool,
 ) -> (
-    TranscriptArtifactV1,
+    TranscriptArtifact,
     CanonicalLyrics,
-    AlignmentArtifactV1,
+    AlignmentArtifact,
     Vec<CanonicalWordBoundary>,
-    PitchEvidenceV03,
+    PitchEvidence,
 ) {
     let (transcript, lyrics) =
-        fuse_transcript_stage(&[transcript(TranscriptAuthorityV1::Generated)], None).unwrap();
+        fuse_transcript_stage(&[transcript(TranscriptAuthority::Generated)], None).unwrap();
     let (alignment, words) = fuse_alignment_stage(&lyrics, &[alignment()], 0, 1_000_000).unwrap();
     (
         transcript,
@@ -247,7 +249,7 @@ fn baseline_review_uses_the_selected_fcpe_primary() {
 #[test]
 fn caller_authority_is_distinct_from_unknown_model_confidence() {
     let (artifact, canonical) =
-        fuse_transcript_stage(&[transcript(TranscriptAuthorityV1::CallerCanonical)], None).unwrap();
+        fuse_transcript_stage(&[transcript(TranscriptAuthority::CallerCanonical)], None).unwrap();
     assert_eq!(artifact.confidence, None);
     assert_eq!(canonical.confidence, None);
     assert_eq!(canonical.authority, LyricsAuthority::CallerCanonical);
@@ -258,12 +260,12 @@ fn caller_authority_is_distinct_from_unknown_model_confidence() {
 #[test]
 fn caller_timed_lyric_ranges_survive_transcript_fusion() {
     let (_, mut canonical) =
-        fuse_transcript_stage(&[transcript(TranscriptAuthorityV1::CallerCanonical)], None).unwrap();
-    let lyrics = crate::contract::LyricsV1 {
+        fuse_transcript_stage(&[transcript(TranscriptAuthority::CallerCanonical)], None).unwrap();
+    let lyrics = crate::contract::Lyrics {
         mode: crate::contract::LyricsMode::Canonical,
         language: Some("en".to_string()),
         tokens: vec![
-            crate::contract::LyricTokenV1 {
+            crate::contract::LyricToken {
                 id: "caller-1".to_string(),
                 text: "sing".to_string(),
                 reading: None,
@@ -271,7 +273,7 @@ fn caller_timed_lyric_ranges_survive_transcript_fusion() {
                 start: Some(100_000),
                 end: Some(500_000),
             },
-            crate::contract::LyricTokenV1 {
+            crate::contract::LyricToken {
                 id: "caller-2".to_string(),
                 text: "now".to_string(),
                 reading: None,
@@ -348,14 +350,14 @@ fn timed_lyric_line_owns_notes_outside_a_collapsed_alignment_span() {
 #[test]
 fn selected_unlinked_notes_are_published_through_timed_lyric_ownership() {
     let (transcript, mut lyrics) =
-        fuse_transcript_stage(&[transcript(TranscriptAuthorityV1::CallerCanonical)], None).unwrap();
+        fuse_transcript_stage(&[transcript(TranscriptAuthority::CallerCanonical)], None).unwrap();
     attach_caller_lyric_ranges(
         &mut lyrics,
-        &crate::contract::LyricsV1 {
+        &crate::contract::Lyrics {
             mode: crate::contract::LyricsMode::Canonical,
             language: Some("en".to_string()),
             tokens: vec![
-                crate::contract::LyricTokenV1 {
+                crate::contract::LyricToken {
                     id: "caller-1".to_string(),
                     text: "sing".to_string(),
                     reading: None,
@@ -363,7 +365,7 @@ fn selected_unlinked_notes_are_published_through_timed_lyric_ownership() {
                     start: Some(0),
                     end: Some(500_000),
                 },
-                crate::contract::LyricTokenV1 {
+                crate::contract::LyricToken {
                     id: "caller-2".to_string(),
                     text: "now".to_string(),
                     reading: None,
@@ -397,7 +399,7 @@ fn selected_unlinked_notes_are_published_through_timed_lyric_ownership() {
     }
 
     let output =
-        execute_candidate_graph_stage(lyrics, words, fusion, FusionDecisionModeV1::Algorithm)
+        execute_candidate_graph_stage(lyrics, words, fusion, FusionDecisionMode::Algorithm)
             .unwrap();
 
     assert!(!output.track.notes.is_empty());
@@ -407,7 +409,7 @@ fn selected_unlinked_notes_are_published_through_timed_lyric_ownership() {
 #[test]
 fn generated_unknown_confidence_and_reference_alternative_remain_truthful() {
     let (artifact, canonical) = fuse_transcript_stage(
-        &[transcript(TranscriptAuthorityV1::Generated)],
+        &[transcript(TranscriptAuthority::Generated)],
         Some("reference only"),
     )
     .unwrap();
@@ -422,7 +424,7 @@ fn generated_unknown_confidence_and_reference_alternative_remain_truthful() {
 #[test]
 fn reference_sequence_reconciliation_corrects_identity_without_claiming_caller_authority() {
     let (artifact, canonical) = fuse_transcript_stage(
-        &[transcript(TranscriptAuthorityV1::Generated)],
+        &[transcript(TranscriptAuthority::Generated)],
         Some("sing know"),
     )
     .unwrap();
@@ -440,7 +442,7 @@ fn reference_sequence_reconciliation_corrects_identity_without_claiming_caller_a
 
 #[test]
 fn transcript_disagreement_regions_are_typed_and_source_bounded() {
-    let mut generated = transcript(TranscriptAuthorityV1::Generated);
+    let mut generated = transcript(TranscriptAuthority::Generated);
     generated.language = Some("en-US".to_string());
     generated.confidence = Some(0.4);
     let regions = build_transcript_disagreement_regions(
@@ -470,7 +472,7 @@ fn transcript_disagreement_regions_are_typed_and_source_bounded() {
 
 #[test]
 fn transcript_challenger_enters_fusion_without_winning_an_unknown_score_tie() {
-    let primary = transcript(TranscriptAuthorityV1::Generated);
+    let primary = transcript(TranscriptAuthority::Generated);
     let mut challenger = primary.clone();
     challenger.text = "alpha alternative".to_string();
     challenger.source_experts = vec!["firered_asr2_aed".to_string()];
@@ -482,7 +484,7 @@ fn transcript_challenger_enters_fusion_without_winning_an_unknown_score_tie() {
 #[test]
 fn alignment_unknown_confidence_is_preserved_and_overlap_fails_closed() {
     let (_, lyrics) =
-        fuse_transcript_stage(&[transcript(TranscriptAuthorityV1::Generated)], None).unwrap();
+        fuse_transcript_stage(&[transcript(TranscriptAuthority::Generated)], None).unwrap();
     let (_, words) = fuse_alignment_stage(&lyrics, &[alignment()], 0, 1_000_000).unwrap();
     assert_eq!(words[0].confidence, None);
     assert_eq!(words[0].word_id, "word-0");
@@ -493,7 +495,7 @@ fn alignment_unknown_confidence_is_preserved_and_overlap_fails_closed() {
 
 #[test]
 fn rmvpe_projection_keeps_voiced_f0_and_unvoiced_gaps() {
-    let evidence = PitchEvidenceV03 {
+    let evidence = PitchEvidence {
         format: "uta.pitch-evidence".to_string(),
         format_version: "0.3.0".to_string(),
         timebase: 1_000_000,
@@ -538,7 +540,7 @@ fn f0_fallback_regions_respect_canonical_word_edges() {
 
 #[test]
 fn caller_phrase_constraints_emit_one_confidence_weighted_soft_start() {
-    let phrase = BoundaryConstraintV1 {
+    let phrase = BoundaryConstraint {
         token_id: Some("phrase-1".to_string()),
         level: BoundaryLevel::Phrase,
         start: 100_000,
@@ -552,7 +554,7 @@ fn caller_phrase_constraints_emit_one_confidence_weighted_soft_start() {
             .expect("valid soft phrase constraint");
     assert_eq!(alternatives.len(), 1);
     assert_eq!(starts.len(), 1);
-    assert_eq!(starts[0].kind, BoundaryConstraintKindV1::PhraseStart);
+    assert_eq!(starts[0].kind, BoundaryConstraintKind::PhraseStart);
     assert_eq!(starts[0].time, phrase.start);
     assert_eq!(starts[0].source_local_strength, Some(0.6));
 
@@ -680,7 +682,7 @@ fn full_typed_pipeline_is_deterministic_non_overlapping_and_uses_acoustic() {
     );
     assert_eq!(
         note.evidence.decision_trace.pitch_selection_reason,
-        crate::fusion::PitchSelectionReasonV1::GlobalPitchAlternative
+        crate::fusion::PitchSelectionReason::GlobalPitchAlternative
     );
     assert_eq!(note.evidence.boundary_fractional_midi, Some(69.25));
     assert_eq!(note.confidence, None);
@@ -753,7 +755,7 @@ fn fcpe_primary_provenance_and_uncertainty_ignore_sparse_rmvpe_quality() {
     )
     .unwrap();
     let output =
-        execute_candidate_graph_stage(lyrics, words, fusion, FusionDecisionModeV1::Algorithm)
+        execute_candidate_graph_stage(lyrics, words, fusion, FusionDecisionMode::Algorithm)
             .unwrap();
     assert!(
         output
@@ -981,7 +983,7 @@ fn f0_derived_lengths_ignore_a_single_frame_octave_outlier_but_keep_a_sustained_
     assert!(
         context_boundary_constraints(&[], &curve(false), "rmvpe", None, None)
             .iter()
-            .all(|constraint| constraint.kind != BoundaryConstraintKindV1::PitchDiscontinuity),
+            .all(|constraint| constraint.kind != BoundaryConstraintKind::PitchDiscontinuity),
         "one-frame octave noise must not leak back as contextual discontinuity evidence"
     );
 
@@ -992,7 +994,7 @@ fn f0_derived_lengths_ignore_a_single_frame_octave_outlier_but_keep_a_sustained_
     assert_eq!(leap.segments[1].range.start, 200_000);
     let discontinuities = context_boundary_constraints(&[], &curve(true), "rmvpe", None, None)
         .into_iter()
-        .filter(|constraint| constraint.kind == BoundaryConstraintKindV1::PitchDiscontinuity)
+        .filter(|constraint| constraint.kind == BoundaryConstraintKind::PitchDiscontinuity)
         .collect::<Vec<_>>();
     assert_eq!(discontinuities.len(), 1);
     assert_eq!(discontinuities[0].time, 200_000);
@@ -1019,11 +1021,11 @@ fn f0_derived_selected_notes_keep_typed_source_identity_and_uncertainty() {
     )
     .unwrap();
     let output =
-        execute_candidate_graph_stage(lyrics, words, fusion, FusionDecisionModeV1::Algorithm)
+        execute_candidate_graph_stage(lyrics, words, fusion, FusionDecisionMode::Algorithm)
             .unwrap();
     assert!(matches!(
         output.decision,
-        CandidatePathDecisionV1::Algorithm { .. }
+        CandidatePathDecision::Algorithm { .. }
     ));
     assert!(!output.track.notes.is_empty());
     assert!(output.track.notes.iter().all(|note| note.uncertain));
@@ -1060,11 +1062,11 @@ fn algorithm_and_ai_selectors_receive_the_identical_candidate_pool() {
         lyrics.clone(),
         words.clone(),
         build_fusion(),
-        FusionDecisionModeV1::Algorithm,
+        FusionDecisionMode::Algorithm,
     )
     .unwrap();
     let (algorithm_digest, selected_ids) = match &algorithm.decision {
-        CandidatePathDecisionV1::Algorithm {
+        CandidatePathDecision::Algorithm {
             candidate_set_digest,
             selected_candidate_ids,
         } => (candidate_set_digest.clone(), selected_candidate_ids.clone()),
@@ -1106,7 +1108,7 @@ fn algorithm_and_ai_selectors_receive_the_identical_candidate_pool() {
         lyrics,
         words,
         ai_fusion,
-        FusionDecisionModeV1::AiJudgment {
+        FusionDecisionMode::AiJudgment {
             executable: &adapter,
             timeout: std::time::Duration::from_secs(5),
             cancellation: &cancellation,
@@ -1114,7 +1116,7 @@ fn algorithm_and_ai_selectors_receive_the_identical_candidate_pool() {
     )
     .unwrap();
     let ai_digest = match &ai.decision {
-        CandidatePathDecisionV1::AiJudgment {
+        CandidatePathDecision::AiJudgment {
             candidate_set_digest,
             ..
         } => candidate_set_digest,
@@ -1170,7 +1172,7 @@ fn ai_adapter_failure_is_returned_without_algorithm_fallback() {
         lyrics,
         words,
         fusion,
-        FusionDecisionModeV1::AiJudgment {
+        FusionDecisionMode::AiJudgment {
             executable: &adapter,
             timeout: std::time::Duration::from_secs(5),
             cancellation: &cancellation,

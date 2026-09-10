@@ -6,22 +6,22 @@ use uta_runtime_manager::{RequirementResource, RequirementSet, ResourceRef};
 use super::{EngineError, EngineErrorCode, EngineResult};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EngineRequirementsV1 {
+pub struct EngineRequirements {
     pub schema: String,
     pub schema_version: u32,
     pub producer: String,
-    pub resources: Vec<EngineRequirementResourceV1>,
+    pub resources: Vec<EngineRequirementResource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EngineRequirementResourceV1 {
+pub struct EngineRequirementResource {
     pub resource: String,
     pub required: bool,
     pub reason: String,
 }
 
-impl EngineRequirementsV1 {
-    pub fn new(resources: Vec<EngineRequirementResourceV1>) -> Self {
+impl EngineRequirements {
+    pub fn new(resources: Vec<EngineRequirementResource>) -> Self {
         Self {
             schema: "uta.runtime.requirements".to_string(),
             schema_version: 1,

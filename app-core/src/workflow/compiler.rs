@@ -115,7 +115,7 @@ pub fn compile_workflow(
                 DisablePolicy::Optional
             },
             cache_policy: CachePolicy::Generalized,
-            algorithm_version: "workflow-v1".to_string(),
+            algorithm_version: "workflow".to_string(),
             compound_children: Vec::new(),
         });
         bindings.push(CompiledNodeBinding {

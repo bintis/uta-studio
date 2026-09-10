@@ -1,4 +1,4 @@
-use crate::artifact::{AcousticEvidenceV1, BasicPitchEvidenceV1};
+use crate::artifact::{AcousticEvidence, BasicPitchEvidence};
 
 use super::baseline::{BoundaryEvidenceSet, decide_fractional_target};
 use super::{
@@ -182,7 +182,7 @@ fn has_word_edge(words: &[CanonicalWordBoundary], time: u64) -> bool {
     })
 }
 
-fn has_basic_pitch_attack(evidence: Option<&BasicPitchEvidenceV1>, time: u64) -> bool {
+fn has_basic_pitch_attack(evidence: Option<&BasicPitchEvidence>, time: u64) -> bool {
     evidence.is_some_and(|evidence| {
         let start = time.saturating_sub(BOUNDARY_EVIDENCE_TOLERANCE);
         let end = time.saturating_add(BOUNDARY_EVIDENCE_TOLERANCE);
@@ -194,7 +194,7 @@ fn has_basic_pitch_attack(evidence: Option<&BasicPitchEvidenceV1>, time: u64) ->
     })
 }
 
-fn has_acoustic_attack(evidence: Option<&AcousticEvidenceV1>, time: u64) -> bool {
+fn has_acoustic_attack(evidence: Option<&AcousticEvidence>, time: u64) -> bool {
     evidence.is_some_and(|evidence| {
         let start = time.saturating_sub(BOUNDARY_EVIDENCE_TOLERANCE);
         let end = time.saturating_add(BOUNDARY_EVIDENCE_TOLERANCE);
@@ -240,8 +240,8 @@ fn consolidation_range_is_clear(
     range: TimeRange,
     words: &[CanonicalWordBoundary],
     curve: &[F0Point],
-    acoustic: Option<&AcousticEvidenceV1>,
-    basic_pitch: Option<&BasicPitchEvidenceV1>,
+    acoustic: Option<&AcousticEvidence>,
+    basic_pitch: Option<&BasicPitchEvidence>,
     caller_boundaries: &[BoundaryAlternative],
     persistent_shifts: &[(u64, f32)],
 ) -> bool {
@@ -340,8 +340,8 @@ pub(crate) fn f0_consolidation_challengers(
     words: &[CanonicalWordBoundary],
     primary_pitch_owner: &str,
     curve: &[F0Point],
-    acoustic: Option<&AcousticEvidenceV1>,
-    basic_pitch: Option<&BasicPitchEvidenceV1>,
+    acoustic: Option<&AcousticEvidence>,
+    basic_pitch: Option<&BasicPitchEvidence>,
     caller_boundaries: &[BoundaryAlternative],
 ) -> Result<Vec<BoundaryAlternative>, String> {
     if boundaries.kind == BoundaryEvidenceKind::F0Derived || boundaries.segments.len() < 2 {
@@ -457,8 +457,8 @@ pub(crate) fn validate_candidate_context_relations(
     primary_pitch_owner: &str,
     rmvpe_curve: &[F0Point],
     fcpe_curve: &[F0Point],
-    acoustic: Option<&AcousticEvidenceV1>,
-    basic_pitch: Option<&BasicPitchEvidenceV1>,
+    acoustic: Option<&AcousticEvidence>,
+    basic_pitch: Option<&BasicPitchEvidence>,
 ) -> Result<(), String> {
     let acoustic_window = acoustic.map(|evidence| {
         u64::from(evidence.window_samples).saturating_mul(1_000_000)
@@ -948,8 +948,8 @@ mod tests {
 
     #[test]
     fn an_internal_measured_attack_blocks_the_whole_consolidated_range() {
-        let basic_pitch = BasicPitchEvidenceV1 {
-            frames: vec![crate::artifact::BasicPitchFrameV1 {
+        let basic_pitch = BasicPitchEvidence {
+            frames: vec![crate::artifact::BasicPitchFrame {
                 time: 250_000,
                 note_activation: 0.9,
                 onset_activation: 0.95,

@@ -4,11 +4,11 @@ use std::collections::{BTreeSet, HashSet};
 use crate::editor::{round_units_to_millis, seconds_to_units, units_to_seconds};
 use utz::{
     DEFAULT_TIMEBASE, LyricJoin, LyricTextToken, LyricToken, NoteBonus, NotePitch, NoteScoring,
-    ScoringMode, VocalChartV1, VocalMode, VocalNote, VocalPhrase, VocalTrack, VocalTrackRole,
+    ScoringMode, VocalChart, VocalMode, VocalNote, VocalPhrase, VocalTrack, VocalTrackRole,
 };
 
 impl EditorDocument {
-    pub fn new(chart: VocalChartV1) -> Self {
+    pub fn new(chart: VocalChart) -> Self {
         let mut used_ids = HashSet::new();
         for track in &chart.tracks {
             used_ids.insert(track.id.clone());
@@ -33,13 +33,13 @@ impl EditorDocument {
         }
     }
 
-    pub fn chart(&self) -> &VocalChartV1 {
+    pub fn chart(&self) -> &VocalChart {
         &self.chart
     }
 
     /// Returns a save-ready chart: notes ordered inside their phrase, phrases
     /// ordered, and empty phrases dropped.
-    pub fn to_chart(&self) -> VocalChartV1 {
+    pub fn to_chart(&self) -> VocalChart {
         let mut chart = self.chart.clone();
         for track in &mut chart.tracks {
             for phrase in &mut track.phrases {

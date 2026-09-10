@@ -30,7 +30,7 @@ use sha2::{Digest, Sha256};
 
 use crate::contract::{EngineError, EngineErrorCode, EngineResult};
 use crate::fusion::{
-    CanonicalLyrics, CanonicalWordBoundary, HardBoundarySetV1, SegmentCandidate,
+    CanonicalLyrics, CanonicalWordBoundary, HardBoundarySet, SegmentCandidate,
     SingingFusionEvidence,
 };
 
@@ -222,7 +222,7 @@ const OPTION_FIELDS: [&str; 15] = [
 ];
 
 #[derive(Serialize, Default)]
-struct AgentLyricsV1 {
+struct AgentLyrics {
     text: String,
     language: Option<String>,
     word_fields: [&'static str; 5],
@@ -230,7 +230,7 @@ struct AgentLyricsV1 {
 }
 
 #[derive(Serialize)]
-struct AgentCandidateProjectionV1 {
+struct AgentCandidateProjection {
     candidate_set_digest: String,
     string_table: Vec<String>,
     option_fields: [&'static str; 15],
@@ -238,12 +238,12 @@ struct AgentCandidateProjectionV1 {
 }
 
 #[derive(Serialize)]
-struct AgentFusionRequestV1<'a> {
+struct AgentFusionRequest<'a> {
     contract: &'static str,
     version: u32,
     instructions: &'static str,
-    hard_boundaries: &'a HardBoundarySetV1,
-    lyrics: &'a AgentLyricsV1,
+    hard_boundaries: &'a HardBoundarySet,
+    lyrics: &'a AgentLyrics,
     candidate_set_digest: &'a str,
     string_table: &'a [String],
     option_fields: [&'static str; 15],
@@ -252,14 +252,14 @@ struct AgentFusionRequestV1<'a> {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct AgentFusionResponseV1 {
+struct AgentFusionResponse {
     contract: String,
     version: u32,
     selected: Vec<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct FusionAgentDecisionV1 {
+pub struct FusionAgentDecision {
     pub selected: Vec<SegmentCandidate>,
     pub candidate_set_digest: String,
     pub response_digest: String,
@@ -321,7 +321,7 @@ pub(crate) fn candidate_set_digest<T: Serialize + ?Sized>(pool: &T) -> EngineRes
     Ok(format!("{:x}", writer.0.finalize()))
 }
 
-fn encode_agent_request(request: &AgentFusionRequestV1<'_>) -> EngineResult<Vec<u8>> {
+fn encode_agent_request(request: &AgentFusionRequest<'_>) -> EngineResult<Vec<u8>> {
     let mut writer = BoundedRequestBuffer::new();
     if let Err(error) = serde_json::to_writer(&mut writer, request) {
         return if writer.oversized {
@@ -392,7 +392,7 @@ fn intern_string(
 fn candidate_projection(
     pool: &SingingFusionEvidence,
     candidate_set_digest: String,
-) -> EngineResult<AgentCandidateProjectionV1> {
+) -> EngineResult<AgentCandidateProjection> {
     let mut by_range = BTreeMap::<(u64, u64), Vec<(usize, &SegmentCandidate)>>::new();
     for (index, candidate) in pool.candidates.iter().enumerate() {
         by_range
@@ -456,7 +456,7 @@ fn candidate_projection(
             serde_json::Value::Array(options),
         ]);
     }
-    Ok(AgentCandidateProjectionV1 {
+    Ok(AgentCandidateProjection {
         candidate_set_digest,
         string_table,
         option_fields: OPTION_FIELDS,
@@ -467,11 +467,11 @@ fn candidate_projection(
 fn lyric_projection(
     transcript: Option<&CanonicalLyrics>,
     words: Option<&[CanonicalWordBoundary]>,
-) -> EngineResult<AgentLyricsV1> {
+) -> EngineResult<AgentLyrics> {
     let Some(transcript) = transcript else {
-        return Ok(AgentLyricsV1 {
+        return Ok(AgentLyrics {
             word_fields: ["id", "text", "start", "end", "confidence"],
-            ..AgentLyricsV1::default()
+            ..AgentLyrics::default()
         });
     };
     let words = words
@@ -487,7 +487,7 @@ fn lyric_projection(
             ])
         })
         .collect::<EngineResult<Vec<_>>>()?;
-    Ok(AgentLyricsV1 {
+    Ok(AgentLyrics {
         text: transcript.text.clone(),
         language: transcript.language.clone(),
         word_fields: ["id", "text", "start", "end", "confidence"],
@@ -521,11 +521,11 @@ pub fn run_fusion_agent(
     candidates: &[SegmentCandidate],
     timeout: Duration,
     cancellation: &CancellationToken,
-) -> EngineResult<FusionAgentDecisionV1> {
+) -> EngineResult<FusionAgentDecision> {
     let pool = SingingFusionEvidence {
         schema_version: 1,
         candidates: candidates.to_vec(),
-        hard_boundaries: HardBoundarySetV1::default(),
+        hard_boundaries: HardBoundarySet::default(),
     };
     run_fusion_agent_for_pool(executable, &pool, timeout, cancellation)
 }
@@ -537,7 +537,7 @@ pub fn run_fusion_agent_for_pool(
     pool: &SingingFusionEvidence,
     timeout: Duration,
     cancellation: &CancellationToken,
-) -> EngineResult<FusionAgentDecisionV1> {
+) -> EngineResult<FusionAgentDecision> {
     run_fusion_agent_for_pool_inner(executable, pool, None, None, timeout, cancellation)
 }
 
@@ -548,7 +548,7 @@ pub fn run_fusion_agent_for_pool_with_lyrics(
     words: &[CanonicalWordBoundary],
     timeout: Duration,
     cancellation: &CancellationToken,
-) -> EngineResult<FusionAgentDecisionV1> {
+) -> EngineResult<FusionAgentDecision> {
     run_fusion_agent_for_pool_inner(
         executable,
         pool,
@@ -566,7 +566,7 @@ fn run_fusion_agent_for_pool_inner(
     words: Option<&[CanonicalWordBoundary]>,
     timeout: Duration,
     cancellation: &CancellationToken,
-) -> EngineResult<FusionAgentDecisionV1> {
+) -> EngineResult<FusionAgentDecision> {
     if pool.candidates.is_empty() {
         return Err(worker_failed(
             "fusion agent has no candidates to select from",
@@ -584,7 +584,7 @@ fn run_fusion_agent_for_pool_inner(
     let candidate_set_digest = candidate_set_digest(pool)?;
     let projection = candidate_projection(pool, candidate_set_digest.clone())?;
     let lyrics = lyric_projection(transcript, words)?;
-    let request = AgentFusionRequestV1 {
+    let request = AgentFusionRequest {
         contract: AGENT_REQUEST_CONTRACT,
         version: AGENT_PROTOCOL_VERSION,
         instructions: FUSION_AGENT_INSTRUCTIONS,
@@ -820,7 +820,7 @@ fn run_fusion_agent_for_pool_inner(
         ));
     }
     let response_digest = format!("{:x}", Sha256::digest(&stdout_bytes));
-    let response: AgentFusionResponseV1 = serde_json::from_slice(&stdout_bytes)
+    let response: AgentFusionResponse = serde_json::from_slice(&stdout_bytes)
         .map_err(|_| protocol_mismatch("fusion agent response is not valid protocol JSON"))?;
     if response.contract != AGENT_RESPONSE_CONTRACT || response.version != AGENT_PROTOCOL_VERSION {
         return Err(protocol_mismatch(
@@ -852,7 +852,7 @@ fn run_fusion_agent_for_pool_inner(
             })
         })
         .collect::<EngineResult<Vec<_>>>()?;
-    Ok(FusionAgentDecisionV1 {
+    Ok(FusionAgentDecision {
         selected,
         candidate_set_digest,
         response_digest,
@@ -880,7 +880,7 @@ mod tests {
 
     use super::*;
     use crate::fusion::{
-        BoundaryCandidateRole, BoundaryEvidenceKind, HardBoundaryV1, LyricsAuthority,
+        BoundaryCandidateRole, BoundaryEvidenceKind, HardBoundary, LyricsAuthority,
         TechniqueScores, TimeRange, TranscriptTokenEvidence,
     };
 
@@ -1023,8 +1023,8 @@ mod tests {
         let pool = SingingFusionEvidence {
             schema_version: 1,
             candidates: candidates.clone(),
-            hard_boundaries: HardBoundarySetV1 {
-                boundaries: vec![HardBoundaryV1 {
+            hard_boundaries: HardBoundarySet {
+                boundaries: vec![HardBoundary {
                     source: "caller".to_string(),
                     level: crate::BoundaryLevel::Word,
                     range: TimeRange::from_seconds(0.5, 1.0).unwrap(),
@@ -1096,7 +1096,7 @@ mod tests {
         let candidate_only_pool = SingingFusionEvidence {
             schema_version: 1,
             candidates,
-            hard_boundaries: HardBoundarySetV1::default(),
+            hard_boundaries: HardBoundarySet::default(),
         };
         assert_ne!(
             candidate_set_digest(&pool).unwrap(),

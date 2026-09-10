@@ -7,7 +7,7 @@ use uta_runtime_manager::{
 };
 
 use super::*;
-use crate::artifact::PitchEvidenceV03;
+use crate::artifact::PitchEvidence;
 use crate::contract::request::tests::valid_request;
 use crate::contract::{AudioRole, TIMELINE_VALID_GATE};
 use crate::fusion::{BoundaryCandidateRole, BoundaryEvidenceKind};
@@ -64,8 +64,8 @@ fn request_fingerprint_identity_does_not_depend_on_local_path() {
 
 #[test]
 fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
-    use crate::artifact::{CandidateVocalChartV1, SingingAnalysisV1};
-    use crate::candidate_pipeline::{CandidatePathDecisionV1, SingingStagesOutput};
+    use crate::artifact::{CandidateVocalChart, SingingAnalysis};
+    use crate::candidate_pipeline::{CandidatePathDecision, SingingStagesOutput};
     use crate::fusion::{
         AcousticCandidateFeatures, CanonicalLyrics, CanonicalNote, CanonicalNoteEvidence,
         CanonicalSingingTrack, CanonicalWordBoundary, HarmonyMetadata, LyricsAuthority,
@@ -204,18 +204,18 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
             evidence_experts: vec!["game".to_string()],
             reviewed: false,
         }],
-        decision: CandidatePathDecisionV1::Algorithm {
+        decision: CandidatePathDecision::Algorithm {
             candidate_set_digest: "a".repeat(64),
             selected_candidate_ids: vec!["game-note-0".to_string()],
         },
     };
     let candidate_digest = crate::execution::candidate_set_digest(&singing.fusion).unwrap();
-    let decision_provenance = FusionDecisionProvenanceV1::Algorithm {
+    let decision_provenance = FusionDecisionProvenance::Algorithm {
         selector: HSMM_VITERBI_SELECTOR.to_string(),
         selector_version: HSMM_VERSION.to_string(),
         candidate_set_digest: candidate_digest,
         selected_candidate_ids: vec!["game-note-0".to_string()],
-        reuse_policy: AnalysisReusePolicyV1::Deterministic,
+        reuse_policy: AnalysisReusePolicy::Deterministic,
     };
     let root = std::env::temp_dir().join(format!(
         "uta-engine-pure-candidate-{}-{}",
@@ -226,7 +226,7 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
             .as_nanos()
     ));
     fs::create_dir_all(&root).unwrap();
-    let mut artifacts = AnalysisArtifactsV1::default();
+    let mut artifacts = AnalysisArtifacts::default();
     let fingerprint = "9".repeat(64);
     publish_candidate_artifacts(
         &root,
@@ -247,7 +247,7 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
         singing_ref.path,
         Path::new("analysis/singing-analysis.json")
     );
-    let analysis: SingingAnalysisV1 =
+    let analysis: SingingAnalysis =
         serde_json::from_slice(&fs::read(root.join(&singing_ref.path)).unwrap()).unwrap();
     analysis.validate().unwrap();
     assert!(analysis.track.is_none());
@@ -256,7 +256,7 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
     assert_eq!(analysis.candidate_evidence.len(), 1);
     let chart_ref = artifacts.candidate_vocal_chart.as_ref().unwrap();
     assert_eq!(chart_ref.path, Path::new("candidate/vocal-chart.json"));
-    let chart: CandidateVocalChartV1 =
+    let chart: CandidateVocalChart =
         serde_json::from_slice(&fs::read(root.join(&chart_ref.path)).unwrap()).unwrap();
     chart.validate().unwrap();
     assert_eq!(chart.format, utz::VOCAL_CHART_FORMAT);
@@ -267,10 +267,10 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
     fs::create_dir(&quantized_root).unwrap();
     let mut quantized_track = singing.track.clone();
     quantized_track.notes[0].range = TimeRange::new(125_000, 375_000).unwrap();
-    let report = crate::quantization::QuantizationReportV1 {
+    let report = crate::quantization::QuantizationReport {
         algorithm: QUANTIZATION_VERSION.to_string(),
         bpm: 120.0,
-        grid: crate::contract::QuantizationGridV1::Sixteenth,
+        grid: crate::contract::QuantizationGrid::Sixteenth,
         grid_step: 125_000,
         minimum_note_duration: 125_000,
         source_start: 0,
@@ -280,7 +280,7 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
         adjusted_notes: 1,
         maximum_shift: 25_000,
     };
-    let mut quantized_artifacts = AnalysisArtifactsV1::default();
+    let mut quantized_artifacts = AnalysisArtifacts::default();
     publish_candidate_artifacts(
         &quantized_root,
         true,
@@ -295,14 +295,14 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
         &CancellationToken::default(),
     )
     .unwrap();
-    let raw_analysis: SingingAnalysisV1 = serde_json::from_slice(
+    let raw_analysis: SingingAnalysis = serde_json::from_slice(
         &fs::read(
             quantized_root.join(&quantized_artifacts.singing_analysis.as_ref().unwrap().path),
         )
         .unwrap(),
     )
     .unwrap();
-    let quantized_chart: CandidateVocalChartV1 = serde_json::from_slice(
+    let quantized_chart: CandidateVocalChart = serde_json::from_slice(
         &fs::read(
             quantized_root.join(
                 &quantized_artifacts
@@ -324,17 +324,17 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
         quantized_note.duration,
         quantized_track.notes[0].range.end - quantized_track.notes[0].range.start
     );
-    let quantized_manifest = AnalysisResultManifestV1 {
+    let quantized_manifest = AnalysisResultManifest {
         contract: ANALYSIS_RESULT_CONTRACT.to_string(),
         version: ANALYSIS_RESULT_VERSION,
         request_id: "quantized-fixture".to_string(),
         status: AnalysisStatus::Ok,
         artifacts: quantized_artifacts,
-        diagnostics: AnalysisDiagnosticsV1 {
+        diagnostics: AnalysisDiagnostics {
             quantization: Some(report),
-            ..AnalysisDiagnosticsV1::default()
+            ..AnalysisDiagnostics::default()
         },
-        provenance: AnalysisProvenanceV1 {
+        provenance: AnalysisProvenance {
             resources: Vec::new(),
             calibration_version: CALIBRATION_VERSION.to_string(),
             fusion_version: FUSION_VERSION.to_string(),
@@ -348,14 +348,14 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
     };
     quantized_manifest.validate().unwrap();
 
-    let manifest = AnalysisResultManifestV1 {
+    let manifest = AnalysisResultManifest {
         contract: ANALYSIS_RESULT_CONTRACT.to_string(),
         version: ANALYSIS_RESULT_VERSION,
         request_id: "pure-fixture".to_string(),
         status: AnalysisStatus::Ok,
         artifacts,
-        diagnostics: AnalysisDiagnosticsV1::default(),
-        provenance: AnalysisProvenanceV1 {
+        diagnostics: AnalysisDiagnostics::default(),
+        provenance: AnalysisProvenance {
             resources: Vec::new(),
             calibration_version: CALIBRATION_VERSION.to_string(),
             fusion_version: FUSION_VERSION.to_string(),
@@ -384,7 +384,7 @@ fn cancelled_candidate_publication_writes_no_artifact() {
     fs::create_dir_all(&root).unwrap();
     let token = CancellationToken::default();
     token.cancel();
-    let mut artifacts = AnalysisArtifactsV1::default();
+    let mut artifacts = AnalysisArtifacts::default();
     let error = publish_candidate_artifacts(
         &root,
         true,
@@ -557,15 +557,15 @@ fn rmvpe_partial_pipeline_emits_hashed_result_and_stable_fingerprint() {
     let second = engine.analyze(&request, &output_two).unwrap();
     let lifecycle_events = lifecycle_events.lock().unwrap();
     assert!(lifecycle_events.iter().any(|event| {
-        event.kind == crate::events::EngineLifecycleKindV1::NodeStarted
+        event.kind == crate::events::EngineLifecycleKind::NodeStarted
             && event.capability_id == "pitch.track"
             && event.model_id.as_deref() == Some("rmvpe")
     }));
     assert!(lifecycle_events.iter().any(|event| {
-        event.kind == crate::events::EngineLifecycleKindV1::NodeProgress && event.progress.is_some()
+        event.kind == crate::events::EngineLifecycleKind::NodeProgress && event.progress.is_some()
     }));
     assert!(lifecycle_events.iter().any(|event| {
-        event.kind == crate::events::EngineLifecycleKindV1::NodeCompleted
+        event.kind == crate::events::EngineLifecycleKind::NodeCompleted
             && event.capability_id == "pitch.track"
     }));
     assert_eq!(first.status, AnalysisStatus::Ok);
@@ -591,7 +591,7 @@ fn rmvpe_partial_pipeline_emits_hashed_result_and_stable_fingerprint() {
     let pitch = first.artifacts.pitch_evidence.unwrap();
     assert_eq!(pitch.media_type, PITCH_MEDIA_TYPE);
     assert_eq!(pitch.sha256.len(), 64);
-    let pitch_value: PitchEvidenceV03 =
+    let pitch_value: PitchEvidence =
         serde_json::from_slice(&fs::read(output_one.join(&pitch.path)).unwrap()).unwrap();
     assert_eq!(pitch_value.start, 2_000_000);
     assert!(output_one.join("analysis-result.json").is_file());

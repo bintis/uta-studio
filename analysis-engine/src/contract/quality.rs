@@ -6,8 +6,7 @@ use super::{AnalysisProfile, EngineError, EngineErrorCode, EngineResult};
 
 pub const AUDIO_QUALITY_REPORT_CONTRACT: &str = "uta.analysis-engine.audio-quality-report";
 pub const AUDIO_QUALITY_REPORT_VERSION: u32 = 1;
-pub const AUDIO_QUALITY_ALGORITHM_VERSION: &str = "audio-quality-gates-v2";
-const LEGACY_AUDIO_QUALITY_ALGORITHM_VERSION: &str = "audio-quality-gates-v1";
+pub const AUDIO_QUALITY_ALGORITHM_VERSION: &str = "audio-quality-gates";
 pub const VOCAL_TOPOLOGY_ESTIMATE_CONTRACT: &str = "uta.analysis-engine.vocal-topology-estimate";
 pub const VOCAL_TOPOLOGY_ESTIMATE_VERSION: u32 = 1;
 
@@ -37,21 +36,21 @@ pub const AUDIO_QUALITY_GATE_ORDER: &[&str] = &[
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum QualityGateRequirementV1 {
+pub enum QualityGateRequirement {
     Required,
     Degrading,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum QualityGateStatusV1 {
+pub enum QualityGateStatus {
     Passed,
     Failed,
     Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct QualityMetricV1 {
+pub struct QualityMetric {
     pub name: String,
     pub value: f64,
     pub unit: String,
@@ -62,27 +61,27 @@ pub struct QualityMetricV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct QualityRegionV1 {
+pub struct QualityRegion {
     pub start: u64,
     pub end: u64,
     pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct QualityGateOutcomeV1 {
+pub struct QualityGateOutcome {
     pub gate: String,
-    pub requirement: QualityGateRequirementV1,
-    pub status: QualityGateStatusV1,
+    pub requirement: QualityGateRequirement,
+    pub status: QualityGateStatus,
     pub summary: String,
     #[serde(default)]
-    pub metrics: Vec<QualityMetricV1>,
+    pub metrics: Vec<QualityMetric>,
     #[serde(default)]
-    pub regions: Vec<QualityRegionV1>,
+    pub regions: Vec<QualityRegion>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum VocalTopologyModeV1 {
+pub enum VocalTopologyMode {
     SingleLead,
     AlternatingMultiLead,
     OverlappingMultiLead,
@@ -91,23 +90,23 @@ pub enum VocalTopologyModeV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VocalTopologyEstimateV1 {
+pub struct VocalTopologyEstimate {
     pub contract: String,
     pub version: u32,
     pub timebase: u32,
     pub source_start: u64,
     pub duration: u64,
-    pub mode: VocalTopologyModeV1,
+    pub mode: VocalTopologyMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<f32>,
     #[serde(default)]
-    pub overlap_regions: Vec<QualityRegionV1>,
+    pub overlap_regions: Vec<QualityRegion>,
     #[serde(default)]
-    pub support_regions: Vec<QualityRegionV1>,
+    pub support_regions: Vec<QualityRegion>,
     pub evidence_sources: Vec<String>,
 }
 
-impl VocalTopologyEstimateV1 {
+impl VocalTopologyEstimate {
     pub fn validate(&self) -> EngineResult<()> {
         if self.contract != VOCAL_TOPOLOGY_ESTIMATE_CONTRACT
             || self.version != VOCAL_TOPOLOGY_ESTIMATE_VERSION
@@ -129,12 +128,12 @@ impl VocalTopologyEstimateV1 {
             ));
         }
         let mode_shape_valid = match self.mode {
-            VocalTopologyModeV1::SingleLead | VocalTopologyModeV1::Unknown => {
+            VocalTopologyMode::SingleLead | VocalTopologyMode::Unknown => {
                 self.overlap_regions.is_empty() && self.support_regions.is_empty()
             }
-            VocalTopologyModeV1::AlternatingMultiLead => self.overlap_regions.is_empty(),
-            VocalTopologyModeV1::OverlappingMultiLead => !self.overlap_regions.is_empty(),
-            VocalTopologyModeV1::LeadWithSupport => !self.support_regions.is_empty(),
+            VocalTopologyMode::AlternatingMultiLead => self.overlap_regions.is_empty(),
+            VocalTopologyMode::OverlappingMultiLead => !self.overlap_regions.is_empty(),
+            VocalTopologyMode::LeadWithSupport => !self.support_regions.is_empty(),
         };
         if !mode_shape_valid {
             return Err(invalid(
@@ -146,7 +145,7 @@ impl VocalTopologyEstimateV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AudioQualityReportV1 {
+pub struct AudioQualityReport {
     pub contract: String,
     pub version: u32,
     pub algorithm: String,
@@ -154,19 +153,16 @@ pub struct AudioQualityReportV1 {
     pub evaluated_audio_role: String,
     pub duration: u64,
     pub planned_gates: Vec<String>,
-    pub outcomes: Vec<QualityGateOutcomeV1>,
+    pub outcomes: Vec<QualityGateOutcome>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub vocal_topology: Option<VocalTopologyEstimateV1>,
+    pub vocal_topology: Option<VocalTopologyEstimate>,
 }
 
-impl AudioQualityReportV1 {
+impl AudioQualityReport {
     pub fn validate(&self) -> EngineResult<()> {
         if self.contract != AUDIO_QUALITY_REPORT_CONTRACT
             || self.version != AUDIO_QUALITY_REPORT_VERSION
-            || !matches!(
-                self.algorithm.as_str(),
-                AUDIO_QUALITY_ALGORITHM_VERSION | LEGACY_AUDIO_QUALITY_ALGORITHM_VERSION
-            )
+            || self.algorithm != AUDIO_QUALITY_ALGORITHM_VERSION
             || self.evaluated_audio_role.trim().is_empty()
             || self.duration == 0
             || self.planned_gates.is_empty()
@@ -189,8 +185,8 @@ impl AudioQualityReportV1 {
                 || outcome.gate != *planned
                 || outcome.requirement != gate_requirement(planned)
                 || outcome.summary.trim().is_empty()
-                || (outcome.requirement == QualityGateRequirementV1::Required
-                    && outcome.status == QualityGateStatusV1::Unknown)
+                || (outcome.requirement == QualityGateRequirement::Required
+                    && outcome.status == QualityGateStatus::Unknown)
             {
                 return Err(invalid(
                     "audio quality gate identity or ordering is invalid",
@@ -233,13 +229,13 @@ impl AudioQualityReportV1 {
     }
 }
 
-fn valid_quality_region_shapes(regions: &[QualityRegionV1]) -> bool {
+fn valid_quality_region_shapes(regions: &[QualityRegion]) -> bool {
     regions
         .iter()
         .all(|region| region.start < region.end && !region.reason.trim().is_empty())
 }
 
-fn valid_topology_regions(source_start: u64, duration: u64, regions: &[QualityRegionV1]) -> bool {
+fn valid_topology_regions(source_start: u64, duration: u64, regions: &[QualityRegion]) -> bool {
     let Some(source_end) = source_start.checked_add(duration) else {
         return false;
     };
@@ -251,12 +247,12 @@ fn valid_topology_regions(source_start: u64, duration: u64, regions: &[QualityRe
     }) && regions.windows(2).all(|pair| pair[0].end <= pair[1].start)
 }
 
-pub fn gate_requirement(gate: &str) -> QualityGateRequirementV1 {
+pub fn gate_requirement(gate: &str) -> QualityGateRequirement {
     match gate {
         TIMELINE_VALID_GATE | FINITE_SAMPLES_GATE | SILENCE_RATIO_GATE | ENERGY_RATIO_GATE => {
-            QualityGateRequirementV1::Required
+            QualityGateRequirement::Required
         }
-        _ => QualityGateRequirementV1::Degrading,
+        _ => QualityGateRequirement::Degrading,
     }
 }
 

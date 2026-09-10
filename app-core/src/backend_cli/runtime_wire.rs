@@ -5,14 +5,14 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum RuntimePolicyWireV1 {
+pub enum RuntimePolicyWire {
     #[default]
     Production,
     Benchmark,
     Experimental,
 }
 
-impl RuntimePolicyWireV1 {
+impl RuntimePolicyWire {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Production => "production",
@@ -24,7 +24,7 @@ impl RuntimePolicyWireV1 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum RuntimeResourceKindWireV1 {
+pub enum RuntimeResourceKindWire {
     Model,
     Runtime,
     Tool,
@@ -33,10 +33,10 @@ pub enum RuntimeResourceKindWireV1 {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct RuntimeResourceRefWireV1(pub String);
+pub struct RuntimeResourceRefWire(pub String);
 
-impl RuntimeResourceRefWireV1 {
-    pub fn new(kind: RuntimeResourceKindWireV1, id: &str) -> Result<Self, String> {
+impl RuntimeResourceRefWire {
+    pub fn new(kind: RuntimeResourceKindWire, id: &str) -> Result<Self, String> {
         if id.is_empty()
             || id.contains("..")
             || id.contains(['/', '\\', ':'])
@@ -47,32 +47,32 @@ impl RuntimeResourceRefWireV1 {
             return Err(format!("invalid runtime resource id: {id}"));
         }
         let kind = match kind {
-            RuntimeResourceKindWireV1::Model => "model",
-            RuntimeResourceKindWireV1::Runtime => "runtime",
-            RuntimeResourceKindWireV1::Tool => "tool",
-            RuntimeResourceKindWireV1::Bundle => "bundle",
+            RuntimeResourceKindWire::Model => "model",
+            RuntimeResourceKindWire::Runtime => "runtime",
+            RuntimeResourceKindWire::Tool => "tool",
+            RuntimeResourceKindWire::Bundle => "bundle",
         };
         Ok(Self(format!("{kind}:{id}")))
     }
 
     pub fn model(id: &str) -> Result<Self, String> {
-        Self::new(RuntimeResourceKindWireV1::Model, id)
+        Self::new(RuntimeResourceKindWire::Model, id)
     }
     pub fn runtime(id: &str) -> Result<Self, String> {
-        Self::new(RuntimeResourceKindWireV1::Runtime, id)
+        Self::new(RuntimeResourceKindWire::Runtime, id)
     }
     pub fn tool(id: &str) -> Result<Self, String> {
-        Self::new(RuntimeResourceKindWireV1::Tool, id)
+        Self::new(RuntimeResourceKindWire::Tool, id)
     }
     pub fn bundle(id: &str) -> Result<Self, String> {
-        Self::new(RuntimeResourceKindWireV1::Bundle, id)
+        Self::new(RuntimeResourceKindWire::Bundle, id)
     }
     pub fn id(&self) -> &str {
         self.0.split_once(':').map_or(self.0.as_str(), |(_, id)| id)
     }
 }
 
-impl fmt::Display for RuntimeResourceRefWireV1 {
+impl fmt::Display for RuntimeResourceRefWire {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.0)
     }
@@ -80,16 +80,16 @@ impl fmt::Display for RuntimeResourceRefWireV1 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum NativeBackendWireV1 {
+pub enum NativeBackendWire {
     Ggml,
 }
 
-/// Device-class preference, orthogonal to `NativeBackendWireV1`. Hand-mirrors
+/// Device-class preference, orthogonal to `NativeBackendWire`. Hand-mirrors
 /// the packaged runtime protocol's native-device-class field while preserving
 /// this crate's convention of never importing the backend crate directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum DeviceClassWireV1 {
+pub enum DeviceClassWire {
     Cpu,
     Gpu,
     IntegratedGpu,
@@ -97,7 +97,7 @@ pub enum DeviceClassWireV1 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ValidationStateWireV1 {
+pub enum ValidationStateWire {
     ProductionPinned,
     BenchmarkCandidate,
     Experimental,
@@ -106,7 +106,7 @@ pub enum ValidationStateWireV1 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum InstallStateWireV1 {
+pub enum InstallStateWire {
     Absent,
     Installed,
     Incomplete,
@@ -116,7 +116,7 @@ pub enum InstallStateWireV1 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ResourceOriginWireV1 {
+pub enum ResourceOriginWire {
     Missing,
     Managed,
     Legacy,
@@ -127,7 +127,7 @@ pub enum ResourceOriginWireV1 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ReadinessReasonWireV1 {
+pub enum ReadinessReasonWire {
     UnknownResource,
     Absent,
     Incomplete,
@@ -144,24 +144,24 @@ pub enum ReadinessReasonWireV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RuntimeResourceStatusWireV1 {
-    pub resource: RuntimeResourceRefWireV1,
-    pub install_state: InstallStateWireV1,
-    pub origin: ResourceOriginWireV1,
+pub struct RuntimeResourceStatusWire {
+    pub resource: RuntimeResourceRefWire,
+    pub install_state: InstallStateWire,
+    pub origin: ResourceOriginWire,
     #[serde(default)]
     pub integrity_verified: bool,
     #[serde(default)]
     pub runnable: bool,
-    pub validation_state: ValidationStateWireV1,
+    pub validation_state: ValidationStateWire,
     pub dependencies_ready: bool,
     pub executable_ready: bool,
     pub usable: bool,
     #[serde(default)]
-    pub reasons: Vec<ReadinessReasonWireV1>,
+    pub reasons: Vec<ReadinessReasonWire>,
     #[serde(default)]
-    pub selected_backend: Option<NativeBackendWireV1>,
+    pub selected_backend: Option<NativeBackendWire>,
     #[serde(default)]
-    pub runtime_resource: Option<RuntimeResourceRefWireV1>,
+    pub runtime_resource: Option<RuntimeResourceRefWire>,
     #[serde(default)]
     pub generation: Option<String>,
     #[serde(default)]
@@ -173,15 +173,15 @@ pub struct RuntimeResourceStatusWireV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RuntimeBackendCapabilityWireV1 {
-    pub backend: NativeBackendWireV1,
-    pub validation: ValidationStateWireV1,
+pub struct RuntimeBackendCapabilityWire {
+    pub backend: NativeBackendWire,
+    pub validation: ValidationStateWire,
     #[serde(default)]
     pub evidence_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RuntimeLicenseWireV1 {
+pub struct RuntimeLicenseWire {
     pub status: String,
     pub source_attribution: String,
     #[serde(default)]
@@ -189,17 +189,17 @@ pub struct RuntimeLicenseWireV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RuntimeResourceMetadataWireV1 {
+pub struct RuntimeResourceMetadataWire {
     pub display_name: String,
     pub purpose: String,
     #[serde(default)]
     pub capabilities: Vec<String>,
     #[serde(default)]
-    pub dependencies: Vec<RuntimeResourceRefWireV1>,
+    pub dependencies: Vec<RuntimeResourceRefWire>,
     #[serde(default)]
-    pub backends: Vec<RuntimeBackendCapabilityWireV1>,
+    pub backends: Vec<RuntimeBackendCapabilityWire>,
     #[serde(default)]
-    pub license: Option<RuntimeLicenseWireV1>,
+    pub license: Option<RuntimeLicenseWire>,
     #[serde(default)]
     pub estimated_download_bytes: Option<u64>,
     #[serde(default)]
@@ -211,15 +211,15 @@ pub struct RuntimeResourceMetadataWireV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RuntimeResourceDetailsWireV1 {
-    pub resource: RuntimeResourceRefWireV1,
-    pub metadata: RuntimeResourceMetadataWireV1,
-    pub status: RuntimeResourceStatusWireV1,
+pub struct RuntimeResourceDetailsWire {
+    pub resource: RuntimeResourceRefWire,
+    pub metadata: RuntimeResourceMetadataWire,
+    pub status: RuntimeResourceStatusWire,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RuntimeResolvedIdentityWireV1 {
-    pub resource: RuntimeResourceRefWireV1,
+pub struct RuntimeResolvedIdentityWire {
+    pub resource: RuntimeResourceRefWire,
     pub generation: String,
     pub content_digest: String,
     pub model_recipe_digest: String,
@@ -229,21 +229,21 @@ pub struct RuntimeResolvedIdentityWireV1 {
     #[serde(default)]
     pub runtime_recipe_digest: Option<String>,
     pub runtime_executable: PathBuf,
-    pub backend: NativeBackendWireV1,
-    pub policy: RuntimePolicyWireV1,
-    pub validation_state: ValidationStateWireV1,
+    pub backend: NativeBackendWire,
+    pub policy: RuntimePolicyWire,
+    pub validation_state: ValidationStateWire,
     #[serde(default)]
-    pub readiness_reasons: Vec<ReadinessReasonWireV1>,
+    pub readiness_reasons: Vec<ReadinessReasonWire>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RuntimeResolvedToolWireV1 {
-    pub resource: RuntimeResourceRefWireV1,
+pub struct RuntimeResolvedToolWire {
+    pub resource: RuntimeResourceRefWire,
     pub executable: PathBuf,
     pub identity: String,
     pub version: String,
     pub protocol_version: u32,
-    pub origin: ResourceOriginWireV1,
+    pub origin: ResourceOriginWire,
 }
 
 /// Runtime Manager's provider integration projection intentionally contains
@@ -251,7 +251,7 @@ pub struct RuntimeResolvedToolWireV1 {
 /// selectable only when its PATH CLI and sibling manifest-verified native
 /// adapter are both present.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RuntimeFusionProviderStatusWireV1 {
+pub struct RuntimeFusionProviderStatusWire {
     pub provider: String,
     pub display_name: String,
     pub executable_name: String,
@@ -270,23 +270,23 @@ pub struct RuntimeFusionProviderStatusWireV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RuntimeFusionProviderReportWireV1 {
+pub struct RuntimeFusionProviderReportWire {
     pub adapter_resource: String,
     pub selected_provider: Option<String>,
-    pub providers: Vec<RuntimeFusionProviderStatusWireV1>,
+    pub providers: Vec<RuntimeFusionProviderStatusWire>,
     pub network_disclosure: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RuntimeMutationResultWireV1 {
+pub struct RuntimeMutationResultWire {
     #[serde(default)]
-    pub changed: Vec<RuntimeResourceRefWireV1>,
+    pub changed: Vec<RuntimeResourceRefWire>,
     #[serde(default)]
-    pub unchanged: Vec<RuntimeResourceRefWireV1>,
+    pub unchanged: Vec<RuntimeResourceRefWire>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RuntimeResultEnvelopeV1<T> {
+pub struct RuntimeResultEnvelope<T> {
     pub schema: String,
     pub schema_version: u32,
     #[serde(rename = "type")]
@@ -297,7 +297,7 @@ pub struct RuntimeResultEnvelopeV1<T> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RuntimeErrorEnvelopeV1 {
+pub struct RuntimeErrorEnvelope {
     pub schema: String,
     pub schema_version: u32,
     #[serde(rename = "type")]
@@ -311,7 +311,7 @@ pub struct RuntimeErrorEnvelopeV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RuntimeEventEnvelopeV1 {
+pub struct RuntimeEventEnvelope {
     pub schema: String,
     pub schema_version: u32,
     #[serde(rename = "type")]
@@ -320,5 +320,5 @@ pub struct RuntimeEventEnvelopeV1 {
     #[serde(default)]
     pub operation: Option<String>,
     #[serde(default)]
-    pub resource: Option<RuntimeResourceRefWireV1>,
+    pub resource: Option<RuntimeResourceRefWire>,
 }

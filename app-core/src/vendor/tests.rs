@@ -58,7 +58,7 @@ fn exact_strategy_status_ignores_unrelated_roformer_bundle_members() {
         model_id: &str,
         capability: &str,
         usable: bool,
-    ) -> crate::backend_cli::RuntimeResourceDetailsWireV1 {
+    ) -> crate::backend_cli::RuntimeResourceDetailsWire {
         serde_json::from_value(serde_json::json!({
             "resource": format!("model:{model_id}"),
             "metadata": {

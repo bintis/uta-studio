@@ -78,81 +78,6 @@ mod tests {
     }
 
     #[test]
-    fn schema_four_migration_removes_an_unavailable_provider() {
-        let mut stored = StoredWorkflow {
-            definition: default_workflow("song-a"),
-            layout: WorkflowLayout::default(),
-            updated_at_ms: 0,
-        };
-        stored.definition.schema_version = 4;
-        stored.definition.nodes.push(WorkflowNodeInstance {
-            instance_id: WorkflowNodeId::new("retired"),
-            capability_id: CapabilityId::new("analysis.asr"),
-            model_id: Some("retired-provider".to_string()),
-            separation_strategy: None,
-            parameters: Default::default(),
-            execution_policy: ExecutionPolicy::Always,
-            priority: 1,
-            skip_if_unchanged: false,
-        });
-        stored.definition.analyzer_bindings.push(AnalyzerBinding {
-            analyzer_node: WorkflowNodeId::new("retired"),
-            source: WorkflowPortRef {
-                node: WorkflowNodeId::new("vocal_dereverb_1"),
-                port: "audio".to_string(),
-            },
-            analyzer_input: "audio".to_string(),
-        });
-        migrate_stored_workflow(&mut stored).unwrap();
-        assert_eq!(stored.definition.schema_version, WORKFLOW_SCHEMA_VERSION);
-        assert!(
-            stored
-                .definition
-                .nodes
-                .iter()
-                .all(|node| node.instance_id.as_str() != "retired")
-        );
-        assert!(compile_workflow(&stored.definition).is_ok());
-    }
-
-    #[test]
-    fn schema_five_migration_adds_the_validated_fcpe_secondary() {
-        let mut stored = StoredWorkflow {
-            definition: default_workflow("song-a"),
-            layout: WorkflowLayout::default(),
-            updated_at_ms: 0,
-        };
-        stored.definition.schema_version = 5;
-        stored
-            .definition
-            .nodes
-            .retain(|node| node.model_id.as_deref() != Some("fcpe"));
-        stored.definition.edges.retain(|edge| {
-            edge.from.node.as_str() != "f0_fcpe" && edge.to.node.as_str() != "f0_fcpe"
-        });
-        stored
-            .definition
-            .analyzer_bindings
-            .retain(|binding| binding.analyzer_node.as_str() != "f0_fcpe");
-
-        migrate_stored_workflow(&mut stored).unwrap();
-
-        let fcpe = stored
-            .definition
-            .nodes
-            .iter()
-            .find(|node| node.model_id.as_deref() == Some("fcpe"))
-            .expect("migration adds FCPE");
-        assert_eq!(
-            fcpe.execution_policy,
-            ExecutionPolicy::Conditional {
-                condition: ConditionalExecution::MaximumOnly
-            }
-        );
-        assert!(compile_workflow(&stored.definition).is_ok());
-    }
-
-    #[test]
     fn layout_never_changes_execution_digest() {
         let workflow = default_workflow("song-a");
         let before = workflow_definition_digest(&workflow).unwrap();
@@ -191,15 +116,15 @@ mod tests {
         let mut workflow = default_workflow("song-a");
         for (strategy, provider) in [
             (
-                SeparationStrategyV1::LeapDualOutput,
+                SeparationStrategy::LeapDualOutput,
                 "bs_roformer_leap_xe90_vocals",
             ),
             (
-                SeparationStrategyV1::LeapInstrumentalDirect,
+                SeparationStrategy::LeapInstrumentalDirect,
                 "bs_roformer_leap_xe90_instrumental",
             ),
             (
-                SeparationStrategyV1::PolarformerBoth,
+                SeparationStrategy::PolarformerBoth,
                 "bs_polarformer_public_instrumental",
             ),
         ] {
@@ -210,7 +135,7 @@ mod tests {
             )
             .unwrap();
             let snapshot = compile_workflow(&workflow).unwrap();
-            let wire = WorkflowExecutionWireV1::from_snapshot(&snapshot).unwrap();
+            let wire = WorkflowExecutionWire::from_snapshot(&snapshot).unwrap();
             let separation = wire
                 .nodes
                 .iter()

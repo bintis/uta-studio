@@ -48,7 +48,7 @@ pub use analysis_artifact::{
 pub use analysis_engine_adapter::{
     AnalysisRequestIntent, EngineRunDraft, EngineRunPreview, QueuedEngineRun,
     ResolvedAnalysisSource, StudioLyricToken, StudioLyricsContext, StudioLyricsContextProjection,
-    StudioLyricsMode, compile_analyze_request, preview_analyze_request_v1,
+    StudioLyricsMode, compile_analyze_request, preview_analyze_request,
     preview_and_queue_engine_run, preview_and_stage_engine_run, preview_engine_run,
     project_lyrics_context, queue_exact_preview, resolve_true_source, stage_exact_preview,
 };
@@ -107,12 +107,12 @@ pub use authoring::{
     shift_key, shift_key_done_payload, shift_tempo, shift_tempo_done_payload,
 };
 pub use backend_cli::{
-    AnalysisCliClient, AnalysisPlanWireV1, AnalysisResultManifestWireV1, AnalyzeRequestWireV1,
-    BackendCliError, ContinuousF0SourceWireV1, ExpertFusionPolicyWireV1, FusionModeWireV1,
-    InstallStateWireV1, NoteLengthSourceWireV1, OnsetSupportSourceWireV1, ReadinessReasonWireV1,
-    ResourceOriginWireV1, RuntimeCliClient, RuntimeFusionProviderReportWireV1,
-    RuntimeFusionProviderStatusWireV1, RuntimeResourceDetailsWireV1, RuntimeResourceStatusWireV1,
-    WorkflowExecutionNodePlanWireV1, WorkflowExecutionPlanWireV1, WorkflowNodeExecutionStateWireV1,
+    AnalysisCliClient, AnalysisPlanWire, AnalysisResultManifestWire, AnalyzeRequestWire,
+    BackendCliError, ContinuousF0SourceWire, ExpertFusionPolicyWire, FusionModeWire,
+    InstallStateWire, NoteLengthSourceWire, OnsetSupportSourceWire, ReadinessReasonWire,
+    ResourceOriginWire, RuntimeCliClient, RuntimeFusionProviderReportWire,
+    RuntimeFusionProviderStatusWire, RuntimeResourceDetailsWire, RuntimeResourceStatusWire,
+    WorkflowExecutionNodePlanWire, WorkflowExecutionPlanWire, WorkflowNodeExecutionStateWire,
 };
 pub use cache::{
     CacheDir, CachePaths, CacheStats, cache_roots, default_uta_studio_dir, normalized_target_path,
@@ -167,7 +167,7 @@ pub use source::{
     FolderSource, LibraryFolderEntry, MediaSource, active_source, list_library_folder,
 };
 pub use ultrastar_export::{export_ultrastar, validate_ultrastar_chart, validate_ultrastar_text};
-pub use utz::VocalChartV1;
+pub use utz::VocalChart;
 pub use utz_export::{
     ExportProgress, ExportableSong, export_utz, export_utz_with_progress, list_exportable_songs,
 };
@@ -182,14 +182,14 @@ pub use vocal_chart::migrate_analyzer_chart;
 pub use workflow::{
     AnalyzerBinding, AudioArtifactDescriptor, AudioRole, CapabilityClass, CapabilityId,
     CompiledArtifactBinding, CompiledNodeBinding, ConditionalExecution, ExecutionPolicy,
-    FusionModeV1, NodeCapability, NodePosition, OptionalWorkflowCardV1, QualityMode,
-    SeparationOutputRoleV1, SeparationProviderExecutionV1, SeparationStrategyOptionV1,
-    SeparationStrategyV1, StoredWorkflow, WORKFLOW_EXECUTION_EXTENSION_KEY,
-    WORKFLOW_SCHEMA_VERSION, WorkflowBindingWireV1, WorkflowCompileError, WorkflowDefinition,
-    WorkflowEdge, WorkflowExecutionInvocationWireV1, WorkflowExecutionSnapshot,
-    WorkflowExecutionWireV1, WorkflowId, WorkflowLayout, WorkflowModelOption, WorkflowNodeId,
-    WorkflowNodeInstance, WorkflowNodeWireV1, WorkflowPortRef, WorkflowPortSpec, WorkflowPortType,
-    WorkflowProviderPreferencesWireV1, WorkflowTerminalOutputWireV1, WorkflowValidationCode,
+    FusionMode, NodeCapability, NodePosition, OptionalWorkflowCard, QualityMode,
+    SeparationOutputRole, SeparationProviderExecution, SeparationStrategy,
+    SeparationStrategyOption, StoredWorkflow, WORKFLOW_EXECUTION_EXTENSION_KEY,
+    WORKFLOW_SCHEMA_VERSION, WorkflowBindingWire, WorkflowCompileError, WorkflowDefinition,
+    WorkflowEdge, WorkflowExecutionInvocationWire, WorkflowExecutionSnapshot,
+    WorkflowExecutionWire, WorkflowId, WorkflowLayout, WorkflowModelOption, WorkflowNodeId,
+    WorkflowNodeInstance, WorkflowNodeWire, WorkflowPortRef, WorkflowPortSpec, WorkflowPortType,
+    WorkflowProviderPreferencesWire, WorkflowTerminalOutputWire, WorkflowValidationCode,
     WorkflowValidationIssue, WorkflowValidationReport, add_optional_workflow_card,
     bind_workflow_analyzer, compile_workflow, default_workflow, duplicate_audio_transformation,
     fusion_mode, insert_audio_transformation_after_output, list_workflow_capabilities,

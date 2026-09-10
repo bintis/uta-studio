@@ -18,21 +18,21 @@ pub type CanonicalDuration = u64;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AnalyzeRequestV1 {
+pub struct AnalyzeRequest {
     pub contract: String,
     pub version: u32,
     pub request_id: String,
-    pub audio_sources: Vec<AudioSourceV1>,
+    pub audio_sources: Vec<AudioSource>,
     #[serde(default)]
-    pub lyrics: LyricsV1,
+    pub lyrics: Lyrics,
     #[serde(default)]
-    pub boundary_constraints: Vec<BoundaryConstraintV1>,
+    pub boundary_constraints: Vec<BoundaryConstraint>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub musical_context: Option<MusicalContextV1>,
-    pub analysis: AnalysisSpecV1,
-    pub requested_artifacts: RequestedArtifactsV1,
+    pub musical_context: Option<MusicalContext>,
+    pub analysis: AnalysisSpec,
+    pub requested_artifacts: RequestedArtifacts,
     #[serde(default)]
-    pub execution_policy: ExecutionPolicyV1,
+    pub execution_policy: ExecutionPolicy,
     /// Capabilities the caller asserts are already reflected in the supplied
     /// primary audio source and should not be re-requested, even though
     /// their normal inclusion check (`workflow_selects`/`requested_artifacts`)
@@ -54,7 +54,7 @@ pub const SATISFIABLE_CAPABILITIES: &[&str] = &[
     "audio.dereverb",
 ];
 
-impl AnalyzeRequestV1 {
+impl AnalyzeRequest {
     pub fn validate(&self) -> EngineResult<()> {
         if self.contract != ANALYZE_REQUEST_CONTRACT || self.version != ANALYZE_REQUEST_VERSION {
             return Err(EngineError::new(
@@ -104,7 +104,7 @@ impl AnalyzeRequestV1 {
             return Err(EngineError::new(
                 EngineErrorCode::InvalidAudioRole,
                 format!(
-                    "audio role {:?} is reference-only and cannot be primary in v1",
+                    "audio role {:?} is reference-only and cannot be primary",
                     primary.role
                 ),
             ));
@@ -161,7 +161,7 @@ impl AnalyzeRequestV1 {
         Ok(())
     }
 
-    pub fn primary_source(&self) -> EngineResult<&AudioSourceV1> {
+    pub fn primary_source(&self) -> EngineResult<&AudioSource> {
         let mut primary = self.audio_sources.iter().filter(|source| source.primary);
         let source = primary.next().ok_or_else(|| {
             EngineError::new(
@@ -224,17 +224,17 @@ impl AnalyzeRequestV1 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AudioSourceV1 {
+pub struct AudioSource {
     pub id: String,
     pub kind: AudioSourceKind,
     pub path: PathBuf,
     pub sha256: String,
     pub role: AudioRole,
     pub primary: bool,
-    pub timeline: SourceTimelineV1,
+    pub timeline: SourceTimeline,
 }
 
-impl AudioSourceV1 {
+impl AudioSource {
     pub fn validate(&self) -> EngineResult<()> {
         validate_identifier(&self.id, "audio source id")?;
         if self.kind != AudioSourceKind::LocalFile {
@@ -290,12 +290,12 @@ impl AudioRole {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SourceTimelineV1 {
+pub struct SourceTimeline {
     pub timebase: u32,
     pub source_start: CanonicalTime,
 }
 
-impl SourceTimelineV1 {
+impl SourceTimeline {
     pub fn validate(&self) -> EngineResult<()> {
         if self.timebase != CANONICAL_TIMEBASE {
             return Err(EngineError::new(
@@ -309,15 +309,15 @@ impl SourceTimelineV1 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct LyricsV1 {
+pub struct Lyrics {
     pub mode: LyricsMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
     #[serde(default)]
-    pub tokens: Vec<LyricTokenV1>,
+    pub tokens: Vec<LyricToken>,
 }
 
-impl Default for LyricsV1 {
+impl Default for Lyrics {
     fn default() -> Self {
         Self {
             mode: LyricsMode::None,
@@ -327,7 +327,7 @@ impl Default for LyricsV1 {
     }
 }
 
-impl LyricsV1 {
+impl Lyrics {
     fn validate(&self) -> EngineResult<()> {
         if self.mode == LyricsMode::None && !self.tokens.is_empty() {
             return Err(invalid("lyrics mode none cannot contain tokens"));
@@ -369,7 +369,7 @@ pub enum LyricsMode {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct LyricTokenV1 {
+pub struct LyricToken {
     pub id: String,
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -388,7 +388,7 @@ pub struct LyricTokenV1 {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct BoundaryConstraintV1 {
+pub struct BoundaryConstraint {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_id: Option<String>,
     pub level: BoundaryLevel,
@@ -400,7 +400,7 @@ pub struct BoundaryConstraintV1 {
     pub source: String,
 }
 
-impl BoundaryConstraintV1 {
+impl BoundaryConstraint {
     pub fn end(&self) -> EngineResult<CanonicalTime> {
         self.start.checked_add(self.duration).ok_or_else(|| {
             EngineError::new(
@@ -452,20 +452,20 @@ pub enum BoundaryAuthority {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct MusicalContextV1 {
+pub struct MusicalContext {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bpm: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub time_signature: Option<TimeSignatureV1>,
+    pub time_signature: Option<TimeSignature>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub quantization_grid: Option<QuantizationGridV1>,
+    pub quantization_grid: Option<QuantizationGrid>,
     #[serde(default)]
     pub authority: ContextAuthority,
 }
 
-impl MusicalContextV1 {
+impl MusicalContext {
     fn validate(&self) -> EngineResult<()> {
         if self
             .bpm
@@ -484,13 +484,13 @@ impl MusicalContextV1 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum QuantizationGridV1 {
+pub enum QuantizationGrid {
     Eighth,
     Sixteenth,
     ThirtySecond,
 }
 
-impl QuantizationGridV1 {
+impl QuantizationGrid {
     pub const fn steps_per_beat(self) -> u32 {
         match self {
             Self::Eighth => 2,
@@ -502,7 +502,7 @@ impl QuantizationGridV1 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TimeSignatureV1 {
+pub struct TimeSignature {
     pub beats: u16,
     pub unit: u16,
 }
@@ -516,14 +516,14 @@ pub enum ContextAuthority {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AnalysisSpecV1 {
+pub struct AnalysisSpec {
     pub profile: AnalysisProfile,
     pub track_target: TrackTarget,
     pub preserve_continuous_pitch: bool,
     pub enable_quantization: bool,
 }
 
-impl AnalysisSpecV1 {
+impl AnalysisSpec {
     fn validate(&self) -> EngineResult<()> {
         Ok(())
     }
@@ -545,7 +545,7 @@ pub enum TrackTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RequestedArtifactsV1 {
+pub struct RequestedArtifacts {
     #[serde(default)]
     pub vocal_chart: bool,
     #[serde(default)]
@@ -560,7 +560,7 @@ pub struct RequestedArtifactsV1 {
     pub stems: Vec<AudioRole>,
 }
 
-impl RequestedArtifactsV1 {
+impl RequestedArtifacts {
     pub fn requests_anything(&self) -> bool {
         self.vocal_chart
             || self.pitch_evidence
@@ -596,7 +596,7 @@ impl RequestedArtifactsV1 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ExecutionPolicyV1 {
+pub struct ExecutionPolicy {
     #[serde(default)]
     pub runtime_policy: RuntimePolicy,
     /// Explicit global model backend selection. `None` uses each model's
@@ -618,7 +618,7 @@ pub struct ExecutionPolicyV1 {
     pub model_device_overrides: BTreeMap<String, uta_runtime_manager::NativeDeviceClass>,
 }
 
-impl Default for ExecutionPolicyV1 {
+impl Default for ExecutionPolicy {
     fn default() -> Self {
         Self {
             runtime_policy: RuntimePolicy::Production,
@@ -630,7 +630,7 @@ impl Default for ExecutionPolicyV1 {
     }
 }
 
-impl ExecutionPolicyV1 {
+impl ExecutionPolicy {
     pub fn requested_backend_for(
         &self,
         model_id: &str,
@@ -672,33 +672,33 @@ fn invalid(message: impl Into<String>) -> EngineError {
 pub(crate) mod tests {
     use super::*;
 
-    pub(crate) fn valid_request(role: AudioRole) -> AnalyzeRequestV1 {
-        AnalyzeRequestV1 {
+    pub(crate) fn valid_request(role: AudioRole) -> AnalyzeRequest {
+        AnalyzeRequest {
             contract: ANALYZE_REQUEST_CONTRACT.to_string(),
             version: ANALYZE_REQUEST_VERSION,
             request_id: "req-123".to_string(),
-            audio_sources: vec![AudioSourceV1 {
+            audio_sources: vec![AudioSource {
                 id: "main".to_string(),
                 kind: AudioSourceKind::LocalFile,
                 path: PathBuf::from("fixture.flac"),
                 sha256: "a".repeat(64),
                 role,
                 primary: true,
-                timeline: SourceTimelineV1 {
+                timeline: SourceTimeline {
                     timebase: CANONICAL_TIMEBASE,
                     source_start: 0,
                 },
             }],
-            lyrics: LyricsV1::default(),
+            lyrics: Lyrics::default(),
             boundary_constraints: Vec::new(),
             musical_context: None,
-            analysis: AnalysisSpecV1 {
+            analysis: AnalysisSpec {
                 profile: AnalysisProfile::Fast,
                 track_target: TrackTarget::Lead,
                 preserve_continuous_pitch: true,
                 enable_quantization: false,
             },
-            requested_artifacts: RequestedArtifactsV1 {
+            requested_artifacts: RequestedArtifacts {
                 vocal_chart: true,
                 pitch_evidence: true,
                 singing_analysis: true,
@@ -706,7 +706,7 @@ pub(crate) mod tests {
                 alignment: true,
                 stems: Vec::new(),
             },
-            execution_policy: ExecutionPolicyV1::default(),
+            execution_policy: ExecutionPolicy::default(),
             satisfied_capabilities: Vec::new(),
             extensions: BTreeMap::new(),
         }
@@ -724,15 +724,15 @@ pub(crate) mod tests {
                 .contains("fusion_agent_adapter_path")
         );
         let encoded = serde_json::to_vec(&request).unwrap();
-        let decoded: AnalyzeRequestV1 = serde_json::from_slice(&encoded).unwrap();
+        let decoded: AnalyzeRequest = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(decoded, request);
     }
 
     #[test]
     fn ggml_backend_selection_applies_globally_and_per_model() {
-        let mut policy = ExecutionPolicyV1 {
+        let mut policy = ExecutionPolicy {
             requested_backend: Some(uta_runtime_manager::NativeBackend::Ggml),
-            ..ExecutionPolicyV1::default()
+            ..ExecutionPolicy::default()
         };
         assert_eq!(
             policy.requested_backend_for("rmvpe"),
@@ -756,11 +756,11 @@ pub(crate) mod tests {
         assert_eq!(error.code, EngineErrorCode::MissingRequiredInput);
         assert_eq!(error.capability.as_deref(), Some("rhythm.quantize"));
 
-        request.musical_context = Some(MusicalContextV1 {
+        request.musical_context = Some(MusicalContext {
             bpm: Some(120.0),
             key: None,
-            time_signature: Some(TimeSignatureV1 { beats: 4, unit: 4 }),
-            quantization_grid: Some(QuantizationGridV1::Sixteenth),
+            time_signature: Some(TimeSignature { beats: 4, unit: 4 }),
+            quantization_grid: Some(QuantizationGrid::Sixteenth),
             authority: ContextAuthority::Hint,
         });
         request.validate().unwrap();
@@ -809,7 +809,7 @@ pub(crate) mod tests {
         let json = serde_json::to_value(valid_request(AudioRole::LeadVocal)).unwrap();
         let mut json = json;
         json["audio_sources"][0]["timeline"]["source_start"] = serde_json::json!(1.5);
-        assert!(serde_json::from_value::<AnalyzeRequestV1>(json).is_err());
+        assert!(serde_json::from_value::<AnalyzeRequest>(json).is_err());
 
         let mut request = valid_request(AudioRole::LeadVocal);
         request.audio_sources[0].path = PathBuf::from("../escape.flac");
@@ -822,7 +822,7 @@ pub(crate) mod tests {
     #[test]
     fn rejects_timeline_overflow_and_unknown_constraint_tokens() {
         let mut request = valid_request(AudioRole::LeadVocal);
-        request.boundary_constraints.push(BoundaryConstraintV1 {
+        request.boundary_constraints.push(BoundaryConstraint {
             token_id: Some("missing".to_string()),
             level: BoundaryLevel::Word,
             start: u64::MAX,

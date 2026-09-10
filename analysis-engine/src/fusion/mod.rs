@@ -19,14 +19,14 @@ pub use baseline::{
 pub use calibration::{CalibrationMethod, ScoreCalibrator};
 pub(crate) use candidate_states::{persistent_f0_shifts, trustworthy_f0_point};
 pub use canonical::{
-    CanonicalNote, CanonicalNoteEvidence, CanonicalSingingTrack, F0Point, FusionContextSignalV1,
-    FusionDecisionTraceV1, HarmonyMetadata, PitchBendPoint, PitchSelectionReasonV1,
+    CanonicalNote, CanonicalNoteEvidence, CanonicalSingingTrack, F0Point, FusionContextSignal,
+    FusionDecisionTrace, HarmonyMetadata, PitchBendPoint, PitchSelectionReason,
     build_canonical_singing_track, validate_canonical_singing_track,
 };
 pub use evidence::{EvidenceFrame, EvidenceSeries, ScalarEvidence};
 pub use hsmm::{
     AcousticCandidateFeatures, BasicPitchCandidateFeatures, BoundaryAlternative,
-    BoundaryCandidateRole, BoundaryConstraintEvidenceV1, BoundaryConstraintKindV1,
+    BoundaryCandidateRole, BoundaryConstraintEvidence, BoundaryConstraintKind,
     BoundaryEvidenceKind, PitchAlternative, SegmentCandidate, TechniqueCandidateFeatures,
     attach_boundary_constraints, decode_candidate_graph, decode_candidate_graph_with_boundaries,
     validate_candidate_path, validate_candidate_path_with_boundaries, validate_candidate_pool,
@@ -40,7 +40,7 @@ pub use transcript_fusion::{
 };
 pub use types::{
     CANONICAL_TIMELINE_STEP, CANONICAL_TIMELINE_STEP_MS, EvidenceProvenance, ExpertTask,
-    HardBoundarySetV1, HardBoundaryV1, TechniqueScores, TimeRange,
+    HardBoundary, HardBoundarySet, TechniqueScores, TimeRange,
 };
 
 #[cfg(test)]
@@ -310,8 +310,8 @@ mod tests {
         .expect_err("a path that crosses a hard boundary must fail closed");
         assert!(error.contains("crosses a hard boundary"));
 
-        let near_edge = HardBoundarySetV1 {
-            boundaries: vec![HardBoundaryV1 {
+        let near_edge = HardBoundarySet {
+            boundaries: vec![HardBoundary {
                 source: "caller.near-edge".to_string(),
                 level: crate::BoundaryLevel::Word,
                 range: range(0.01, 0.02),
@@ -426,9 +426,9 @@ mod tests {
         );
     }
 
-    fn hard_boundary_set() -> HardBoundarySetV1 {
-        HardBoundarySetV1 {
-            boundaries: vec![HardBoundaryV1 {
+    fn hard_boundary_set() -> HardBoundarySet {
+        HardBoundarySet {
+            boundaries: vec![HardBoundary {
                 source: "caller.hard".to_string(),
                 level: crate::BoundaryLevel::Word,
                 range: range(0.5, 1.0),
@@ -499,7 +499,7 @@ mod tests {
     fn typed_phrase_start_confidence_relaxes_only_melodic_priors() {
         let previous = candidate("phrase-before", 0.0, 0.5, 69);
         let next = candidate("phrase-after", 0.5, 1.0, 81);
-        let hard_boundaries = HardBoundarySetV1::default();
+        let hard_boundaries = HardBoundarySet::default();
         let baseline = super::hsmm::transition_utility(&previous, &next, &hard_boundaries, &[]);
         assert!(baseline < 0.0);
 
@@ -507,9 +507,9 @@ mod tests {
             let mut candidate = next.clone();
             candidate
                 .boundary_constraints
-                .push(BoundaryConstraintEvidenceV1 {
+                .push(BoundaryConstraintEvidence {
                     source_expert: "constraint.user.phrase.p1".to_string(),
-                    kind: BoundaryConstraintKindV1::PhraseStart,
+                    kind: BoundaryConstraintKind::PhraseStart,
                     time: candidate.range.start,
                     source_local_strength: Some(confidence),
                     calibrated_confidence: None,
@@ -544,7 +544,7 @@ mod tests {
         let before = candidate("octave-before", 0.0, 0.5, 69);
         let middle = candidate("octave-middle", 0.5, 0.6, 81);
         let after = candidate("octave-after", 0.6, 1.1, 69);
-        let hard_boundaries = HardBoundarySetV1::default();
+        let hard_boundaries = HardBoundarySet::default();
         let baseline = super::hsmm::short_octave_return_penalty_for_test(
             &before,
             &middle,
@@ -558,9 +558,9 @@ mod tests {
             let mut candidate = middle.clone();
             candidate
                 .boundary_constraints
-                .push(BoundaryConstraintEvidenceV1 {
+                .push(BoundaryConstraintEvidence {
                     source_expert: "constraint.user.phrase.p1".to_string(),
-                    kind: BoundaryConstraintKindV1::PhraseStart,
+                    kind: BoundaryConstraintKind::PhraseStart,
                     time: candidate.range.start,
                     source_local_strength: Some(confidence),
                     calibrated_confidence: None,
@@ -612,9 +612,9 @@ mod tests {
         let mut voicing_only = crossing.clone();
         voicing_only
             .boundary_constraints
-            .push(BoundaryConstraintEvidenceV1 {
+            .push(BoundaryConstraintEvidence {
                 source_expert: "voicing".to_string(),
-                kind: BoundaryConstraintKindV1::VoicingTransition,
+                kind: BoundaryConstraintKind::VoicingTransition,
                 time: 500_000,
                 source_local_strength: Some(1.0),
                 calibrated_confidence: None,
@@ -625,7 +625,7 @@ mod tests {
         validate_candidate_path_with_boundaries(
             std::slice::from_ref(&voicing_only),
             std::slice::from_ref(&voicing_only),
-            &HardBoundarySetV1::default(),
+            &HardBoundarySet::default(),
         )
         .expect("voicing evidence resets melody scoring but is not a structural barrier");
     }
@@ -942,7 +942,7 @@ mod tests {
     #[test]
     fn calibration_is_versioned_and_rejects_invalid_temperature() {
         let calibrator = ScoreCalibrator {
-            version: "rmvpe-intel-v1".to_string(),
+            version: "rmvpe-intel".to_string(),
             method: CalibrationMethod::Temperature { temperature: 2.0 },
         };
         assert!(calibrator.calibrate(0.9).unwrap() < 0.9);
@@ -957,13 +957,13 @@ mod tests {
     fn contextual_constraints_are_boundary_local_and_correlated_votes_are_discounted() {
         let mut one = candidate("one", 1.0, 2.0, 69);
         let mut duplicated = one.clone();
-        let primary = BoundaryConstraintEvidenceV1 {
+        let primary = BoundaryConstraintEvidence {
             source_expert: "rmvpe.transition".to_string(),
-            kind: BoundaryConstraintKindV1::PitchDiscontinuity,
+            kind: BoundaryConstraintKind::PitchDiscontinuity,
             time: one.range.start,
             source_local_strength: Some(0.8),
             calibrated_confidence: None,
-            calibration_version: Some("source-local-v1".to_string()),
+            calibration_version: Some("source-local".to_string()),
             correlation_group: Some("continuous-pitch-neural".to_string()),
             depends_on: vec!["rmvpe".to_string()],
         };

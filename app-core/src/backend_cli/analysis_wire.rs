@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use super::runtime_wire::{RuntimePolicyWireV1, RuntimeResourceStatusWireV1};
+use super::runtime_wire::{RuntimePolicyWire, RuntimeResourceStatusWire};
 
 pub const ANALYSIS_WORKER_PROTOCOL_VERSION: u32 = 1;
 pub const ANALYSIS_WORKER_IDENTITY: &str = "uta.analysis-engine.worker";
@@ -18,7 +18,7 @@ pub const AUDIO_QUALITY_REPORT_VERSION: u32 = 1;
 pub const CANONICAL_TIMEBASE: u32 = 1_000_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AnalysisWorkerReadyV1 {
+pub struct AnalysisWorkerReady {
     #[serde(rename = "type")]
     pub frame_type: String,
     pub protocol: u32,
@@ -29,7 +29,7 @@ pub struct AnalysisWorkerReadyV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AnalysisLifecycleFrameWireV1 {
+pub struct AnalysisLifecycleFrameWire {
     #[serde(rename = "type")]
     pub frame_type: String,
     pub schema_version: u32,
@@ -61,7 +61,7 @@ pub struct AnalysisLifecycleFrameWireV1 {
     pub event_at_ms: i64,
 }
 
-impl AnalysisLifecycleFrameWireV1 {
+impl AnalysisLifecycleFrameWire {
     pub fn is_lifecycle_type(frame_type: &str) -> bool {
         matches!(
             frame_type,
@@ -78,7 +78,7 @@ impl AnalysisLifecycleFrameWireV1 {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum AudioRoleWireV1 {
+pub enum AudioRoleWire {
     #[default]
     OriginalMix,
     VocalStem,
@@ -92,37 +92,37 @@ pub enum AudioRoleWireV1 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum AudioSourceKindWireV1 {
+pub enum AudioSourceKindWire {
     LocalFile,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SourceTimelineWireV1 {
+pub struct SourceTimelineWire {
     pub timebase: u32,
     pub source_start: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AudioSourceWireV1 {
+pub struct AudioSourceWire {
     pub id: String,
-    pub kind: AudioSourceKindWireV1,
+    pub kind: AudioSourceKindWire,
     pub path: PathBuf,
     pub sha256: String,
-    pub role: AudioRoleWireV1,
+    pub role: AudioRoleWire,
     pub primary: bool,
-    pub timeline: SourceTimelineWireV1,
+    pub timeline: SourceTimelineWire,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum LyricsModeWireV1 {
+pub enum LyricsModeWire {
     None,
     Reference,
     Canonical,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LyricTokenWireV1 {
+pub struct LyricTokenWire {
     pub id: String,
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -138,18 +138,18 @@ pub struct LyricTokenWireV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LyricsWireV1 {
-    pub mode: LyricsModeWireV1,
+pub struct LyricsWire {
+    pub mode: LyricsModeWire,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
     #[serde(default)]
-    pub tokens: Vec<LyricTokenWireV1>,
+    pub tokens: Vec<LyricTokenWire>,
 }
 
-impl Default for LyricsWireV1 {
+impl Default for LyricsWire {
     fn default() -> Self {
         Self {
-            mode: LyricsModeWireV1::None,
+            mode: LyricsModeWire::None,
             language: None,
             tokens: Vec::new(),
         }
@@ -158,7 +158,7 @@ impl Default for LyricsWireV1 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum BoundaryLevelWireV1 {
+pub enum BoundaryLevelWire {
     Phrase,
     Word,
     Syllable,
@@ -167,63 +167,63 @@ pub enum BoundaryLevelWireV1 {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum BoundaryAuthorityWireV1 {
+pub enum BoundaryAuthorityWire {
     #[default]
     Soft,
     Hard,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct BoundaryConstraintWireV1 {
+pub struct BoundaryConstraintWire {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_id: Option<String>,
-    pub level: BoundaryLevelWireV1,
+    pub level: BoundaryLevelWire,
     pub start: u64,
     pub duration: u64,
     pub confidence: f32,
     #[serde(default)]
-    pub authority: BoundaryAuthorityWireV1,
+    pub authority: BoundaryAuthorityWire,
     pub source: String,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ContextAuthorityWireV1 {
+pub enum ContextAuthorityWire {
     #[default]
     Hint,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TimeSignatureWireV1 {
+pub struct TimeSignatureWire {
     pub beats: u16,
     pub unit: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum QuantizationGridWireV1 {
+pub enum QuantizationGridWire {
     Eighth,
     Sixteenth,
     ThirtySecond,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct MusicalContextWireV1 {
+pub struct MusicalContextWire {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bpm: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub time_signature: Option<TimeSignatureWireV1>,
+    pub time_signature: Option<TimeSignatureWire>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub quantization_grid: Option<QuantizationGridWireV1>,
+    pub quantization_grid: Option<QuantizationGridWire>,
     #[serde(default)]
-    pub authority: ContextAuthorityWireV1,
+    pub authority: ContextAuthorityWire,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum AnalysisProfileWireV1 {
+pub enum AnalysisProfileWire {
     Fast,
     Balanced,
     Maximum,
@@ -231,20 +231,20 @@ pub enum AnalysisProfileWireV1 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum TrackTargetWireV1 {
+pub enum TrackTargetWire {
     Lead,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AnalysisSpecWireV1 {
-    pub profile: AnalysisProfileWireV1,
-    pub track_target: TrackTargetWireV1,
+pub struct AnalysisSpecWire {
+    pub profile: AnalysisProfileWire,
+    pub track_target: TrackTargetWire,
     pub preserve_continuous_pitch: bool,
     pub enable_quantization: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RequestedArtifactsWireV1 {
+pub struct RequestedArtifactsWire {
     #[serde(default)]
     pub vocal_chart: bool,
     #[serde(default)]
@@ -256,56 +256,56 @@ pub struct RequestedArtifactsWireV1 {
     #[serde(default)]
     pub alignment: bool,
     #[serde(default)]
-    pub stems: Vec<AudioRoleWireV1>,
+    pub stems: Vec<AudioRoleWire>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ExecutionPolicyWireV1 {
+pub struct ExecutionPolicyWire {
     #[serde(default)]
-    pub runtime_policy: RuntimePolicyWireV1,
+    pub runtime_policy: RuntimePolicyWire,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requested_backend: Option<super::NativeBackendWireV1>,
+    pub requested_backend: Option<super::NativeBackendWire>,
     /// Model-specific choices take precedence over the global selection.
     /// Missing entries retain each model's Runtime Manager-pinned route.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub model_backend_overrides: BTreeMap<String, super::NativeBackendWireV1>,
+    pub model_backend_overrides: BTreeMap<String, super::NativeBackendWire>,
     /// Global device-class preference, orthogonal to `requested_backend`.
     /// Forwarded by the Engine to the GGML worker, which selects a matching
     /// physical device or fails without CPU fallback.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requested_device: Option<super::DeviceClassWireV1>,
+    pub requested_device: Option<super::DeviceClassWire>,
     /// Model-specific device-class choices, same precedence as
     /// `model_backend_overrides`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub model_device_overrides: BTreeMap<String, super::DeviceClassWireV1>,
+    pub model_device_overrides: BTreeMap<String, super::DeviceClassWire>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AnalyzeRequestWireV1 {
+pub struct AnalyzeRequestWire {
     pub contract: String,
     pub version: u32,
     pub request_id: String,
-    pub audio_sources: Vec<AudioSourceWireV1>,
+    pub audio_sources: Vec<AudioSourceWire>,
     #[serde(default)]
-    pub lyrics: LyricsWireV1,
+    pub lyrics: LyricsWire,
     #[serde(default)]
-    pub boundary_constraints: Vec<BoundaryConstraintWireV1>,
+    pub boundary_constraints: Vec<BoundaryConstraintWire>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub musical_context: Option<MusicalContextWireV1>,
-    pub analysis: AnalysisSpecWireV1,
-    pub requested_artifacts: RequestedArtifactsWireV1,
+    pub musical_context: Option<MusicalContextWire>,
+    pub analysis: AnalysisSpecWire,
+    pub requested_artifacts: RequestedArtifactsWire,
     #[serde(default = "production_execution_policy")]
-    pub execution_policy: ExecutionPolicyWireV1,
+    pub execution_policy: ExecutionPolicyWire,
     #[serde(default)]
     pub satisfied_capabilities: Vec<String>,
     #[serde(default)]
     pub extensions: BTreeMap<String, serde_json::Value>,
 }
 
-fn production_execution_policy() -> ExecutionPolicyWireV1 {
-    ExecutionPolicyWireV1 {
-        runtime_policy: RuntimePolicyWireV1::Production,
+fn production_execution_policy() -> ExecutionPolicyWire {
+    ExecutionPolicyWire {
+        runtime_policy: RuntimePolicyWire::Production,
         requested_backend: None,
         model_backend_overrides: BTreeMap::new(),
         requested_device: None,
@@ -314,8 +314,8 @@ fn production_execution_policy() -> ExecutionPolicyWireV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CapabilityDescriptorWireV1 {
-    pub id: CapabilityIdWireV1,
+pub struct CapabilityDescriptorWire {
+    pub id: CapabilityIdWire,
     #[serde(default)]
     pub input_semantic_types: Vec<String>,
     #[serde(default)]
@@ -326,52 +326,52 @@ pub struct CapabilityDescriptorWireV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AnalysisRequirementResourceWireV1 {
+pub struct AnalysisRequirementResourceWire {
     pub resource: String,
     pub required: bool,
     pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AnalysisRequirementsWireV1 {
+pub struct AnalysisRequirementsWire {
     pub schema: String,
     pub schema_version: u32,
-    pub resources: Vec<AnalysisRequirementResourceWireV1>,
+    pub resources: Vec<AnalysisRequirementResourceWire>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct CapabilityIdWireV1(pub String);
+pub struct CapabilityIdWire(pub String);
 
-impl CapabilityIdWireV1 {
+impl CapabilityIdWire {
     pub fn as_str(&self) -> &str {
         &self.0
     }
 }
-impl fmt::Display for CapabilityIdWireV1 {
+impl fmt::Display for CapabilityIdWire {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.0)
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SourceRouteWireV1 {
+pub struct SourceRouteWire {
     pub primary_source_id: String,
-    pub input_role: AudioRoleWireV1,
-    pub preparation: Vec<CapabilityIdWireV1>,
+    pub input_role: AudioRoleWire,
+    pub preparation: Vec<CapabilityIdWire>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ExecutionNodeWireV1 {
+pub struct ExecutionNodeWire {
     pub id: String,
-    pub capability: CapabilityIdWireV1,
+    pub capability: CapabilityIdWire,
     pub required: bool,
     #[serde(default)]
     pub depends_on: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkflowPlanIdentityWireV1 {
+pub struct WorkflowPlanIdentityWire {
     pub contract: String,
     pub version: u32,
     pub workflow_schema_version: u32,
@@ -382,7 +382,7 @@ pub struct WorkflowPlanIdentityWireV1 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum WorkflowNodeExecutionStateWireV1 {
+pub enum WorkflowNodeExecutionStateWire {
     Ready,
     Deferred,
     Disabled,
@@ -392,114 +392,114 @@ pub enum WorkflowNodeExecutionStateWireV1 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ContinuousF0SourceWireV1 {
+pub enum ContinuousF0SourceWire {
     Rmvpe,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum NoteLengthSourceWireV1 {
+pub enum NoteLengthSourceWire {
     F0Derived,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum OnsetSupportSourceWireV1 {
+pub enum OnsetSupportSourceWire {
     Automatic,
     Acoustic,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ExpertFusionPolicyWireV1 {
-    pub continuous_f0: ContinuousF0SourceWireV1,
-    pub note_lengths: NoteLengthSourceWireV1,
-    pub onset_support: OnsetSupportSourceWireV1,
+pub struct ExpertFusionPolicyWire {
+    pub continuous_f0: ContinuousF0SourceWire,
+    pub note_lengths: NoteLengthSourceWire,
+    pub onset_support: OnsetSupportSourceWire,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum FusionModeWireV1 {
+pub enum FusionModeWire {
     #[default]
     Algorithm,
     AiJudgment,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkflowExecutionNodePlanWireV1 {
+pub struct WorkflowExecutionNodePlanWire {
     pub instance_id: String,
     pub analysis_node: String,
     #[serde(default)]
     pub capabilities: Vec<String>,
     pub execution_policy: String,
-    pub execution_state: WorkflowNodeExecutionStateWireV1,
+    pub execution_state: WorkflowNodeExecutionStateWire,
     pub priority: i32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub execution_invocations: Vec<crate::workflow::WorkflowExecutionInvocationWireV1>,
+    pub execution_invocations: Vec<crate::workflow::WorkflowExecutionInvocationWire>,
     #[serde(default)]
     pub depends_on: Vec<String>,
     #[serde(default)]
-    pub input_bindings: Vec<crate::workflow::WorkflowBindingWireV1>,
+    pub input_bindings: Vec<crate::workflow::WorkflowBindingWire>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkflowExecutionPlanWireV1 {
-    pub identity: WorkflowPlanIdentityWireV1,
+pub struct WorkflowExecutionPlanWire {
+    pub identity: WorkflowPlanIdentityWire,
     #[serde(default)]
-    pub nodes: Vec<WorkflowExecutionNodePlanWireV1>,
+    pub nodes: Vec<WorkflowExecutionNodePlanWire>,
     #[serde(default)]
-    pub terminal_outputs: Vec<crate::workflow::WorkflowTerminalOutputWireV1>,
+    pub terminal_outputs: Vec<crate::workflow::WorkflowTerminalOutputWire>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fusion_policy: Option<ExpertFusionPolicyWireV1>,
+    pub fusion_policy: Option<ExpertFusionPolicyWire>,
     /// Required in an exact Engine Plan. A missing backend field must fail
     /// decoding rather than silently project AI judgment as Algorithm.
-    pub fusion_mode: FusionModeWireV1,
+    pub fusion_mode: FusionModeWire,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PlannedResourceStatusWireV1 {
-    pub requirement: AnalysisRequirementResourceWireV1,
+pub struct PlannedResourceStatusWire {
+    pub requirement: AnalysisRequirementResourceWire,
     #[serde(default)]
-    pub status: Option<RuntimeResourceStatusWireV1>,
+    pub status: Option<RuntimeResourceStatusWire>,
     #[serde(default)]
     pub resolution_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FallbackRuleWireV1 {
-    pub capability: CapabilityIdWireV1,
+pub struct FallbackRuleWire {
+    pub capability: CapabilityIdWire,
     pub behavior: String,
     pub fingerprinted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArtifactDeclarationWireV1 {
+pub struct ArtifactDeclarationWire {
     pub semantic_type: String,
     pub required: bool,
     pub media_type: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AnalysisPlanWireV1 {
+pub struct AnalysisPlanWire {
     pub schema: String,
     pub schema_version: u32,
     pub request_id: String,
-    pub source_route: SourceRouteWireV1,
+    pub source_route: SourceRouteWire,
     pub requested_outputs: Vec<String>,
-    pub required_capabilities: Vec<CapabilityIdWireV1>,
-    pub optional_capabilities: Vec<CapabilityIdWireV1>,
-    pub requirements: AnalysisRequirementsWireV1,
-    pub resolved_resources: Vec<PlannedResourceStatusWireV1>,
-    pub execution_nodes: Vec<ExecutionNodeWireV1>,
+    pub required_capabilities: Vec<CapabilityIdWire>,
+    pub optional_capabilities: Vec<CapabilityIdWire>,
+    pub requirements: AnalysisRequirementsWire,
+    pub resolved_resources: Vec<PlannedResourceStatusWire>,
+    pub execution_nodes: Vec<ExecutionNodeWire>,
     pub quality_gates: Vec<String>,
-    pub fallback_policy: Vec<FallbackRuleWireV1>,
-    pub artifact_declarations: Vec<ArtifactDeclarationWireV1>,
+    pub fallback_policy: Vec<FallbackRuleWire>,
+    pub artifact_declarations: Vec<ArtifactDeclarationWire>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workflow_execution: Option<WorkflowExecutionPlanWireV1>,
+    pub workflow_execution: Option<WorkflowExecutionPlanWire>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AnalysisErrorWireV1 {
+pub struct AnalysisErrorWire {
     pub code: String,
     pub message: String,
     #[serde(default)]
@@ -514,7 +514,7 @@ pub struct AnalysisErrorWireV1 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum AnalysisStatusWireV1 {
+pub enum AnalysisStatusWire {
     Ok,
     OkDegraded,
     Failed,
@@ -522,7 +522,7 @@ pub enum AnalysisStatusWireV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArtifactRefWireV1 {
+pub struct ArtifactRefWire {
     pub path: PathBuf,
     pub media_type: String,
     pub sha256: String,
@@ -530,34 +530,34 @@ pub struct ArtifactRefWireV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StemArtifactRefWireV1 {
-    pub role: AudioRoleWireV1,
-    pub artifact: ArtifactRefWireV1,
+pub struct StemArtifactRefWire {
+    pub role: AudioRoleWire,
+    pub artifact: ArtifactRefWire,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AnalysisArtifactsWireV1 {
+pub struct AnalysisArtifactsWire {
     #[serde(default)]
-    pub candidate_vocal_chart: Option<ArtifactRefWireV1>,
+    pub candidate_vocal_chart: Option<ArtifactRefWire>,
     #[serde(default)]
-    pub pitch_evidence: Option<ArtifactRefWireV1>,
+    pub pitch_evidence: Option<ArtifactRefWire>,
     #[serde(default)]
-    pub technique_evidence: Option<ArtifactRefWireV1>,
+    pub technique_evidence: Option<ArtifactRefWire>,
     #[serde(default)]
-    pub singing_analysis: Option<ArtifactRefWireV1>,
+    pub singing_analysis: Option<ArtifactRefWire>,
     #[serde(default)]
-    pub transcript: Option<ArtifactRefWireV1>,
+    pub transcript: Option<ArtifactRefWire>,
     #[serde(default)]
-    pub alignment: Option<ArtifactRefWireV1>,
+    pub alignment: Option<ArtifactRefWire>,
     #[serde(default)]
-    pub stems: Vec<StemArtifactRefWireV1>,
+    pub stems: Vec<StemArtifactRefWire>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct QuantizationReportWireV1 {
+pub struct QuantizationReportWire {
     pub algorithm: String,
     pub bpm: f64,
-    pub grid: QuantizationGridWireV1,
+    pub grid: QuantizationGridWire,
     pub grid_step: u64,
     pub minimum_note_duration: u64,
     pub source_start: u64,
@@ -570,21 +570,21 @@ pub struct QuantizationReportWireV1 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum QualityGateRequirementWireV1 {
+pub enum QualityGateRequirementWire {
     Required,
     Degrading,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum QualityGateStatusWireV1 {
+pub enum QualityGateStatusWire {
     Passed,
     Failed,
     Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct QualityMetricWireV1 {
+pub struct QualityMetricWire {
     pub name: String,
     pub value: f64,
     pub unit: String,
@@ -595,27 +595,27 @@ pub struct QualityMetricWireV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct QualityRegionWireV1 {
+pub struct QualityRegionWire {
     pub start: u64,
     pub end: u64,
     pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct QualityGateOutcomeWireV1 {
+pub struct QualityGateOutcomeWire {
     pub gate: String,
-    pub requirement: QualityGateRequirementWireV1,
-    pub status: QualityGateStatusWireV1,
+    pub requirement: QualityGateRequirementWire,
+    pub status: QualityGateStatusWire,
     pub summary: String,
     #[serde(default)]
-    pub metrics: Vec<QualityMetricWireV1>,
+    pub metrics: Vec<QualityMetricWire>,
     #[serde(default)]
-    pub regions: Vec<QualityRegionWireV1>,
+    pub regions: Vec<QualityRegionWire>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum VocalTopologyModeWireV1 {
+pub enum VocalTopologyModeWire {
     SingleLead,
     AlternatingMultiLead,
     OverlappingMultiLead,
@@ -624,66 +624,66 @@ pub enum VocalTopologyModeWireV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VocalTopologyEstimateWireV1 {
+pub struct VocalTopologyEstimateWire {
     pub contract: String,
     pub version: u32,
     pub timebase: u32,
     pub source_start: u64,
     pub duration: u64,
-    pub mode: VocalTopologyModeWireV1,
+    pub mode: VocalTopologyModeWire,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<f32>,
     #[serde(default)]
-    pub overlap_regions: Vec<QualityRegionWireV1>,
+    pub overlap_regions: Vec<QualityRegionWire>,
     #[serde(default)]
-    pub support_regions: Vec<QualityRegionWireV1>,
+    pub support_regions: Vec<QualityRegionWire>,
     pub evidence_sources: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AudioQualityReportWireV1 {
+pub struct AudioQualityReportWire {
     pub contract: String,
     pub version: u32,
     pub algorithm: String,
-    pub profile: AnalysisProfileWireV1,
+    pub profile: AnalysisProfileWire,
     pub evaluated_audio_role: String,
     pub duration: u64,
     pub planned_gates: Vec<String>,
-    pub outcomes: Vec<QualityGateOutcomeWireV1>,
+    pub outcomes: Vec<QualityGateOutcomeWire>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub vocal_topology: Option<VocalTopologyEstimateWireV1>,
+    pub vocal_topology: Option<VocalTopologyEstimateWire>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct AnalysisDiagnosticsWireV1 {
+pub struct AnalysisDiagnosticsWire {
     #[serde(default)]
     pub decoded_audio: Vec<serde_json::Value>,
     #[serde(default)]
     pub warnings: Vec<String>,
     #[serde(default)]
-    pub quantization: Option<QuantizationReportWireV1>,
+    pub quantization: Option<QuantizationReportWire>,
     #[serde(default)]
-    pub audio_quality: Option<AudioQualityReportWireV1>,
+    pub audio_quality: Option<AudioQualityReportWire>,
     #[serde(default)]
     pub evidence: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum AnalysisReusePolicyWireV1 {
+pub enum AnalysisReusePolicyWire {
     Deterministic,
     PreservedRevisionOnly,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "decision_mode", rename_all = "snake_case")]
-pub enum FusionDecisionProvenanceWireV1 {
+pub enum FusionDecisionProvenanceWire {
     Algorithm {
         selector: String,
         selector_version: String,
         candidate_set_digest: String,
         selected_candidate_ids: Vec<String>,
-        reuse_policy: AnalysisReusePolicyWireV1,
+        reuse_policy: AnalysisReusePolicyWire,
     },
     AiJudgment {
         adapter_resource: String,
@@ -694,18 +694,18 @@ pub enum FusionDecisionProvenanceWireV1 {
         candidate_set_digest: String,
         selected_candidate_ids: Vec<String>,
         response_digest: String,
-        reuse_policy: AnalysisReusePolicyWireV1,
+        reuse_policy: AnalysisReusePolicyWire,
     },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AnalysisProvenanceWireV1 {
+pub struct AnalysisProvenanceWire {
     #[serde(default)]
     pub resources: Vec<serde_json::Value>,
     pub calibration_version: String,
     pub fusion_version: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fusion_decision: Option<FusionDecisionProvenanceWireV1>,
+    pub fusion_decision: Option<FusionDecisionProvenanceWire>,
     pub quantization_version: String,
     #[serde(default)]
     pub audio_quality_version: String,
@@ -713,15 +713,15 @@ pub struct AnalysisProvenanceWireV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AnalysisResultManifestWireV1 {
+pub struct AnalysisResultManifestWire {
     pub contract: String,
     pub version: u32,
     pub request_id: String,
-    pub status: AnalysisStatusWireV1,
-    pub artifacts: AnalysisArtifactsWireV1,
+    pub status: AnalysisStatusWire,
+    pub artifacts: AnalysisArtifactsWire,
     #[serde(default)]
-    pub diagnostics: AnalysisDiagnosticsWireV1,
-    pub provenance: AnalysisProvenanceWireV1,
+    pub diagnostics: AnalysisDiagnosticsWire,
+    pub provenance: AnalysisProvenanceWire,
     pub fingerprint: String,
     #[serde(default)]
     pub degraded_reasons: Vec<String>,
@@ -748,8 +748,8 @@ mod tests {
 
     #[test]
     fn exact_workflow_plan_requires_a_fusion_mode_field() {
-        let error = serde_json::from_value::<WorkflowExecutionPlanWireV1>(workflow_plan_json())
-            .unwrap_err();
+        let error =
+            serde_json::from_value::<WorkflowExecutionPlanWire>(workflow_plan_json()).unwrap_err();
         assert!(error.to_string().contains("missing field `fusion_mode`"));
     }
 
@@ -773,7 +773,7 @@ mod tests {
             "input_bindings": []
         }]);
         value["fusion_mode"] = serde_json::json!("algorithm");
-        let plan = serde_json::from_value::<WorkflowExecutionPlanWireV1>(value).unwrap();
+        let plan = serde_json::from_value::<WorkflowExecutionPlanWire>(value).unwrap();
         assert_eq!(plan.nodes[0].execution_invocations.len(), 1);
         assert_eq!(
             plan.nodes[0].execution_invocations[0].invocation_id,
@@ -785,7 +785,7 @@ mod tests {
     fn exact_workflow_plan_decodes_explicit_ai_judgment() {
         let mut value = workflow_plan_json();
         value["fusion_mode"] = serde_json::json!("ai_judgment");
-        let plan = serde_json::from_value::<WorkflowExecutionPlanWireV1>(value).unwrap();
-        assert_eq!(plan.fusion_mode, FusionModeWireV1::AiJudgment);
+        let plan = serde_json::from_value::<WorkflowExecutionPlanWire>(value).unwrap();
+        assert_eq!(plan.fusion_mode, FusionModeWire::AiJudgment);
     }
 }

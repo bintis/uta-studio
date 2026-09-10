@@ -15,7 +15,7 @@ const EXTERNAL_TOOLS_CONFIG_FILE: &str = "external-tools.json";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct FusionAgentAdapterManifestV1 {
+pub struct FusionAgentAdapterManifest {
     pub contract: String,
     pub version: u32,
     pub adapter_id: String,
@@ -23,7 +23,7 @@ pub struct FusionAgentAdapterManifestV1 {
     pub fusion_protocol_version: u32,
 }
 
-impl FusionAgentAdapterManifestV1 {
+impl FusionAgentAdapterManifest {
     pub fn validate(&self) -> RuntimeManagerResult<()> {
         if self.contract != FUSION_AGENT_ADAPTER_MANIFEST_CONTRACT
             || self.version != 1
@@ -43,10 +43,10 @@ impl FusionAgentAdapterManifestV1 {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ExternalToolRegistryV1 {
+struct ExternalToolRegistry {
     version: u32,
     #[serde(default)]
-    tools: BTreeMap<String, ExternalToolConfigurationV1>,
+    tools: BTreeMap<String, ExternalToolConfiguration>,
     /// Provider identity is persisted separately from executable paths. This
     /// keeps Studio from owning or serializing a raw adapter path while still
     /// allowing Runtime Manager to select one of its discovered adapters.
@@ -56,7 +56,7 @@ struct ExternalToolRegistryV1 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ExternalToolConfigurationV1 {
+struct ExternalToolConfiguration {
     executable: PathBuf,
 }
 
@@ -104,7 +104,7 @@ pub(crate) fn configure_tool_path(
     registry.version = EXTERNAL_TOOLS_CONFIG_VERSION;
     registry.tools.insert(
         tool_id.to_string(),
-        ExternalToolConfigurationV1 { executable },
+        ExternalToolConfiguration { executable },
     );
     write_registry(paths, &registry)
 }
@@ -179,7 +179,7 @@ pub(crate) fn clear_fusion_provider(paths: &StorePaths) -> RuntimeManagerResult<
 
 pub(crate) fn fusion_adapter_manifest(
     executable: &Path,
-) -> RuntimeManagerResult<FusionAgentAdapterManifestV1> {
+) -> RuntimeManagerResult<FusionAgentAdapterManifest> {
     let candidates = fusion_adapter_manifest_candidates(executable);
     let path = candidates
         .iter()
@@ -208,7 +208,7 @@ pub(crate) fn fusion_adapter_manifest(
             "Fusion Agent Adapter manifest size is invalid",
         ));
     }
-    let manifest: FusionAgentAdapterManifestV1 =
+    let manifest: FusionAgentAdapterManifest =
         serde_json::from_slice(&std::fs::read(path).map_err(|error| {
             RuntimeManagerError::new(
                 "tool_protocol_mismatch",
@@ -268,7 +268,7 @@ fn registry_path(paths: &StorePaths) -> Option<PathBuf> {
         .map(|root| root.join(EXTERNAL_TOOLS_CONFIG_FILE))
 }
 
-fn read_registry(paths: &StorePaths) -> RuntimeManagerResult<ExternalToolRegistryV1> {
+fn read_registry(paths: &StorePaths) -> RuntimeManagerResult<ExternalToolRegistry> {
     let path = registry_path(paths).ok_or_else(|| {
         RuntimeManagerError::new(
             "runtime_store_unconfigured",
@@ -278,7 +278,7 @@ fn read_registry(paths: &StorePaths) -> RuntimeManagerResult<ExternalToolRegistr
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(ExternalToolRegistryV1 {
+            return Ok(ExternalToolRegistry {
                 version: EXTERNAL_TOOLS_CONFIG_VERSION,
                 tools: BTreeMap::new(),
                 fusion_provider: None,
@@ -291,7 +291,7 @@ fn read_registry(paths: &StorePaths) -> RuntimeManagerResult<ExternalToolRegistr
             ));
         }
     };
-    let registry: ExternalToolRegistryV1 = serde_json::from_slice(&bytes).map_err(|error| {
+    let registry: ExternalToolRegistry = serde_json::from_slice(&bytes).map_err(|error| {
         RuntimeManagerError::new(
             "resource_corrupt",
             format!("external tool configuration is invalid: {error}"),
@@ -306,10 +306,7 @@ fn read_registry(paths: &StorePaths) -> RuntimeManagerResult<ExternalToolRegistr
     Ok(registry)
 }
 
-fn write_registry(
-    paths: &StorePaths,
-    registry: &ExternalToolRegistryV1,
-) -> RuntimeManagerResult<()> {
+fn write_registry(paths: &StorePaths, registry: &ExternalToolRegistry) -> RuntimeManagerResult<()> {
     let path = registry_path(paths).ok_or_else(|| {
         RuntimeManagerError::new(
             "runtime_store_unconfigured",
@@ -382,7 +379,7 @@ mod tests {
         let executable = root.join(name);
         std::fs::write(&executable, b"#!/bin/sh\nexit 0\n").unwrap();
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let manifest = FusionAgentAdapterManifestV1 {
+        let manifest = FusionAgentAdapterManifest {
             contract: FUSION_AGENT_ADAPTER_MANIFEST_CONTRACT.to_string(),
             version: 1,
             adapter_id: FUSION_AGENT_ADAPTER_ID.to_string(),
@@ -399,7 +396,7 @@ mod tests {
 
     #[test]
     fn manifest_adapter_id_must_match_the_canonical_tool_resource() {
-        let manifest = FusionAgentAdapterManifestV1 {
+        let manifest = FusionAgentAdapterManifest {
             contract: FUSION_AGENT_ADAPTER_MANIFEST_CONTRACT.to_string(),
             version: 1,
             adapter_id: "provider-specific-name".to_string(),
@@ -473,7 +470,7 @@ mod tests {
         let plain_codex = root.join("codex");
         std::fs::write(&plain_codex, b"#!/bin/sh\nexit 0\n").unwrap();
         std::fs::set_permissions(&plain_codex, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let shared_manifest = FusionAgentAdapterManifestV1 {
+        let shared_manifest = FusionAgentAdapterManifest {
             contract: FUSION_AGENT_ADAPTER_MANIFEST_CONTRACT.to_string(),
             version: 1,
             adapter_id: FUSION_AGENT_ADAPTER_ID.to_string(),

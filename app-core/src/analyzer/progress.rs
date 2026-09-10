@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use super::*;
 use crate::backend_cli::{
-    AnalysisLifecycleFrameWireV1, AnalysisPlanWireV1, ExecutionNodeWireV1, FusionModeWireV1,
+    AnalysisLifecycleFrameWire, AnalysisPlanWire, ExecutionNodeWire, FusionModeWire,
 };
 
 const REFERENCE_SONG_MILLIS: u64 = 305_813;
@@ -28,7 +28,7 @@ struct HistoricalWeights {
 static LIVE_ENGINE_PROGRESS: LazyLock<Mutex<HashMap<String, EngineProgressState>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-pub(super) fn register_engine_progress_plan(file_hash: &str, plan: &AnalysisPlanWireV1) {
+pub(super) fn register_engine_progress_plan(file_hash: &str, plan: &AnalysisPlanWire) {
     let history = historical_weights();
     let mut state = EngineProgressState::default();
     for node in &plan.execution_nodes {
@@ -62,7 +62,7 @@ pub(super) fn remove_engine_progress_plan(file_hash: &str) {
 /// an execution contract, release gate, or substitute for result validation.
 pub(super) fn update_engine_overall_progress(
     file_hash: &str,
-    event: &AnalysisLifecycleFrameWireV1,
+    event: &AnalysisLifecycleFrameWire,
 ) -> Option<usize> {
     let mut states = LIVE_ENGINE_PROGRESS.lock().unwrap();
     let state = states.get_mut(file_hash)?;
@@ -101,9 +101,9 @@ fn weighted_percent(state: &EngineProgressState) -> usize {
 }
 
 fn planned_invocation<'a>(
-    plan: &'a AnalysisPlanWireV1,
-    node: &ExecutionNodeWireV1,
-) -> Option<&'a crate::workflow::WorkflowExecutionInvocationWireV1> {
+    plan: &'a AnalysisPlanWire,
+    node: &ExecutionNodeWire,
+) -> Option<&'a crate::workflow::WorkflowExecutionInvocationWire> {
     plan.workflow_execution.as_ref().and_then(|workflow| {
         workflow
             .nodes
@@ -119,7 +119,7 @@ fn planned_invocation<'a>(
 }
 
 fn estimated_weight(
-    plan: &AnalysisPlanWireV1,
+    plan: &AnalysisPlanWire,
     capability: &str,
     model: Option<&str>,
     history: &HistoricalWeights,
@@ -209,7 +209,7 @@ fn median(mut samples: Vec<u64>) -> Option<u64> {
 /// Fallback work estimates are milliseconds on the repository's representative
 /// ~305.8-second song. Model entries with accepted full-song measurements use
 /// those measurements; Leap is extrapolated from its current 6-second run.
-fn fallback_weight(plan: &AnalysisPlanWireV1, capability: &str, model: Option<&str>) -> u64 {
+fn fallback_weight(plan: &AnalysisPlanWire, capability: &str, model: Option<&str>) -> u64 {
     match model {
         Some("bs_roformer_leap_xe90_vocals") | Some("bs_roformer_leap_xe90_instrumental") => {
             1_358_000
@@ -224,7 +224,7 @@ fn fallback_weight(plan: &AnalysisPlanWireV1, capability: &str, model: Option<&s
             "analysis.acoustic_dsp" => 10_000,
             "fusion.candidate_graph"
                 if plan.workflow_execution.as_ref().is_some_and(|workflow| {
-                    workflow.fusion_mode == FusionModeWireV1::AiJudgment
+                    workflow.fusion_mode == FusionModeWire::AiJudgment
                 }) =>
             {
                 45_000
@@ -296,7 +296,7 @@ mod tests {
                 )]),
             },
         );
-        let event = AnalysisLifecycleFrameWireV1 {
+        let event = AnalysisLifecycleFrameWire {
             frame_type: "node_progress".to_string(),
             schema_version: 1,
             request_id: "request".to_string(),
@@ -319,8 +319,55 @@ mod tests {
     }
 
     #[test]
+    fn dual_separation_progress_tracks_the_shared_invocation() {
+        let file_hash = "dual-separation-progress-fixture";
+        LIVE_ENGINE_PROGRESS.lock().unwrap().insert(
+            file_hash.to_string(),
+            EngineProgressState {
+                units: BTreeMap::from([(
+                    "invocation:vocal_bgm_split".to_string(),
+                    ProgressUnit {
+                        weight: 100,
+                        fraction: 0.0,
+                    },
+                )]),
+                node_to_unit: HashMap::from([
+                    (
+                        "extract-vocals".to_string(),
+                        "invocation:vocal_bgm_split".to_string(),
+                    ),
+                    (
+                        "extract-instrumental".to_string(),
+                        "invocation:vocal_bgm_split".to_string(),
+                    ),
+                ]),
+            },
+        );
+        let event = AnalysisLifecycleFrameWire {
+            frame_type: "node_progress".to_string(),
+            schema_version: 1,
+            request_id: "request".to_string(),
+            node_id: "extract-vocals".to_string(),
+            presentation_node_id: Some("vocal_bgm_split".to_string()),
+            capability_id: "audio.extract_vocals".to_string(),
+            model_id: Some("bs_roformer_leap_xe90_vocals".to_string()),
+            implementation: "ggml".to_string(),
+            progress: Some(0.37),
+            work_units_completed: Some(3),
+            work_units_total: Some(8),
+            worker_task_id: Some("studio-auto-1-vocal-instrumental".to_string()),
+            artifact: None,
+            path: None,
+            message: None,
+            event_at_ms: 1,
+        };
+        assert_eq!(update_engine_overall_progress(file_hash, &event), Some(37));
+        remove_engine_progress_plan(file_hash);
+    }
+
+    #[test]
     fn fallback_estimates_rank_heavy_models_above_fast_evidence_models() {
-        let plan: AnalysisPlanWireV1 = serde_json::from_value(serde_json::json!({
+        let plan: AnalysisPlanWire = serde_json::from_value(serde_json::json!({
             "schema":"uta.analysis-engine.plan","schema_version":1,"request_id":"request",
             "source_route":{"primary_source_id":"source","input_role":"original_mix","preparation":[]},
             "requested_outputs":[],"required_capabilities":[],"optional_capabilities":[],

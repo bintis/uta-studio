@@ -1,6 +1,6 @@
 //! UI-agnostic editing model for the UTZ 0.2 vocal chart.
 //!
-//! The editor edits [`utz::VocalChartV1`] directly. Analyzer-era transcript and
+//! The editor edits [`utz::VocalChart`] directly. Analyzer-era transcript and
 //! pitch-note JSON stay derived projections for export and compatibility, so an
 //! edit never round trips through a lossy re-migration.
 //!

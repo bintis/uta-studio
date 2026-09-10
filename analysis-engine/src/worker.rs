@@ -8,8 +8,8 @@ use serde::Deserialize;
 use uta_runtime_manager::RuntimePolicy;
 
 use crate::contract::{
-    AnalysisResultManifestV1, AnalyzeRequestV1, EngineError, EngineErrorCode, EngineResult,
-    ExportRequestV1,
+    AnalysisResultManifest, AnalyzeRequest, EngineError, EngineErrorCode, EngineResult,
+    ExportRequest,
 };
 use crate::execution::CancellationToken;
 use crate::{AnalysisEngine, ENGINE_VERSION, WORKER_PROTOCOL, WORKER_PROTOCOL_VERSION};
@@ -29,19 +29,19 @@ enum WorkerCommand {
     },
     Validate {
         protocol: u32,
-        request: AnalyzeRequestV1,
+        request: AnalyzeRequest,
     },
     Requirements {
         protocol: u32,
-        request: AnalyzeRequestV1,
+        request: AnalyzeRequest,
     },
     Plan {
         protocol: u32,
-        request: AnalyzeRequestV1,
+        request: AnalyzeRequest,
     },
     Analyze {
         protocol: u32,
-        request: AnalyzeRequestV1,
+        request: AnalyzeRequest,
         output_dir: PathBuf,
     },
     Cancel {
@@ -50,7 +50,7 @@ enum WorkerCommand {
     },
     Export {
         protocol: u32,
-        request: ExportRequestV1,
+        request: ExportRequest,
     },
     Quit {
         protocol: u32,
@@ -76,8 +76,8 @@ impl WorkerCommand {
 struct ActiveAnalysis {
     request_id: String,
     cancellation: CancellationToken,
-    result: mpsc::Receiver<EngineResult<AnalysisResultManifestV1>>,
-    events: mpsc::Receiver<crate::events::EngineLifecycleEventV1>,
+    result: mpsc::Receiver<EngineResult<AnalysisResultManifest>>,
+    events: mpsc::Receiver<crate::events::EngineLifecycleEvent>,
     handle: JoinHandle<()>,
 }
 
@@ -287,7 +287,7 @@ pub fn worker_main() -> Result<(), String> {
 
 fn emit_analysis_result(
     request_id: &str,
-    result: EngineResult<AnalysisResultManifestV1>,
+    result: EngineResult<AnalysisResultManifest>,
 ) -> Result<(), String> {
     match result {
         Ok(result) => emit(serde_json::json!({

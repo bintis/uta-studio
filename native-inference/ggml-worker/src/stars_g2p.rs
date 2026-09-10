@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 use uta_ggml_runtime::stars::PhonemeInput;
 
-pub const PROFILE: &str = "stars-chinese-g2p-pypinyin-0.55.0-v1";
+pub const PROFILE: &str = "stars-chinese-g2p-pypinyin-0.55.0";
 
 #[derive(Debug, Deserialize)]
 struct RawAsset {
@@ -26,7 +26,7 @@ impl ChineseG2pAsset {
     /// Parses the packaged immutable lexicon without a script runtime.
     pub fn load_embedded() -> Result<Self, String> {
         let raw: RawAsset =
-            serde_json::from_slice(include_bytes!("../assets/stars-chinese-g2p-v1.json"))
+            serde_json::from_slice(include_bytes!("../assets/stars-chinese-g2p.json"))
                 .map_err(|error| format!("STARS Chinese G2P asset is invalid: {error}"))?;
         if raw.phone_set.is_empty() || raw.characters.is_empty() {
             return Err("STARS Chinese G2P asset is empty".to_string());

@@ -5,7 +5,7 @@ use std::path::{Component, Path, PathBuf};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use crate::contract::{ArtifactRefV1, EngineError, EngineErrorCode, EngineResult};
+use crate::contract::{ArtifactRef, EngineError, EngineErrorCode, EngineResult};
 
 const MAX_ARTIFACT_BYTES: u64 = 256 * 1024 * 1024;
 
@@ -14,7 +14,7 @@ pub fn write_json_artifact(
     relative: &Path,
     media_type: &str,
     value: &impl Serialize,
-) -> EngineResult<ArtifactRefV1> {
+) -> EngineResult<ArtifactRef> {
     let root = authorize_root(root)?;
     let target = confined_target(&root, relative)?;
     let parent = target
@@ -60,7 +60,7 @@ pub fn artifact_ref_for_existing(
     root: &Path,
     relative: &Path,
     media_type: &str,
-) -> EngineResult<ArtifactRefV1> {
+) -> EngineResult<ArtifactRef> {
     let root = authorize_root(root)?;
     let target = confined_target(&root, relative)?;
     let metadata = std::fs::symlink_metadata(&target)
@@ -78,7 +78,7 @@ pub fn artifact_ref_for_existing(
             "artifact is not a valid confined regular file",
         ));
     }
-    let reference = ArtifactRefV1 {
+    let reference = ArtifactRef {
         path: relative.to_path_buf(),
         media_type: media_type.to_string(),
         sha256: sha256_file(&canonical)?,

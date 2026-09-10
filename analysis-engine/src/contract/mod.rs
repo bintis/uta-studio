@@ -9,5 +9,5 @@ pub use capability::{CapabilityDescriptor, CapabilityId, capability_registry};
 pub use error::{EngineError, EngineErrorCode, EngineResult};
 pub use quality::*;
 pub use request::*;
-pub use requirements::{EngineRequirementResourceV1, EngineRequirementsV1};
+pub use requirements::{EngineRequirementResource, EngineRequirements};
 pub use result::*;

@@ -32,7 +32,7 @@ pub use doctor::{DiagnosticCheck, DiagnosticSeverity, DoctorReport};
 pub use error::{RuntimeManagerError, RuntimeManagerResult};
 pub use external_tool::{
     FUSION_AGENT_ADAPTER_ID, FUSION_AGENT_ADAPTER_MANIFEST_CONTRACT, FUSION_AGENT_PROTOCOL_VERSION,
-    FusionAgentAdapterManifestV1, fusion_adapter_manifest_path,
+    FusionAgentAdapterManifest, fusion_adapter_manifest_path,
 };
 pub use fusion_provider::{
     FUSION_PROVIDER_NETWORK_DISCLOSURE, FusionProviderReport, FusionProviderStatus,

@@ -1,7 +1,7 @@
 use super::*;
 use crate::contract::request::tests::valid_request;
 
-fn resource_ids(requirements: &EngineRequirementsV1) -> BTreeSet<&str> {
+fn resource_ids(requirements: &EngineRequirements) -> BTreeSet<&str> {
     requirements
         .resources
         .iter()
@@ -9,8 +9,8 @@ fn resource_ids(requirements: &EngineRequirementsV1) -> BTreeSet<&str> {
         .collect()
 }
 
-fn select_outputs(request: &mut AnalyzeRequestV1, pitch: bool, stems: Vec<AudioRole>) {
-    request.requested_artifacts = crate::contract::RequestedArtifactsV1 {
+fn select_outputs(request: &mut AnalyzeRequest, pitch: bool, stems: Vec<AudioRole>) {
+    request.requested_artifacts = crate::contract::RequestedArtifacts {
         vocal_chart: false,
         pitch_evidence: pitch,
         singing_analysis: false,
@@ -104,7 +104,7 @@ fn canonical_alignment_request_uses_qwen_forced_aligner() {
     select_outputs(&mut request, false, Vec::new());
     request.requested_artifacts.alignment = true;
     request.lyrics.mode = LyricsMode::Canonical;
-    request.lyrics.tokens.push(crate::contract::LyricTokenV1 {
+    request.lyrics.tokens.push(crate::contract::LyricToken {
         id: "line-1".to_string(),
         text: "sing".to_string(),
         reading: None,

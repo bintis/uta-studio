@@ -2,7 +2,7 @@
 //!
 //! These settings describe user intent. They deliberately do not contain
 //! checkpoint paths, worker executables, backend overrides, or provider IDs:
-//! Engine v1 cannot truthfully honor per-capability provider preferences yet.
+//! Engine cannot truthfully honor per-capability provider preferences yet.
 
 use serde::{Deserialize, Deserializer, Serialize};
 use ts_rs::TS;

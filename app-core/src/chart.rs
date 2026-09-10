@@ -13,7 +13,7 @@ use std::{
 
 use serde::Serialize;
 use ts_rs::TS;
-use utz::VocalChartV1;
+use utz::VocalChart;
 
 use crate::{
     analysis_artifact::{
@@ -150,7 +150,7 @@ pub fn decode_chart_waveform(path: &Path) -> Result<ChartWaveform, UtaStudioErro
 pub struct ChartDocument {
     pub file_hash: String,
     /// The authoritative authoring document. The editor edits this directly.
-    pub vocal_chart: VocalChartV1,
+    pub vocal_chart: VocalChart,
     /// Optional frame-level analyzer evidence, rendered behind the notes. It is
     /// never scoring data and is never written back into the chart.
     pub pitch_track: serde_json::Value,
@@ -429,7 +429,7 @@ fn normalize_pitch_note_timings(value: &mut serde_json::Value) -> usize {
     repaired
 }
 
-pub fn save_vocal_chart(file_hash: &str, vocal_chart: VocalChartV1) -> Result<(), UtaStudioError> {
+pub fn save_vocal_chart(file_hash: &str, vocal_chart: VocalChart) -> Result<(), UtaStudioError> {
     save_vocal_chart_from_revision(file_hash, vocal_chart, None)
 }
 
@@ -438,7 +438,7 @@ pub fn save_vocal_chart(file_hash: &str, vocal_chart: VocalChartV1) -> Result<()
 /// Active Candidate/Authored revision.
 pub fn save_vocal_chart_from_revision(
     file_hash: &str,
-    vocal_chart: VocalChartV1,
+    vocal_chart: VocalChart,
     source: Option<&ArtifactRef>,
 ) -> Result<(), UtaStudioError> {
     let song = library_db::load_song_by_hash(file_hash)
@@ -501,7 +501,7 @@ pub fn save_vocal_chart_from_revision(
         producer_node: AnalysisNodeId::new("user.chart_editor"),
         input_revisions,
         config_hash: "user-edit".to_string(),
-        algorithm_version: format!("chart-editor-v1/app-{}", env!("CARGO_PKG_VERSION")),
+        algorithm_version: format!("chart-editor/app-{}", env!("CARGO_PKG_VERSION")),
         created_at_ms: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -679,7 +679,7 @@ pub enum ChartUpdatePolicy {
 }
 
 /// Phase 5 §5.4 "查看 Candidate 与 Authored Chart 的摘要差异": counts, not a
-/// full field-by-field diff -- `VocalChartV1` carries no detected key/BPM of
+/// full field-by-field diff -- `VocalChart` carries no detected key/BPM of
 /// its own (that lives in `music_analysis.json`, outside the chart), so a
 /// deep semantic diff isn't meaningful at this layer. Phrase/note counts and
 /// which analyzer inputs actually changed since the chart was last saved are
@@ -716,7 +716,7 @@ pub enum CandidateChartStatus {
     CandidateAvailable(CandidateChartSummary),
 }
 
-fn vocal_chart_counts(chart: &VocalChartV1) -> (usize, usize) {
+fn vocal_chart_counts(chart: &VocalChart) -> (usize, usize) {
     let phrase_count = chart.tracks.iter().map(|track| track.phrases.len()).sum();
     let note_count = chart
         .tracks
@@ -772,7 +772,7 @@ pub fn candidate_chart_status(file_hash: &str) -> CandidateChartStatus {
     let read_counts = |path: &Path| {
         std::fs::read(path)
             .ok()
-            .and_then(|bytes| serde_json::from_slice::<VocalChartV1>(&bytes).ok())
+            .and_then(|bytes| serde_json::from_slice::<VocalChart>(&bytes).ok())
             .as_ref()
             .map(vocal_chart_counts)
             .unwrap_or((0, 0))
@@ -803,7 +803,7 @@ pub fn candidate_chart_status(file_hash: &str) -> CandidateChartStatus {
 /// (`playable_audio`, which can transcode a non-browser-native source),
 /// which is what made a per-render problem count look expensive. Counting
 /// problems only ever needs the chart's own structure --
-/// `EditorDocument::problems()` takes a bare `VocalChartV1`, nothing about
+/// `EditorDocument::problems()` takes a bare `VocalChart`, nothing about
 /// audio -- so this skips that resolution entirely and is cheap enough to
 /// call on every render, same as `candidate_chart_status`/
 /// `cached_artifact_presence_for_song`. `None` means there is no chart data
@@ -815,7 +815,7 @@ pub fn chart_problem_count(file_hash: &str) -> Option<usize> {
 
 fn chart_problem_count_for(cache: &CacheDir, file_hash: &str) -> Option<usize> {
     let vocal_chart_path = cache.vocal_chart_path(file_hash);
-    let vocal_chart: VocalChartV1 = if vocal_chart_path.is_file() {
+    let vocal_chart: VocalChart = if vocal_chart_path.is_file() {
         serde_json::from_str(&std::fs::read_to_string(&vocal_chart_path).ok()?).ok()?
     } else {
         let mut transcript = read_json(
@@ -870,7 +870,7 @@ fn candidate_chart_status_for(cache: &CacheDir, file_hash: &str) -> CandidateCha
 
     let (authored_phrase_count, authored_note_count) = std::fs::read_to_string(&authored_path)
         .ok()
-        .and_then(|text| serde_json::from_str::<VocalChartV1>(&text).ok())
+        .and_then(|text| serde_json::from_str::<VocalChart>(&text).ok())
         .as_ref()
         .map(vocal_chart_counts)
         .unwrap_or((0, 0));
@@ -1130,8 +1130,7 @@ mod candidate_chart_status_tests {
         let path = materialize_candidate_chart(&cache, hash, &transcript_path).unwrap();
         assert_eq!(path, cache.candidate_chart_path(hash));
         assert_ne!(path, transcript_path);
-        let chart: utz::VocalChartV1 =
-            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let chart: utz::VocalChart = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
         chart.validate().unwrap();
 
         cache.clear_all();

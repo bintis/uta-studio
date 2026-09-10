@@ -12,7 +12,7 @@ const RMVPE_SOURCE_SHA256: &str =
     "5370e71ac80af8b4b7c793d27efd51fd8bf962de3a7ede0766dac0befa3660fd";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PitchEvidenceV03 {
+pub struct PitchEvidence {
     pub format: String,
     pub format_version: String,
     pub timebase: u64,
@@ -52,7 +52,7 @@ pub fn parse_rmvpe_pitch(
     path: &Path,
     source_start: u64,
     source_duration: u64,
-) -> EngineResult<PitchEvidenceV03> {
+) -> EngineResult<PitchEvidence> {
     let metadata = std::fs::metadata(path)
         .map_err(|error| invalid(format!("RMVPE evidence is unavailable: {error}")))?;
     if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_EVIDENCE_BYTES {
@@ -129,7 +129,7 @@ pub fn parse_rmvpe_pitch(
     source_start
         .checked_add(local_end)
         .ok_or_else(|| invalid("pitch evidence overflows the source timeline"))?;
-    Ok(PitchEvidenceV03 {
+    Ok(PitchEvidence {
         format: "uta.pitch-evidence".to_string(),
         format_version: "0.3.0".to_string(),
         timebase: u64::from(CANONICAL_TIMEBASE),
@@ -167,7 +167,7 @@ pub fn parse_fcpe_pitch(
     path: &Path,
     source_start: u64,
     source_duration: u64,
-) -> EngineResult<PitchEvidenceV03> {
+) -> EngineResult<PitchEvidence> {
     let metadata = std::fs::metadata(path)
         .map_err(|error| invalid(format!("FCPE evidence is unavailable: {error}")))?;
     if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_EVIDENCE_BYTES {
@@ -234,7 +234,7 @@ pub fn parse_fcpe_pitch(
         "window_samples".to_string(),
         serde_json::json!(raw.window_samples),
     );
-    Ok(PitchEvidenceV03 {
+    Ok(PitchEvidence {
         format: "uta.pitch-evidence".to_string(),
         format_version: "0.3.0".to_string(),
         timebase: u64::from(CANONICAL_TIMEBASE),

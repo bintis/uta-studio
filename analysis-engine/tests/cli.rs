@@ -309,7 +309,7 @@ fn standalone_ndjson_worker_contract_is_correlated_bounded_and_stdout_pure() {
 fn f0_derived_full_candidate_request(request_id: &str) -> serde_json::Value {
     let mut value = matrix_request("full-candidate");
     value["request_id"] = serde_json::json!(request_id);
-    value["extensions"]["uta.workflow_execution.v1"] = serde_json::json!({
+    value["extensions"]["uta.workflow_execution"] = serde_json::json!({
         "contract": "uta.workflow-execution",
         "version": 1,
         "workflow_schema_version": uta_analysis_engine::workflow::WORKFLOW_SCHEMA_VERSION,
@@ -496,7 +496,7 @@ fn f0_derived_fusion_crosses_the_packaged_cli_boundary() {
 #[test]
 fn legacy_private_fusion_parameters_fail_closed() {
     let mut request = f0_derived_full_candidate_request("fusion-policy-conflict");
-    let nodes = request["extensions"]["uta.workflow_execution.v1"]["nodes"]
+    let nodes = request["extensions"]["uta.workflow_execution"]["nodes"]
         .as_array_mut()
         .expect("workflow nodes");
     let fusion = nodes

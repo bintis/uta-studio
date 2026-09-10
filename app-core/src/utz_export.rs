@@ -395,11 +395,11 @@ fn missing_assets(cache: &CacheDir, file_hash: &str) -> Vec<String> {
 
 /// Reads the analyzer's cached pitch track, if it produced one. A missing or
 /// unreadable track simply means the package ships without evidence.
-fn pitch_evidence(file_hash: &str) -> Option<utz::PitchEvidenceV1> {
+fn pitch_evidence(file_hash: &str) -> Option<utz::PitchEvidence> {
     let path = CacheDir::new().pitch_track_path(file_hash);
     let bytes = std::fs::read(path).ok()?;
     let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    if let Ok(evidence) = serde_json::from_value::<utz::PitchEvidenceV1>(value.clone())
+    if let Ok(evidence) = serde_json::from_value::<utz::PitchEvidence>(value.clone())
         && evidence.validate().is_ok()
     {
         return Some(evidence);

@@ -13,7 +13,7 @@ use crate::pitch_input::read_shared_rmvpe;
 use crate::stars_g2p::{ChineseG2pAsset, PROFILE};
 
 const UPSTREAM_COMMIT: &str = "f0e43e96cfe953f71a6cf9efd8b908b2c9d7e167";
-const FRONTEND_PROFILE: &str = "shared-singing-frontend-24k-v1";
+const FRONTEND_PROFILE: &str = "shared-singing-frontend-24k";
 
 #[derive(Debug, Deserialize)]
 struct Request {
@@ -195,7 +195,7 @@ pub fn infer(
         capabilities,
         upstream_commit: UPSTREAM_COMMIT.to_string(),
         checkpoint_sha256: request.model_content_digest,
-        config_sha256: "stars-native-ggml-config-v1".to_string(),
+        config_sha256: "stars-native-ggml-config".to_string(),
         model_generation: request.model_generation,
         runtime_manifest_sha256: runtime_manifest_digest.to_string(),
         backend: backend.to_string(),

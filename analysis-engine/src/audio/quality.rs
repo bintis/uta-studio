@@ -1,11 +1,11 @@
 use crate::contract::{
     AUDIO_QUALITY_ALGORITHM_VERSION, AUDIO_QUALITY_REPORT_CONTRACT, AUDIO_QUALITY_REPORT_VERSION,
-    AnalysisProfile, AudioQualityReportV1, CLEANUP_CONSISTENCY_GATE, CLIPPING_GATE,
+    AnalysisProfile, AudioQualityReport, CLEANUP_CONSISTENCY_GATE, CLIPPING_GATE,
     ENERGY_RATIO_GATE, EngineError, EngineErrorCode, EngineResult, FINITE_SAMPLES_GATE,
-    LEAD_PURITY_GATE, MUSICAL_DAMAGE_GATE, QualityGateOutcomeV1, QualityGateRequirementV1,
-    QualityGateStatusV1, QualityMetricV1, QualityRegionV1, SILENCE_RATIO_GATE, TIMELINE_VALID_GATE,
+    LEAD_PURITY_GATE, MUSICAL_DAMAGE_GATE, QualityGateOutcome, QualityGateRequirement,
+    QualityGateStatus, QualityMetric, QualityRegion, SILENCE_RATIO_GATE, TIMELINE_VALID_GATE,
     VOCAL_LEAKAGE_GATE, VOCAL_TOPOLOGY_ESTIMATE_CONTRACT, VOCAL_TOPOLOGY_ESTIMATE_VERSION,
-    VOCAL_TOPOLOGY_GATE, VocalTopologyEstimateV1, VocalTopologyModeV1, gate_requirement,
+    VOCAL_TOPOLOGY_GATE, VocalTopologyEstimate, VocalTopologyMode, gate_requirement,
 };
 use crate::fusion::{SingingReviewReason, SingingReviewRegion};
 
@@ -212,15 +212,15 @@ impl CleanupComparison {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct InstrumentalQualityEvidence {
-    vocal_leakage_status: QualityGateStatusV1,
+    vocal_leakage_status: QualityGateStatus,
     vocal_leakage_coverage: f64,
-    vocal_leakage_regions: Vec<QualityRegionV1>,
-    musical_damage_status: QualityGateStatusV1,
+    vocal_leakage_regions: Vec<QualityRegion>,
+    musical_damage_status: QualityGateStatus,
     damage_dropout_coverage: f64,
     active_instrumental_coverage: f64,
     broadband_window_coverage: f64,
     temporal_structure_coverage: f64,
-    musical_damage_regions: Vec<QualityRegionV1>,
+    musical_damage_regions: Vec<QualityRegion>,
     reference_available: bool,
 }
 
@@ -229,11 +229,11 @@ pub(crate) fn estimate_vocal_topology(
     duration: u64,
     lead: Option<&SignalProfile>,
     residual: Option<&SignalProfile>,
-) -> EngineResult<VocalTopologyEstimateV1> {
+) -> EngineResult<VocalTopologyEstimate> {
     let evidence_sources = if lead.is_some() && residual.is_some() {
         vec![
-            "lead_vocal.window_profile_v1".to_string(),
-            "vocal_residual.window_profile_v1".to_string(),
+            "lead_vocal.window_profile".to_string(),
+            "vocal_residual.window_profile".to_string(),
         ]
     } else {
         vec!["caller_or_unpartitioned_vocal_input".to_string()]
@@ -242,7 +242,7 @@ pub(crate) fn estimate_vocal_topology(
         return topology_estimate(
             source_start,
             duration,
-            VocalTopologyModeV1::Unknown,
+            VocalTopologyMode::Unknown,
             Vec::new(),
             Vec::new(),
             evidence_sources,
@@ -259,7 +259,7 @@ pub(crate) fn estimate_vocal_topology(
         return topology_estimate(
             source_start,
             duration,
-            VocalTopologyModeV1::Unknown,
+            VocalTopologyMode::Unknown,
             Vec::new(),
             Vec::new(),
             evidence_sources,
@@ -279,7 +279,7 @@ pub(crate) fn estimate_vocal_topology(
         return topology_estimate(
             source_start,
             duration,
-            VocalTopologyModeV1::Unknown,
+            VocalTopologyMode::Unknown,
             Vec::new(),
             Vec::new(),
             evidence_sources,
@@ -352,14 +352,14 @@ pub(crate) fn estimate_vocal_topology(
         support_regions.sort_by_key(|region| (region.start, region.end));
     }
     let mode = if !overlap_regions.is_empty() {
-        VocalTopologyModeV1::OverlappingMultiLead
+        VocalTopologyMode::OverlappingMultiLead
     } else if !support_regions.is_empty() {
         // The separator's residual is not independent singer-identity evidence.
         // Even clean alternation therefore remains foreground/support ambiguity;
         // AlternatingMultiLead is reserved for a future qualified expert.
-        VocalTopologyModeV1::LeadWithSupport
+        VocalTopologyMode::LeadWithSupport
     } else {
-        VocalTopologyModeV1::SingleLead
+        VocalTopologyMode::SingleLead
     };
     topology_estimate(
         source_start,
@@ -374,19 +374,19 @@ pub(crate) fn estimate_vocal_topology(
 fn topology_estimate(
     source_start: u64,
     duration: u64,
-    mode: VocalTopologyModeV1,
-    overlap_regions: Vec<QualityRegionV1>,
-    support_regions: Vec<QualityRegionV1>,
+    mode: VocalTopologyMode,
+    overlap_regions: Vec<QualityRegion>,
+    support_regions: Vec<QualityRegion>,
     evidence_sources: Vec<String>,
-) -> EngineResult<VocalTopologyEstimateV1> {
-    let estimate = VocalTopologyEstimateV1 {
+) -> EngineResult<VocalTopologyEstimate> {
+    let estimate = VocalTopologyEstimate {
         contract: VOCAL_TOPOLOGY_ESTIMATE_CONTRACT.to_string(),
         version: VOCAL_TOPOLOGY_ESTIMATE_VERSION,
         timebase: crate::contract::CANONICAL_TIMEBASE,
         source_start,
         duration,
         mode,
-        // No calibrated topology model participates in v1. This source-local
+        // No calibrated topology model participates. This source-local
         // deterministic estimate must not manufacture probability.
         confidence: None,
         overlap_regions,
@@ -398,7 +398,7 @@ fn topology_estimate(
 }
 
 pub(crate) fn topology_review_regions(
-    estimate: &VocalTopologyEstimateV1,
+    estimate: &VocalTopologyEstimate,
 ) -> Vec<SingingReviewRegion> {
     let mut regions = Vec::new();
     for region in &estimate.overlap_regions {
@@ -433,7 +433,7 @@ pub(crate) fn topology_review_regions(
             reviewed: false,
         });
     }
-    if estimate.mode == VocalTopologyModeV1::Unknown {
+    if estimate.mode == VocalTopologyMode::Unknown {
         regions.push(SingingReviewRegion {
             id: format!(
                 "topology-unknown-{}-{}",
@@ -530,19 +530,19 @@ pub(crate) fn estimate_instrumental_quality(
     let damage_dropout_coverage = covered_ratio(&musical_damage_regions, duration);
     let musical_damage_status =
         if instrumental.windows.is_empty() || !instrumental_metrics.finite_samples {
-            QualityGateStatusV1::Unknown
+            QualityGateStatus::Unknown
         } else if instrumental_metrics.clipping_ratio > MAX_CLIPPING_RATIO
             || instrumental_metrics.silence_ratio > MAX_SILENCE_RATIO
             || damage_dropout_coverage > MAX_DAMAGE_DROPOUT_COVERAGE
         {
-            QualityGateStatusV1::Failed
+            QualityGateStatus::Failed
         } else if musical_damage_regions.is_empty() && structural_evidence_available {
-            QualityGateStatusV1::Passed
+            QualityGateStatus::Passed
         } else {
             // Intrinsic evidence can detect damage, but a spectrally collapsed or
             // transient-free artifact cannot be certified as undamaged without
             // comparing it to the original mix (which this gate must never do).
-            QualityGateStatusV1::Unknown
+            QualityGateStatus::Unknown
         };
 
     let usable_vocal_reference = vocal_reference.filter(|vocal| {
@@ -604,14 +604,14 @@ pub(crate) fn estimate_instrumental_quality(
         );
         let coverage = covered_ratio(&vocal_leakage_regions, duration);
         if coverage > MAX_LEAKAGE_COVERAGE {
-            QualityGateStatusV1::Failed
+            QualityGateStatus::Failed
         } else if vocal_leakage_regions.is_empty() {
-            QualityGateStatusV1::Passed
+            QualityGateStatus::Passed
         } else {
-            QualityGateStatusV1::Unknown
+            QualityGateStatus::Unknown
         }
     } else {
-        QualityGateStatusV1::Unknown
+        QualityGateStatus::Unknown
     };
     let vocal_leakage_coverage = covered_ratio(&vocal_leakage_regions, duration);
     InstrumentalQualityEvidence {
@@ -633,9 +633,9 @@ fn windows_to_regions(
     duration: u64,
     windows: &[SignalWindowMetrics],
     reason: &str,
-) -> Vec<QualityRegionV1> {
+) -> Vec<QualityRegion> {
     let source_end = source_start.saturating_add(duration);
-    let mut result = Vec::<QualityRegionV1>::new();
+    let mut result = Vec::<QualityRegion>::new();
     for window in windows {
         let start = source_start.saturating_add(window.start).min(source_end);
         let end = source_start.saturating_add(window.end).min(source_end);
@@ -648,7 +648,7 @@ fn windows_to_regions(
             previous.end = previous.end.max(end);
             continue;
         }
-        result.push(QualityRegionV1 {
+        result.push(QualityRegion {
             start,
             end,
             reason: reason.to_string(),
@@ -682,13 +682,13 @@ pub(crate) struct QualityEvaluationInput<'a> {
     pub source: SignalMetrics,
     pub analyzed: SignalMetrics,
     pub cleanup: Option<CleanupComparison>,
-    pub vocal_topology: Option<&'a VocalTopologyEstimateV1>,
+    pub vocal_topology: Option<&'a VocalTopologyEstimate>,
     pub instrumental: Option<&'a InstrumentalQualityEvidence>,
 }
 
 pub(crate) fn evaluate_audio_quality(
     input: QualityEvaluationInput<'_>,
-) -> EngineResult<AudioQualityReportV1> {
+) -> EngineResult<AudioQualityReport> {
     let energy_ratio = ratio(input.analyzed.rms, input.source.rms);
     let outcomes = input
         .planned_gates
@@ -697,9 +697,9 @@ pub(crate) fn evaluate_audio_quality(
             TIMELINE_VALID_GATE => outcome(
                 gate,
                 if input.actual_duration.abs_diff(input.expected_duration) <= MAX_TIMELINE_DELTA {
-                    QualityGateStatusV1::Passed
+                    QualityGateStatus::Passed
                 } else {
-                    QualityGateStatusV1::Failed
+                    QualityGateStatus::Failed
                 },
                 "analysis audio preserves the canonical source timeline",
                 vec![metric(
@@ -714,9 +714,9 @@ pub(crate) fn evaluate_audio_quality(
             FINITE_SAMPLES_GATE => outcome(
                 gate,
                 if input.source.finite_samples && input.analyzed.finite_samples {
-                    QualityGateStatusV1::Passed
+                    QualityGateStatus::Passed
                 } else {
-                    QualityGateStatusV1::Failed
+                    QualityGateStatus::Failed
                 },
                 "decoded source and analysis audio contain only finite samples",
                 vec![metric(
@@ -731,9 +731,9 @@ pub(crate) fn evaluate_audio_quality(
             CLIPPING_GATE => outcome(
                 gate,
                 if input.analyzed.clipping_ratio <= MAX_CLIPPING_RATIO {
-                    QualityGateStatusV1::Passed
+                    QualityGateStatus::Passed
                 } else {
-                    QualityGateStatusV1::Failed
+                    QualityGateStatus::Failed
                 },
                 "analysis-audio clipping is measured without altering samples",
                 vec![
@@ -757,9 +757,9 @@ pub(crate) fn evaluate_audio_quality(
             SILENCE_RATIO_GATE => outcome(
                 gate,
                 if input.analyzed.silence_ratio <= MAX_SILENCE_RATIO {
-                    QualityGateStatusV1::Passed
+                    QualityGateStatus::Passed
                 } else {
-                    QualityGateStatusV1::Failed
+                    QualityGateStatus::Failed
                 },
                 "analysis audio is not accidentally all-silence",
                 vec![metric(
@@ -774,9 +774,9 @@ pub(crate) fn evaluate_audio_quality(
             ENERGY_RATIO_GATE => outcome(
                 gate,
                 if (MIN_ENERGY_RATIO..=MAX_ENERGY_RATIO).contains(&energy_ratio) {
-                    QualityGateStatusV1::Passed
+                    QualityGateStatus::Passed
                 } else {
-                    QualityGateStatusV1::Failed
+                    QualityGateStatus::Failed
                 },
                 "analysis-audio energy remains within conservative source-relative bounds",
                 vec![metric(
@@ -795,14 +795,14 @@ pub(crate) fn evaluate_audio_quality(
             VOCAL_TOPOLOGY_GATE => vocal_topology_outcome(gate, input.vocal_topology),
             _ => outcome(
                 gate,
-                QualityGateStatusV1::Unknown,
+                QualityGateStatus::Unknown,
                 "the planned quality gate is unknown to this evaluator",
                 Vec::new(),
                 Vec::new(),
             ),
         })
         .collect();
-    let report = AudioQualityReportV1 {
+    let report = AudioQualityReport {
         contract: AUDIO_QUALITY_REPORT_CONTRACT.to_string(),
         version: AUDIO_QUALITY_REPORT_VERSION,
         algorithm: AUDIO_QUALITY_ALGORITHM_VERSION.to_string(),
@@ -817,13 +817,13 @@ pub(crate) fn evaluate_audio_quality(
     Ok(report)
 }
 
-pub(crate) fn enforce_required_quality(report: &AudioQualityReportV1) -> EngineResult<()> {
+pub(crate) fn enforce_required_quality(report: &AudioQualityReport) -> EngineResult<()> {
     let failed = report
         .outcomes
         .iter()
         .filter(|outcome| {
-            outcome.requirement == QualityGateRequirementV1::Required
-                && outcome.status != QualityGateStatusV1::Passed
+            outcome.requirement == QualityGateRequirement::Required
+                && outcome.status != QualityGateStatus::Passed
         })
         .map(|outcome| outcome.gate.as_str())
         .collect::<Vec<_>>();
@@ -837,16 +837,16 @@ pub(crate) fn enforce_required_quality(report: &AudioQualityReportV1) -> EngineR
     }
 }
 
-pub(crate) fn quality_degraded_reasons(report: &AudioQualityReportV1) -> Vec<String> {
+pub(crate) fn quality_degraded_reasons(report: &AudioQualityReport) -> Vec<String> {
     report
         .outcomes
         .iter()
         .filter(|outcome| {
-            outcome.requirement == QualityGateRequirementV1::Degrading
-                && outcome.status != QualityGateStatusV1::Passed
+            outcome.requirement == QualityGateRequirement::Degrading
+                && outcome.status != QualityGateStatus::Passed
         })
         .map(|outcome| match outcome.gate.as_str() {
-            CLEANUP_CONSISTENCY_GATE if outcome.status == QualityGateStatusV1::Failed => {
+            CLEANUP_CONSISTENCY_GATE if outcome.status == QualityGateStatus::Failed => {
                 "cleanup_damage_suspected".to_string()
             }
             LEAD_PURITY_GATE => "lead_isolation_uncertain".to_string(),
@@ -858,11 +858,11 @@ pub(crate) fn quality_degraded_reasons(report: &AudioQualityReportV1) -> Vec<Str
         .collect()
 }
 
-fn cleanup_outcome(gate: &str, comparison: Option<CleanupComparison>) -> QualityGateOutcomeV1 {
+fn cleanup_outcome(gate: &str, comparison: Option<CleanupComparison>) -> QualityGateOutcome {
     let Some(comparison) = comparison else {
         return outcome(
             gate,
-            QualityGateStatusV1::Unknown,
+            QualityGateStatus::Unknown,
             "no successful raw-versus-clean pair exists; cleanup consistency is unknown",
             Vec::new(),
             Vec::new(),
@@ -871,9 +871,9 @@ fn cleanup_outcome(gate: &str, comparison: Option<CleanupComparison>) -> Quality
     outcome(
         gate,
         if comparison.damage_suspected() {
-            QualityGateStatusV1::Failed
+            QualityGateStatus::Failed
         } else {
-            QualityGateStatusV1::Passed
+            QualityGateStatus::Passed
         },
         "raw and cleaned lead audio were compared for timeline, energy and silence damage",
         vec![
@@ -903,14 +903,11 @@ fn cleanup_outcome(gate: &str, comparison: Option<CleanupComparison>) -> Quality
     )
 }
 
-fn lead_purity_outcome(
-    gate: &str,
-    topology: Option<&VocalTopologyEstimateV1>,
-) -> QualityGateOutcomeV1 {
+fn lead_purity_outcome(gate: &str, topology: Option<&VocalTopologyEstimate>) -> QualityGateOutcome {
     let Some(topology) = topology else {
         return outcome(
             gate,
-            QualityGateStatusV1::Unknown,
+            QualityGateStatus::Unknown,
             "lead purity has no independent foreground/residual evidence",
             Vec::new(),
             Vec::new(),
@@ -919,24 +916,24 @@ fn lead_purity_outcome(
     let regions = topology_regions(topology);
     let coverage = covered_ratio(&regions, topology.duration);
     let (status, summary) = match topology.mode {
-        VocalTopologyModeV1::SingleLead | VocalTopologyModeV1::AlternatingMultiLead => (
-            QualityGateStatusV1::Passed,
+        VocalTopologyMode::SingleLead | VocalTopologyMode::AlternatingMultiLead => (
+            QualityGateStatus::Passed,
             "foreground/residual evidence supports a usable monophonic lead in each active window",
         ),
-        VocalTopologyModeV1::LeadWithSupport if coverage > MAX_SUPPORT_COVERAGE => (
-            QualityGateStatusV1::Failed,
+        VocalTopologyMode::LeadWithSupport if coverage > MAX_SUPPORT_COVERAGE => (
+            QualityGateStatus::Failed,
             "support-vocal activity materially contaminates the analysis lead",
         ),
-        VocalTopologyModeV1::LeadWithSupport => (
-            QualityGateStatusV1::Unknown,
+        VocalTopologyMode::LeadWithSupport => (
+            QualityGateStatus::Unknown,
             "support-vocal activity is present; lead purity remains source-locally uncertain",
         ),
-        VocalTopologyModeV1::OverlappingMultiLead => (
-            QualityGateStatusV1::Failed,
+        VocalTopologyMode::OverlappingMultiLead => (
+            QualityGateStatus::Failed,
             "simultaneous foreground activity is incompatible with a trusted monophonic lead",
         ),
-        VocalTopologyModeV1::Unknown => (
-            QualityGateStatusV1::Unknown,
+        VocalTopologyMode::Unknown => (
+            QualityGateStatus::Unknown,
             "lead purity is unknown because no independent residual comparison is available",
         ),
     };
@@ -957,12 +954,12 @@ fn lead_purity_outcome(
 
 fn vocal_topology_outcome(
     gate: &str,
-    topology: Option<&VocalTopologyEstimateV1>,
-) -> QualityGateOutcomeV1 {
+    topology: Option<&VocalTopologyEstimate>,
+) -> QualityGateOutcome {
     let Some(topology) = topology else {
         return outcome(
             gate,
-            QualityGateStatusV1::Unknown,
+            QualityGateStatus::Unknown,
             "vocal topology was not measured",
             Vec::new(),
             Vec::new(),
@@ -971,28 +968,28 @@ fn vocal_topology_outcome(
     let regions = topology_regions(topology);
     let coverage = covered_ratio(&regions, topology.duration);
     let (status, summary) = match topology.mode {
-        VocalTopologyModeV1::SingleLead => (
-            QualityGateStatusV1::Passed,
+        VocalTopologyMode::SingleLead => (
+            QualityGateStatus::Passed,
             "foreground/residual evidence supports single-lead topology",
         ),
-        VocalTopologyModeV1::AlternatingMultiLead => (
-            QualityGateStatusV1::Passed,
+        VocalTopologyMode::AlternatingMultiLead => (
+            QualityGateStatus::Passed,
             "alternating foreground activity remains monophonic per measured window; singer identity is not inferred",
         ),
-        VocalTopologyModeV1::LeadWithSupport if coverage > MAX_SUPPORT_COVERAGE => (
-            QualityGateStatusV1::Failed,
+        VocalTopologyMode::LeadWithSupport if coverage > MAX_SUPPORT_COVERAGE => (
+            QualityGateStatus::Failed,
             "support-vocal regions occupy too much of the source for trusted monophonic topology",
         ),
-        VocalTopologyModeV1::LeadWithSupport => (
-            QualityGateStatusV1::Unknown,
+        VocalTopologyMode::LeadWithSupport => (
+            QualityGateStatus::Unknown,
             "lead-with-support topology is measured without claiming backing or harmony identity",
         ),
-        VocalTopologyModeV1::OverlappingMultiLead => (
-            QualityGateStatusV1::Failed,
+        VocalTopologyMode::OverlappingMultiLead => (
+            QualityGateStatus::Failed,
             "overlapping foreground topology is measured; a second singer track is not fabricated",
         ),
-        VocalTopologyModeV1::Unknown => (
-            QualityGateStatusV1::Unknown,
+        VocalTopologyMode::Unknown => (
+            QualityGateStatus::Unknown,
             "vocal topology is unknown because independent foreground/residual evidence is insufficient",
         ),
     };
@@ -1011,11 +1008,11 @@ fn vocal_topology_outcome(
     )
 }
 
-fn topology_regions(topology: &VocalTopologyEstimateV1) -> Vec<QualityRegionV1> {
+fn topology_regions(topology: &VocalTopologyEstimate) -> Vec<QualityRegion> {
     let mut regions = topology.overlap_regions.clone();
     regions.extend(topology.support_regions.clone());
-    if topology.mode == VocalTopologyModeV1::Unknown {
-        regions.push(QualityRegionV1 {
+    if topology.mode == VocalTopologyMode::Unknown {
+        regions.push(QualityRegion {
             start: topology.source_start,
             end: topology.source_start.saturating_add(topology.duration),
             reason: "vocal_topology_unknown".to_string(),
@@ -1028,11 +1025,11 @@ fn topology_regions(topology: &VocalTopologyEstimateV1) -> Vec<QualityRegionV1> 
 fn instrumental_leakage_outcome(
     gate: &str,
     evidence: Option<&InstrumentalQualityEvidence>,
-) -> QualityGateOutcomeV1 {
+) -> QualityGateOutcome {
     let Some(evidence) = evidence else {
         return outcome(
             gate,
-            QualityGateStatusV1::Unknown,
+            QualityGateStatus::Unknown,
             "generated Instrumental artifact was unavailable for vocal-leakage measurement",
             Vec::new(),
             Vec::new(),
@@ -1043,7 +1040,7 @@ fn instrumental_leakage_outcome(
         evidence.vocal_leakage_status,
         if !evidence.reference_available {
             "generated Instrumental was measured, but no generated vocal reference exists; leakage remains unknown"
-        } else if evidence.vocal_leakage_status == QualityGateStatusV1::Passed {
+        } else if evidence.vocal_leakage_status == QualityGateStatus::Passed {
             "generated Instrumental does not match active generated-vocal reference windows"
         } else {
             "generated Instrumental contains source-local activity matching the generated vocal reference"
@@ -1062,11 +1059,11 @@ fn instrumental_leakage_outcome(
 fn instrumental_damage_outcome(
     gate: &str,
     evidence: Option<&InstrumentalQualityEvidence>,
-) -> QualityGateOutcomeV1 {
+) -> QualityGateOutcome {
     let Some(evidence) = evidence else {
         return outcome(
             gate,
-            QualityGateStatusV1::Unknown,
+            QualityGateStatus::Unknown,
             "generated Instrumental artifact was unavailable for musical-damage measurement",
             Vec::new(),
             Vec::new(),
@@ -1076,13 +1073,13 @@ fn instrumental_damage_outcome(
         gate,
         evidence.musical_damage_status,
         match evidence.musical_damage_status {
-            QualityGateStatusV1::Passed => {
+            QualityGateStatus::Passed => {
                 "generated Instrumental has measurable spectral/transient structure and passes intrinsic clipping, silence and dropout checks"
             }
-            QualityGateStatusV1::Failed => {
+            QualityGateStatus::Failed => {
                 "generated Instrumental has intrinsic clipping, silence or structural-dropout evidence"
             }
-            QualityGateStatusV1::Unknown => {
+            QualityGateStatus::Unknown => {
                 "generated Instrumental lacks enough intrinsic spectral/transient structure to certify musical-damage absence"
             }
         },
@@ -1120,7 +1117,7 @@ fn instrumental_damage_outcome(
     )
 }
 
-fn covered_ratio(regions: &[QualityRegionV1], duration: u64) -> f64 {
+fn covered_ratio(regions: &[QualityRegion], duration: u64) -> f64 {
     if duration == 0 || regions.is_empty() {
         return 0.0;
     }
@@ -1161,12 +1158,12 @@ fn ratio(numerator: f64, denominator: f64) -> f64 {
 
 fn outcome(
     gate: &str,
-    status: QualityGateStatusV1,
+    status: QualityGateStatus,
     summary: &str,
-    metrics: Vec<QualityMetricV1>,
-    regions: Vec<QualityRegionV1>,
-) -> QualityGateOutcomeV1 {
-    QualityGateOutcomeV1 {
+    metrics: Vec<QualityMetric>,
+    regions: Vec<QualityRegion>,
+) -> QualityGateOutcome {
+    QualityGateOutcome {
         gate: gate.to_string(),
         requirement: gate_requirement(gate),
         status,
@@ -1182,8 +1179,8 @@ fn metric(
     unit: &str,
     lower_bound: Option<f64>,
     upper_bound: Option<f64>,
-) -> QualityMetricV1 {
-    QualityMetricV1 {
+) -> QualityMetric {
+    QualityMetric {
         name: name.to_string(),
         value,
         unit: unit.to_string(),
@@ -1192,11 +1189,11 @@ fn metric(
     }
 }
 
-fn status_name(status: QualityGateStatusV1) -> &'static str {
+fn status_name(status: QualityGateStatus) -> &'static str {
     match status {
-        QualityGateStatusV1::Passed => "passed",
-        QualityGateStatusV1::Failed => "failed",
-        QualityGateStatusV1::Unknown => "unknown",
+        QualityGateStatus::Passed => "passed",
+        QualityGateStatus::Failed => "failed",
+        QualityGateStatus::Unknown => "unknown",
     }
 }
 
@@ -1240,7 +1237,7 @@ mod tests {
         (samples, profile)
     }
 
-    fn topology(lead: &[(f32, f32)], residual: &[(f32, f32)]) -> VocalTopologyEstimateV1 {
+    fn topology(lead: &[(f32, f32)], residual: &[(f32, f32)]) -> VocalTopologyEstimate {
         let (_, lead) = signal_fixture(lead);
         let (_, residual) = signal_fixture(residual);
         estimate_vocal_topology(
@@ -1274,9 +1271,9 @@ mod tests {
         source: SignalMetrics,
         analyzed: SignalMetrics,
         cleanup: Option<CleanupComparison>,
-        topology: Option<&VocalTopologyEstimateV1>,
+        topology: Option<&VocalTopologyEstimate>,
         instrumental: Option<&InstrumentalQualityEvidence>,
-    ) -> AudioQualityReportV1 {
+    ) -> AudioQualityReport {
         evaluate_audio_quality(QualityEvaluationInput {
             profile: AnalysisProfile::Balanced,
             planned_gates: &gates(),
@@ -1293,7 +1290,7 @@ mod tests {
         .unwrap()
     }
 
-    fn status(report: &AudioQualityReportV1, gate: &str) -> QualityGateStatusV1 {
+    fn status(report: &AudioQualityReport, gate: &str) -> QualityGateStatus {
         report
             .outcomes
             .iter()
@@ -1344,7 +1341,7 @@ mod tests {
             first
                 .outcomes
                 .iter()
-                .all(|outcome| outcome.status == QualityGateStatusV1::Passed)
+                .all(|outcome| outcome.status == QualityGateStatus::Passed)
         );
     }
 
@@ -1352,10 +1349,10 @@ mod tests {
     fn generated_clipping_is_typed_degradation_not_a_finite_or_timeline_failure() {
         let signal = metrics(&vec![1.0; 16_000]);
         let report = evaluate(signal, signal, None, None, None);
-        assert_eq!(status(&report, CLIPPING_GATE), QualityGateStatusV1::Failed);
+        assert_eq!(status(&report, CLIPPING_GATE), QualityGateStatus::Failed);
         assert_eq!(
             status(&report, FINITE_SAMPLES_GATE),
-            QualityGateStatusV1::Passed
+            QualityGateStatus::Passed
         );
         assert!(enforce_required_quality(&report).is_ok());
         assert!(
@@ -1372,11 +1369,11 @@ mod tests {
         let report = evaluate(source, silence, None, None, None);
         assert_eq!(
             status(&report, SILENCE_RATIO_GATE),
-            QualityGateStatusV1::Failed
+            QualityGateStatus::Failed
         );
         assert_eq!(
             status(&report, ENERGY_RATIO_GATE),
-            QualityGateStatusV1::Failed
+            QualityGateStatus::Failed
         );
         assert!(enforce_required_quality(&report).is_err());
     }
@@ -1388,7 +1385,7 @@ mod tests {
         let report = evaluate(source, amplified, None, None, None);
         assert_eq!(
             status(&report, ENERGY_RATIO_GATE),
-            QualityGateStatusV1::Failed
+            QualityGateStatus::Failed
         );
         assert!(enforce_required_quality(&report).is_err());
     }
@@ -1402,7 +1399,7 @@ mod tests {
         let report = evaluate(raw, raw, Some(comparison), None, None);
         assert_eq!(
             status(&report, CLEANUP_CONSISTENCY_GATE),
-            QualityGateStatusV1::Failed
+            QualityGateStatus::Failed
         );
         assert!(
             quality_degraded_reasons(&report).contains(&"cleanup_damage_suspected".to_string())
@@ -1412,18 +1409,15 @@ mod tests {
     #[test]
     fn simultaneous_overlap_is_typed_without_inventing_singer_identity_or_probability() {
         let overlap = topology(&[(0.3, 220.0); 4], &[(0.25, 440.0); 4]);
-        assert_eq!(overlap.mode, VocalTopologyModeV1::OverlappingMultiLead);
+        assert_eq!(overlap.mode, VocalTopologyMode::OverlappingMultiLead);
         assert!(!overlap.overlap_regions.is_empty());
         assert!(overlap.confidence.is_none());
         let signal = metrics(&vec![0.2; 16_000]);
         let report = evaluate(signal, signal, None, Some(&overlap), None);
-        assert_eq!(
-            status(&report, LEAD_PURITY_GATE),
-            QualityGateStatusV1::Failed
-        );
+        assert_eq!(status(&report, LEAD_PURITY_GATE), QualityGateStatus::Failed);
         assert_eq!(
             status(&report, VOCAL_TOPOLOGY_GATE),
-            QualityGateStatusV1::Failed
+            QualityGateStatus::Failed
         );
         let json = serde_json::to_string(&report).unwrap();
         assert!(
@@ -1438,18 +1432,18 @@ mod tests {
     #[test]
     fn support_residual_alternation_and_insufficient_topologies_degrade_without_identity() {
         let support = topology(&[(0.3, 220.0); 4], &[(0.1, 220.0); 4]);
-        assert_eq!(support.mode, VocalTopologyModeV1::LeadWithSupport);
+        assert_eq!(support.mode, VocalTopologyMode::LeadWithSupport);
         assert!(!support.support_regions.is_empty());
 
         let quiet_support = topology(&[(0.3, 220.0); 4], &[(0.03, 220.0); 4]);
-        assert_eq!(quiet_support.mode, VocalTopologyModeV1::LeadWithSupport);
+        assert_eq!(quiet_support.mode, VocalTopologyMode::LeadWithSupport);
         assert!(!quiet_support.support_regions.is_empty());
 
         let alternating = topology(
             &[(0.3, 220.0), (0.0, 220.0), (0.3, 220.0), (0.0, 220.0)],
             &[(0.0, 330.0), (0.3, 330.0), (0.0, 330.0), (0.3, 330.0)],
         );
-        assert_eq!(alternating.mode, VocalTopologyModeV1::LeadWithSupport);
+        assert_eq!(alternating.mode, VocalTopologyMode::LeadWithSupport);
         assert!(alternating.overlap_regions.is_empty());
         assert!(
             alternating.support_regions.iter().any(|region| {
@@ -1458,13 +1452,10 @@ mod tests {
         );
         let signal = metrics(&vec![0.2; 16_000]);
         let report = evaluate(signal, signal, None, Some(&alternating), None);
-        assert_eq!(
-            status(&report, LEAD_PURITY_GATE),
-            QualityGateStatusV1::Failed
-        );
+        assert_eq!(status(&report, LEAD_PURITY_GATE), QualityGateStatus::Failed);
 
         let unknown = estimate_vocal_topology(0, 1_000_000, None, None).unwrap();
-        assert_eq!(unknown.mode, VocalTopologyModeV1::Unknown);
+        assert_eq!(unknown.mode, VocalTopologyMode::Unknown);
         assert!(unknown.confidence.is_none());
         assert_eq!(topology_review_regions(&unknown).len(), 1);
     }
@@ -1479,7 +1470,7 @@ mod tests {
             &vocal,
             Some(&vocal),
         );
-        assert_eq!(leaked.vocal_leakage_status, QualityGateStatusV1::Failed);
+        assert_eq!(leaked.vocal_leakage_status, QualityGateStatus::Failed);
         assert!(leaked.vocal_leakage_coverage > MAX_LEAKAGE_COVERAGE);
 
         let damaged_pattern = [
@@ -1497,9 +1488,9 @@ mod tests {
             &damaged,
             None,
         );
-        assert_eq!(damage.musical_damage_status, QualityGateStatusV1::Failed);
+        assert_eq!(damage.musical_damage_status, QualityGateStatus::Failed);
         assert!(damage.damage_dropout_coverage > MAX_DAMAGE_DROPOUT_COVERAGE);
-        assert_eq!(damage.vocal_leakage_status, QualityGateStatusV1::Unknown);
+        assert_eq!(damage.vocal_leakage_status, QualityGateStatus::Unknown);
 
         let (collapsed_samples, spectrally_collapsed) = signal_fixture(&[(0.2, 1.0); 4]);
         let collapsed = estimate_instrumental_quality(
@@ -1509,10 +1500,7 @@ mod tests {
             &spectrally_collapsed,
             None,
         );
-        assert_eq!(
-            collapsed.musical_damage_status,
-            QualityGateStatusV1::Unknown
-        );
+        assert_eq!(collapsed.musical_damage_status, QualityGateStatus::Unknown);
 
         let (stationary_samples, stationary_tone) = signal_fixture(&[(0.2, 880.0); 4]);
         let stationary = estimate_instrumental_quality(
@@ -1522,10 +1510,7 @@ mod tests {
             &stationary_tone,
             None,
         );
-        assert_eq!(
-            stationary.musical_damage_status,
-            QualityGateStatusV1::Unknown
-        );
+        assert_eq!(stationary.musical_damage_status, QualityGateStatus::Unknown);
     }
 
     #[test]
@@ -1545,7 +1530,7 @@ mod tests {
                 &instrumental,
                 Some(unusable),
             );
-            assert_eq!(evidence.vocal_leakage_status, QualityGateStatusV1::Unknown);
+            assert_eq!(evidence.vocal_leakage_status, QualityGateStatus::Unknown);
             assert!(!evidence.reference_available);
         }
 
@@ -1567,7 +1552,7 @@ mod tests {
             &long_instrumental,
             Some(&sparse_reference),
         );
-        assert_eq!(sparse.vocal_leakage_status, QualityGateStatusV1::Unknown);
+        assert_eq!(sparse.vocal_leakage_status, QualityGateStatus::Unknown);
         assert!(!sparse.reference_available);
     }
 
@@ -1577,11 +1562,11 @@ mod tests {
         let topology = estimate_vocal_topology(100, 1_000_000, None, None).unwrap();
         let mut report = evaluate(signal, signal, None, Some(&topology), None);
         let mut legacy = report.clone();
-        legacy.algorithm = "audio-quality-gates-v1".to_string();
+        legacy.algorithm = "audio-quality-gates".to_string();
         legacy.vocal_topology = None;
         assert!(legacy.validate().is_ok());
 
-        report.outcomes[2].regions = vec![QualityRegionV1 {
+        report.outcomes[2].regions = vec![QualityRegion {
             start: 999_000,
             end: 1_001_000,
             reason: "outside_source".to_string(),
@@ -1589,12 +1574,12 @@ mod tests {
         assert!(report.validate().is_ok());
         assert!(report.validate_for_source(100).is_err());
         report.outcomes[2].regions = vec![
-            QualityRegionV1 {
+            QualityRegion {
                 start: 100,
                 end: 300,
                 reason: "first".to_string(),
             },
-            QualityRegionV1 {
+            QualityRegion {
                 start: 200,
                 end: 400,
                 reason: "overlap".to_string(),
@@ -1624,11 +1609,11 @@ mod tests {
         .unwrap();
         assert_eq!(
             status(&report, TIMELINE_VALID_GATE),
-            QualityGateStatusV1::Failed
+            QualityGateStatus::Failed
         );
         assert_eq!(
             status(&report, FINITE_SAMPLES_GATE),
-            QualityGateStatusV1::Failed
+            QualityGateStatus::Failed
         );
         assert!(enforce_required_quality(&report).is_err());
     }

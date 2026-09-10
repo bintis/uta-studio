@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::analysis_graph::{AnalysisGraphSpec, AnalysisNodeId};
 
 use super::{
-    CapabilityId, ExecutionPolicy, QualityMode, SeparationStrategyV1, WorkflowDefinition,
+    CapabilityId, ExecutionPolicy, QualityMode, SeparationStrategy, WorkflowDefinition,
     WorkflowNodeId, WorkflowPortType,
 };
 
@@ -17,7 +17,7 @@ pub struct CompiledNodeBinding {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub separation_strategy: Option<SeparationStrategyV1>,
+    pub separation_strategy: Option<SeparationStrategy>,
     #[serde(default)]
     pub execution_policy: ExecutionPolicy,
     #[serde(default)]

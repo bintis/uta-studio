@@ -1244,7 +1244,7 @@ mod tests {
             producer_node: AnalysisNodeId::new("separate"),
             input_revisions: Vec::new(),
             config_hash: "config".to_string(),
-            algorithm_version: "v1".to_string(),
+            algorithm_version: "analysis".to_string(),
             created_at_ms: 1,
             byte_size,
             active: false,

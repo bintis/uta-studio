@@ -5,23 +5,23 @@ use crate::fusion::{
     CanonicalNote, CanonicalSingingTrack, CanonicalWordBoundary, TimeRange,
     validate_canonical_singing_track,
 };
-use crate::quantization::QuantizationReportV1;
+use crate::quantization::QuantizationReport;
 use utz::{
     LyricJoin, LyricTextToken, LyricToken, NoteBonus, NotePitch, NoteScoring, ScoringMode,
-    VocalChartV1, VocalMode, VocalNote, VocalPhrase, VocalTrack, VocalTrackRole,
+    VocalChart, VocalMode, VocalNote, VocalPhrase, VocalTrack, VocalTrackRole,
 };
 
 /// Newly emitted Candidate bytes use the strict UTZ VocalChart 0.3 contract.
 /// Studio retains a read-only migration path for legacy Engine candidate/v1
 /// cache entries, but the Engine no longer emits that wrapper.
-pub type CandidateVocalChartV1 = VocalChartV1;
+pub type CandidateVocalChart = VocalChart;
 
 pub fn finalize_candidate_vocal_chart(
     track: &CanonicalSingingTrack,
     execution_fingerprint: &str,
     preserve_continuous_pitch: bool,
-    quantization: Option<&QuantizationReportV1>,
-) -> EngineResult<CandidateVocalChartV1> {
+    quantization: Option<&QuantizationReport>,
+) -> EngineResult<CandidateVocalChart> {
     if track.schema_version != 1 || execution_fingerprint.trim().is_empty() {
         return Err(invalid(
             "candidate graph version or execution fingerprint is invalid",
@@ -141,7 +141,7 @@ pub fn finalize_candidate_vocal_chart(
         ));
     }
 
-    let mut chart = VocalChartV1::new(vec![VocalTrack {
+    let mut chart = VocalChart::new(vec![VocalTrack {
         id: "lead".to_string(),
         role: VocalTrackRole::Lead,
         part: None,
@@ -630,7 +630,7 @@ mod tests {
         )
         .unwrap();
         assert!(reference.bytes > 0);
-        let decoded: CandidateVocalChartV1 =
+        let decoded: CandidateVocalChart =
             serde_json::from_slice(&std::fs::read(root.join(reference.path)).unwrap()).unwrap();
         decoded.validate().unwrap();
         assert_eq!(decoded, chart);

@@ -4,7 +4,7 @@ mod tests {
 
     use utz::{
         DEFAULT_TIMEBASE, LyricJoin, LyricTextToken, LyricToken, NoteBonus, NotePitch, NoteScoring,
-        ScoringMode, VocalChartV1, VocalMode, VocalNote, VocalPhrase, VocalTrack, VocalTrackRole,
+        ScoringMode, VocalChart, VocalMode, VocalNote, VocalPhrase, VocalTrack, VocalTrackRole,
     };
 
     fn document(notes: &[(f64, f64, u8, &str)]) -> EditorDocument {
@@ -36,7 +36,7 @@ mod tests {
                 })],
             });
         }
-        let mut chart = VocalChartV1::new(vec![VocalTrack {
+        let mut chart = VocalChart::new(vec![VocalTrack {
             id: "lead".into(),
             role: VocalTrackRole::Lead,
             part: None,
@@ -54,7 +54,7 @@ mod tests {
 
     /// Editor documents may temporarily contain a pitched note without lyrics.
     /// That is an editable incomplete state, not an exportable UTZ 0.3 chart.
-    fn assert_editor_structure(chart: &VocalChartV1) {
+    fn assert_editor_structure(chart: &VocalChart) {
         assert_eq!(chart.format, utz::VOCAL_CHART_FORMAT);
         assert_eq!(chart.format_version, utz::VOCAL_CHART_VERSION);
         assert_eq!(chart.timebase, utz::UTZ_TIMEBASE);

@@ -146,9 +146,9 @@ pub(crate) struct DialogState {
 pub(crate) struct ModelSettingsSnapshot {
     pub(crate) runtime_status: app_core::AnalysisRuntimeStatus,
     pub(crate) runtime_models: Vec<app_core::RuntimeModelPresentation>,
-    pub(crate) fusion_agent_adapter: Option<app_core::RuntimeResourceStatusWireV1>,
+    pub(crate) fusion_agent_adapter: Option<app_core::RuntimeResourceStatusWire>,
     pub(crate) fusion_agent_adapter_error: Option<String>,
-    pub(crate) fusion_providers: Option<app_core::RuntimeFusionProviderReportWireV1>,
+    pub(crate) fusion_providers: Option<app_core::RuntimeFusionProviderReportWire>,
     pub(crate) fusion_providers_error: Option<String>,
     pub(crate) audio_catalog: app_core::AudioModelCatalogSummary,
     pub(crate) audio_catalog_error: Option<String>,

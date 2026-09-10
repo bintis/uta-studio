@@ -31,6 +31,11 @@ These rules are mandatory repository-wide.
 - `icon.png` is the canonical logo; derive platform icons from it.
 - Before handoff, scan case-insensitively for disallowed project names outside Git metadata and generated dependency/build directories; the result must be empty.
 
+## Compatibility
+
+- When changing a feature, do not preserve, design for, or test compatibility with previous app, protocol, schema, cache, library, or evidence shapes.
+- Do not add migration, dual-path, legacy, versioned-identity, or "old format still works" code for that purpose. Replace the current shape in place. Existing user libraries and caches may be deleted.
+
 ## Runtime
 
 - Studio launches packaged `uta-analyze` and `uta-runtime` through `UTA_STUDIO_ANALYSIS_CLI_PATH` and `UTA_STUDIO_RUNTIME_CLI_PATH`. Backend components own packaged worker variables; use host/packaged `ffmpeg` through `UTA_STUDIO_FFMPEG_PATH` and normal executable discovery only where supported.

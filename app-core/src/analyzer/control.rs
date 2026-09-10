@@ -66,7 +66,7 @@ pub(crate) fn create_analysis_log(file_hash: &str, started_at_ms: i64) -> Option
 
 pub(crate) fn append_analysis_lifecycle_log(
     path: Option<&Path>,
-    event: &crate::backend_cli::AnalysisLifecycleFrameWireV1,
+    event: &crate::backend_cli::AnalysisLifecycleFrameWire,
 ) {
     let Some(path) = path else {
         return;

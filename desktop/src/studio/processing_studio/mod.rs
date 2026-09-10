@@ -1040,7 +1040,7 @@ pub(crate) fn spawn_processing_studio(
                                     theme.muted_foreground,
                                 );
                             } else if stage == 3 {
-                                let expert_cards = [app_core::OptionalWorkflowCardV1::AcousticDsp];
+                                let expert_cards = [app_core::OptionalWorkflowCard::AcousticDsp];
                                 let missing_experts = expert_cards
                                     .into_iter()
                                     .filter(|card| {

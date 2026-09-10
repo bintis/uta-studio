@@ -7,7 +7,7 @@ pub const ACOUSTIC_EVIDENCE_CONTRACT: &str = "uta.analysis-engine.acoustic-evide
 pub const ACOUSTIC_EVIDENCE_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AcousticEvidenceFrameV1 {
+pub struct AcousticEvidenceFrame {
     pub start: u64,
     pub rms: f32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -31,7 +31,7 @@ pub struct AcousticEvidenceFrameV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AcousticEvidenceV1 {
+pub struct AcousticEvidence {
     pub contract: String,
     pub version: u32,
     pub algorithm: String,
@@ -42,10 +42,10 @@ pub struct AcousticEvidenceV1 {
     pub window_samples: u32,
     pub semantic_audio_role: String,
     pub decoded_audio_sha256: String,
-    pub frames: Vec<AcousticEvidenceFrameV1>,
+    pub frames: Vec<AcousticEvidenceFrame>,
 }
 
-impl AcousticEvidenceV1 {
+impl AcousticEvidence {
     pub fn validate(&self) -> EngineResult<()> {
         if self.contract != ACOUSTIC_EVIDENCE_CONTRACT
             || self.version != ACOUSTIC_EVIDENCE_VERSION

@@ -149,7 +149,7 @@ fn spawn_stage_row(
         });
 }
 
-fn terminal_output_label(output: &app_core::WorkflowTerminalOutputWireV1) -> String {
+fn terminal_output_label(output: &app_core::WorkflowTerminalOutputWire) -> String {
     match (output.semantic_type.as_str(), output.audio_role.as_deref()) {
         ("canonical_singing_track", _) => "Canonical singing track".to_string(),
         ("candidate_chart", _) => "Candidate singing chart".to_string(),
@@ -229,8 +229,8 @@ fn spawn_overview(
             }
 
             let fusion_mode = match app_core::fusion_mode(&stored.definition) {
-                app_core::FusionModeV1::Algorithm => "Algorithm",
-                app_core::FusionModeV1::AiJudgment => "AI judgment",
+                app_core::FusionMode::Algorithm => "Algorithm",
+                app_core::FusionMode::AiJudgment => "AI judgment",
             };
             panel
                 .spawn((
@@ -341,9 +341,7 @@ fn spawn_overview(
             let outputs = session
                 .workflow_snapshot
                 .as_ref()
-                .and_then(|snapshot| {
-                    app_core::WorkflowExecutionWireV1::from_snapshot(snapshot).ok()
-                })
+                .and_then(|snapshot| app_core::WorkflowExecutionWire::from_snapshot(snapshot).ok())
                 .map(|wire| wire.terminal_outputs)
                 .unwrap_or_default();
             if outputs.is_empty() {

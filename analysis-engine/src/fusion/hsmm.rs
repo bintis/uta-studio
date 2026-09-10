@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use super::candidate_states::{
     validate_candidate_evidence_relation_count, validate_candidate_state_count,
 };
-use super::{HardBoundarySetV1, TechniqueScores, TimeRange};
+use super::{HardBoundarySet, TechniqueScores, TimeRange};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PitchAlternative {
@@ -31,14 +31,14 @@ pub enum BoundaryEvidenceKind {
     /// an otherwise unsupported primary boundary.
     F0Consolidation,
     /// Caller-supplied phrase context. It is a soft melodic reset, not a hard
-    /// structural cut unless separately present in `HardBoundarySetV1`.
+    /// structural cut unless separately present in `HardBoundarySet`.
     PhraseConstraint,
     Constraint,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum BoundaryConstraintKindV1 {
+pub enum BoundaryConstraintKind {
     /// Soft caller phrase-start context. Confidence attenuates only melody and
     /// short-octave-return priors; it is never a structural cut.
     PhraseStart,
@@ -51,9 +51,9 @@ pub enum BoundaryConstraintKindV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct BoundaryConstraintEvidenceV1 {
+pub struct BoundaryConstraintEvidence {
     pub source_expert: String,
-    pub kind: BoundaryConstraintKindV1,
+    pub kind: BoundaryConstraintKind,
     pub time: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_local_strength: Option<f32>,
@@ -67,7 +67,7 @@ pub struct BoundaryConstraintEvidenceV1 {
     pub depends_on: Vec<String>,
 }
 
-impl BoundaryConstraintEvidenceV1 {
+impl BoundaryConstraintEvidence {
     fn is_valid(&self) -> bool {
         !self.source_expert.trim().is_empty()
             && self
@@ -272,7 +272,7 @@ pub struct SegmentCandidate {
     #[serde(default)]
     pub boundary_alternatives: Vec<BoundaryAlternative>,
     #[serde(default)]
-    pub boundary_constraints: Vec<BoundaryConstraintEvidenceV1>,
+    pub boundary_constraints: Vec<BoundaryConstraintEvidence>,
     #[serde(default)]
     pub technique_evidence: Vec<TechniqueCandidateFeatures>,
     #[serde(default)]
@@ -283,7 +283,7 @@ pub struct SegmentCandidate {
     pub alternatives: Vec<PitchAlternative>,
 }
 
-fn correlation_discounted_constraint_support(constraints: &[BoundaryConstraintEvidenceV1]) -> f32 {
+fn correlation_discounted_constraint_support(constraints: &[BoundaryConstraintEvidence]) -> f32 {
     let mut groups = std::collections::BTreeMap::<String, f32>::new();
     for constraint in constraints {
         let Some(value) = constraint
@@ -315,7 +315,7 @@ fn correlation_discounted_constraint_support(constraints: &[BoundaryConstraintEv
 /// evaluation rather than counted as independent votes.
 pub fn attach_boundary_constraints(
     candidates: &mut [SegmentCandidate],
-    constraints: &[BoundaryConstraintEvidenceV1],
+    constraints: &[BoundaryConstraintEvidence],
 ) -> Result<(), String> {
     const TOLERANCE: u64 = 50_000;
     // This executes after pitch-state expansion, so the same cumulative
@@ -324,7 +324,7 @@ pub fn attach_boundary_constraints(
     let mut indexed = constraints.iter().enumerate().collect::<Vec<_>>();
     indexed.sort_by_key(|left| (left.1.time, left.0));
     for candidate in candidates {
-        let mut matches = Vec::<(usize, &BoundaryConstraintEvidenceV1)>::new();
+        let mut matches = Vec::<(usize, &BoundaryConstraintEvidence)>::new();
         for edge in [candidate.range.start, candidate.range.end] {
             let lower = edge.saturating_sub(TOLERANCE);
             let upper = edge.saturating_add(TOLERANCE);
@@ -704,7 +704,7 @@ fn phrase_start_strength(candidate: &SegmentCandidate) -> f32 {
         .boundary_constraints
         .iter()
         .filter(|constraint| {
-            constraint.kind == BoundaryConstraintKindV1::PhraseStart
+            constraint.kind == BoundaryConstraintKind::PhraseStart
                 && constraint.time.abs_diff(candidate.range.start) <= CONTEXT_RESET_TOLERANCE
         })
         .filter_map(|constraint| {
@@ -737,7 +737,7 @@ fn has_typed_reset_between(
 pub(super) fn transition_utility(
     previous: &SegmentCandidate,
     next: &SegmentCandidate,
-    hard_boundaries: &HardBoundarySetV1,
+    hard_boundaries: &HardBoundarySet,
     voicing_reset_times: &[u64],
 ) -> f32 {
     transition_utility_indexed(
@@ -803,7 +803,7 @@ pub(super) fn short_octave_return_penalty_for_test(
     previous_previous: &SegmentCandidate,
     previous: &SegmentCandidate,
     next: &SegmentCandidate,
-    hard_boundaries: &HardBoundarySetV1,
+    hard_boundaries: &HardBoundarySet,
     voicing_reset_times: &[u64],
 ) -> f32 {
     short_octave_return_penalty(
@@ -859,7 +859,7 @@ struct HardBoundaryTimeIndex {
 }
 
 impl HardBoundaryTimeIndex {
-    fn new(boundaries: &HardBoundarySetV1) -> Self {
+    fn new(boundaries: &HardBoundarySet) -> Self {
         Self {
             times: boundaries.edge_times(),
         }
@@ -885,7 +885,7 @@ fn voicing_reset_times(candidates: &[SegmentCandidate]) -> Vec<u64> {
     let mut times = candidates
         .iter()
         .flat_map(|candidate| &candidate.boundary_constraints)
-        .filter(|constraint| constraint.kind == BoundaryConstraintKindV1::VoicingTransition)
+        .filter(|constraint| constraint.kind == BoundaryConstraintKind::VoicingTransition)
         .map(|constraint| constraint.time)
         .collect::<Vec<_>>();
     times.sort_unstable();
@@ -970,13 +970,13 @@ pub fn validate_candidate_path(
     candidate_pool: &[SegmentCandidate],
     selected: &[SegmentCandidate],
 ) -> Result<(), String> {
-    validate_candidate_path_with_boundaries(candidate_pool, selected, &HardBoundarySetV1::default())
+    validate_candidate_path_with_boundaries(candidate_pool, selected, &HardBoundarySet::default())
 }
 
 pub fn validate_candidate_path_with_boundaries(
     candidate_pool: &[SegmentCandidate],
     selected: &[SegmentCandidate],
-    hard_boundaries: &HardBoundarySetV1,
+    hard_boundaries: &HardBoundarySet,
 ) -> Result<(), String> {
     validate_candidate_pool(candidate_pool)?;
     hard_boundaries.validate()?;
@@ -1254,12 +1254,12 @@ fn decode_component(
 pub fn decode_candidate_graph(
     candidates: &[SegmentCandidate],
 ) -> Result<Vec<SegmentCandidate>, String> {
-    decode_candidate_graph_with_boundaries(candidates, &HardBoundarySetV1::default())
+    decode_candidate_graph_with_boundaries(candidates, &HardBoundarySet::default())
 }
 
 pub fn decode_candidate_graph_with_boundaries(
     candidates: &[SegmentCandidate],
-    hard_boundaries: &HardBoundarySetV1,
+    hard_boundaries: &HardBoundarySet,
 ) -> Result<Vec<SegmentCandidate>, String> {
     if candidates.is_empty() {
         return Ok(Vec::new());

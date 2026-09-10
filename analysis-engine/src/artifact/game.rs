@@ -10,10 +10,12 @@ const MAX_NOTES: usize = 1_000_000;
 const GAME_SOURCE_COMMIT: &str = "475a8ee781fe8cca980b3b12fbe6c80c768a813a";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct GameNoteEvidenceV1 {
+pub struct GameNoteEvidence {
     pub range: TimeRange,
     /// Fractional GAME MIDI estimate. This is not a finalized target note.
     pub midi: f32,
+    /// False marks a GAME rest region. Rests are valid timeline evidence.
+    pub voiced: bool,
     /// Worker decision configuration, not observed/calibrated confidence.
     pub boundary_decision_threshold: f32,
     /// Worker decision configuration, not observed/calibrated confidence.
@@ -21,7 +23,7 @@ pub struct GameNoteEvidenceV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct GameEvidenceV1 {
+pub struct GameEvidence {
     pub schema_version: u32,
     pub model_id: String,
     pub variant: String,
@@ -33,7 +35,7 @@ pub struct GameEvidenceV1 {
     pub sample_rate: usize,
     pub timestep_ms: u32,
     pub d3pm_steps: usize,
-    pub notes: Vec<GameNoteEvidenceV1>,
+    pub notes: Vec<GameNoteEvidence>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -68,7 +70,7 @@ pub fn parse_game_evidence(
     path: &Path,
     source_start: u64,
     source_duration: u64,
-) -> EngineResult<GameEvidenceV1> {
+) -> EngineResult<GameEvidence> {
     let metadata = std::fs::metadata(path)
         .map_err(|error| invalid(format!("GAME evidence is unavailable: {error}")))?;
     if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_EVIDENCE_BYTES {
@@ -94,6 +96,7 @@ pub fn parse_game_evidence(
         || raw.d3pm_steps != 8
         || !valid_threshold(raw.boundary_decision_threshold)
         || !valid_threshold(raw.presence_decision_threshold)
+        || raw.notes.is_empty()
         || raw.notes.len() > MAX_NOTES
     {
         return Err(invalid("GAME evidence identity or shape is invalid"));
@@ -105,18 +108,12 @@ pub fn parse_game_evidence(
     let mut previous_end = source_start;
     let mut notes = Vec::with_capacity(raw.notes.len());
     for note in raw.notes {
-        // GAME regions include rests. Those are not candidate notes; failing
-        // the whole song after a successful worker run was the production
-        // failure on a real Japanese track.
-        if !note.voiced {
-            continue;
-        }
         if !note.start.is_finite()
             || !note.duration.is_finite()
             || note.start < 0.0
             || note.duration <= 0.0
             || !note.midi.is_finite()
-            || !(0.0..=128.0).contains(&note.midi)
+            || (note.voiced && !(0.0..=128.0).contains(&note.midi))
         {
             return Err(invalid("GAME note evidence contains invalid values"));
         }
@@ -134,18 +131,16 @@ pub fn parse_game_evidence(
             ));
         }
         previous_end = end;
-        notes.push(GameNoteEvidenceV1 {
+        notes.push(GameNoteEvidence {
             range: TimeRange { start, end },
             midi: note.midi,
+            voiced: note.voiced,
             boundary_decision_threshold: raw.boundary_decision_threshold,
             presence_decision_threshold: raw.presence_decision_threshold,
         });
     }
-    if notes.is_empty() {
-        return Err(invalid("GAME produced no voiced notes"));
-    }
 
-    Ok(GameEvidenceV1 {
+    Ok(GameEvidence {
         schema_version: raw.schema_version,
         model_id: raw.model_id,
         variant: raw.variant,
@@ -227,7 +222,7 @@ mod tests {
                 "variant": "GAME-1.0.3-medium-onnx",
                 "source_commit": GAME_SOURCE_COMMIT,
                 "model_gguf_size_bytes": 123_456,
-                "runtime_manifest_sha256": "uta-game-worker-native-v1",
+                "runtime_manifest_sha256": "uta-game-worker-native",
                 "backend": "ggml_cpu",
                 "semantic_output": "note_candidate_evidence",
                 "sample_rate": 44100,
@@ -283,18 +278,21 @@ mod tests {
     }
 
     #[test]
-    fn skips_unvoiced_rest_regions_instead_of_failing_the_song() {
+    fn keeps_rest_regions_as_unvoiced_timeline_evidence() {
         let path = write_game_notes(serde_json::json!([
             {"start":0.0,"duration":0.2,"midi":60.0,"voiced":true},
             {"start":0.2,"duration":0.3,"midi":0.0,"voiced":false},
             {"start":0.5,"duration":0.2,"midi":62.5,"voiced":true}
         ]));
         let evidence = parse_game_evidence(&path, 0, 1_000_000).unwrap();
-        assert_eq!(evidence.notes.len(), 2);
+        assert_eq!(evidence.notes.len(), 3);
+        assert!(evidence.notes[0].voiced);
         assert_eq!(evidence.notes[0].midi, 60.0);
-        assert_eq!(evidence.notes[0].range.end, 200_000);
-        assert_eq!(evidence.notes[1].midi, 62.5);
-        assert_eq!(evidence.notes[1].range.start, 500_000);
+        assert!(!evidence.notes[1].voiced);
+        assert_eq!(evidence.notes[1].range.start, 200_000);
+        assert_eq!(evidence.notes[1].range.end, 500_000);
+        assert!(evidence.notes[2].voiced);
+        assert_eq!(evidence.notes[2].midi, 62.5);
         std::fs::remove_file(path).unwrap();
     }
 

@@ -14,7 +14,7 @@ use super::runtime_wire::*;
 pub struct RuntimeCliClient {
     executable: PathBuf,
     store: Option<PathBuf>,
-    policy: RuntimePolicyWireV1,
+    policy: RuntimePolicyWire,
 }
 
 impl RuntimeCliClient {
@@ -29,7 +29,7 @@ impl RuntimeCliClient {
         Self {
             executable: executable.into(),
             store: None,
-            policy: RuntimePolicyWireV1::Production,
+            policy: RuntimePolicyWire::Production,
         }
     }
 
@@ -37,7 +37,7 @@ impl RuntimeCliClient {
         self.store = Some(store.into());
         self
     }
-    pub fn with_policy(mut self, policy: RuntimePolicyWireV1) -> Self {
+    pub fn with_policy(mut self, policy: RuntimePolicyWire) -> Self {
         self.policy = policy;
         self
     }
@@ -45,37 +45,31 @@ impl RuntimeCliClient {
         &self.executable
     }
 
-    pub fn list(&self) -> Result<Vec<RuntimeResourceStatusWireV1>, BackendCliError> {
+    pub fn list(&self) -> Result<Vec<RuntimeResourceStatusWire>, BackendCliError> {
         self.read("list", &[])
     }
 
     pub fn status(
         &self,
-        resources: &[RuntimeResourceRefWireV1],
-    ) -> Result<Vec<RuntimeResourceStatusWireV1>, BackendCliError> {
+        resources: &[RuntimeResourceRefWire],
+    ) -> Result<Vec<RuntimeResourceStatusWire>, BackendCliError> {
         self.read("status", &resource_args(resources))
     }
 
     pub fn show(
         &self,
-        resource: &RuntimeResourceRefWireV1,
-    ) -> Result<RuntimeResourceDetailsWireV1, BackendCliError> {
+        resource: &RuntimeResourceRefWire,
+    ) -> Result<RuntimeResourceDetailsWire, BackendCliError> {
         self.read("show", &[resource.to_string()])
     }
 
-    pub fn resolve(
-        &self,
-        model_id: &str,
-    ) -> Result<RuntimeResolvedIdentityWireV1, BackendCliError> {
-        let resource = RuntimeResourceRefWireV1::model(model_id).map_err(BackendCliError::Io)?;
+    pub fn resolve(&self, model_id: &str) -> Result<RuntimeResolvedIdentityWire, BackendCliError> {
+        let resource = RuntimeResourceRefWire::model(model_id).map_err(BackendCliError::Io)?;
         self.read("resolve", &[resource.to_string()])
     }
 
-    pub fn resolve_tool(
-        &self,
-        tool_id: &str,
-    ) -> Result<RuntimeResolvedToolWireV1, BackendCliError> {
-        let resource = RuntimeResourceRefWireV1::tool(tool_id).map_err(BackendCliError::Io)?;
+    pub fn resolve_tool(&self, tool_id: &str) -> Result<RuntimeResolvedToolWire, BackendCliError> {
+        let resource = RuntimeResourceRefWire::tool(tool_id).map_err(BackendCliError::Io)?;
         self.read("resolve", &[resource.to_string()])
     }
 
@@ -83,8 +77,8 @@ impl RuntimeCliClient {
         &self,
         tool_id: &str,
         executable: &Path,
-    ) -> Result<RuntimeResourceStatusWireV1, BackendCliError> {
-        let resource = RuntimeResourceRefWireV1::tool(tool_id).map_err(BackendCliError::Io)?;
+    ) -> Result<RuntimeResourceStatusWire, BackendCliError> {
+        let resource = RuntimeResourceRefWire::tool(tool_id).map_err(BackendCliError::Io)?;
         self.read(
             "configure-tool",
             &[
@@ -96,22 +90,19 @@ impl RuntimeCliClient {
         )
     }
 
-    pub fn clear_tool(
-        &self,
-        tool_id: &str,
-    ) -> Result<RuntimeResourceStatusWireV1, BackendCliError> {
-        let resource = RuntimeResourceRefWireV1::tool(tool_id).map_err(BackendCliError::Io)?;
+    pub fn clear_tool(&self, tool_id: &str) -> Result<RuntimeResourceStatusWire, BackendCliError> {
+        let resource = RuntimeResourceRefWire::tool(tool_id).map_err(BackendCliError::Io)?;
         self.read("clear-tool", &[resource.to_string(), "--yes".to_string()])
     }
 
-    pub fn fusion_providers(&self) -> Result<RuntimeFusionProviderReportWireV1, BackendCliError> {
+    pub fn fusion_providers(&self) -> Result<RuntimeFusionProviderReportWire, BackendCliError> {
         self.read("fusion-providers", &[])
     }
 
     pub fn configure_fusion_provider(
         &self,
         provider: &str,
-    ) -> Result<RuntimeFusionProviderReportWireV1, BackendCliError> {
+    ) -> Result<RuntimeFusionProviderReportWire, BackendCliError> {
         self.read(
             "configure-fusion-provider",
             &[
@@ -124,43 +115,43 @@ impl RuntimeCliClient {
 
     pub fn clear_fusion_provider(
         &self,
-    ) -> Result<RuntimeFusionProviderReportWireV1, BackendCliError> {
+    ) -> Result<RuntimeFusionProviderReportWire, BackendCliError> {
         self.read("clear-fusion-provider", &["--yes".to_string()])
     }
 
     pub fn install(
         &self,
-        resources: &[RuntimeResourceRefWireV1],
-    ) -> Result<RuntimeMutationResultWireV1, BackendCliError> {
+        resources: &[RuntimeResourceRefWire],
+    ) -> Result<RuntimeMutationResultWire, BackendCliError> {
         self.mutate("install", resources)
     }
 
     pub fn repair(
         &self,
-        resources: &[RuntimeResourceRefWireV1],
-    ) -> Result<RuntimeMutationResultWireV1, BackendCliError> {
+        resources: &[RuntimeResourceRefWire],
+    ) -> Result<RuntimeMutationResultWire, BackendCliError> {
         self.mutate("repair", resources)
     }
 
     pub fn reinstall(
         &self,
-        resources: &[RuntimeResourceRefWireV1],
-    ) -> Result<RuntimeMutationResultWireV1, BackendCliError> {
+        resources: &[RuntimeResourceRefWire],
+    ) -> Result<RuntimeMutationResultWire, BackendCliError> {
         self.mutate("reinstall", resources)
     }
 
     pub fn remove(
         &self,
-        resources: &[RuntimeResourceRefWireV1],
-    ) -> Result<RuntimeMutationResultWireV1, BackendCliError> {
+        resources: &[RuntimeResourceRefWire],
+    ) -> Result<RuntimeMutationResultWire, BackendCliError> {
         self.mutate("remove", resources)
     }
 
     fn mutate(
         &self,
         command: &str,
-        resources: &[RuntimeResourceRefWireV1],
-    ) -> Result<RuntimeMutationResultWireV1, BackendCliError> {
+        resources: &[RuntimeResourceRefWire],
+    ) -> Result<RuntimeMutationResultWire, BackendCliError> {
         if resources.is_empty() {
             return Err(BackendCliError::Io(
                 "runtime mutation requires at least one resource".to_string(),
@@ -184,7 +175,7 @@ impl RuntimeCliClient {
         &self,
         command: &str,
         arguments: &[String],
-    ) -> Result<(Vec<RuntimeEventEnvelopeV1>, T), BackendCliError> {
+    ) -> Result<(Vec<RuntimeEventEnvelope>, T), BackendCliError> {
         if !self.executable.is_file() {
             return Err(BackendCliError::ExecutableMissing(self.executable.clone()));
         }
@@ -230,7 +221,7 @@ impl RuntimeCliClient {
             }
             match schema {
                 "uta.runtime.event" => {
-                    let event: RuntimeEventEnvelopeV1 =
+                    let event: RuntimeEventEnvelope =
                         serde_json::from_value(frame).map_err(|error| {
                             BackendCliError::MalformedFrame(format!(
                                 "invalid runtime event: {error}"
@@ -244,7 +235,7 @@ impl RuntimeCliClient {
                             "runtime emitted duplicate result frames".to_string(),
                         ));
                     }
-                    let envelope: RuntimeResultEnvelopeV1<T> = serde_json::from_value(frame)
+                    let envelope: RuntimeResultEnvelope<T> = serde_json::from_value(frame)
                         .map_err(|error| {
                             BackendCliError::MalformedFrame(format!(
                                 "invalid runtime result: {error}"
@@ -258,7 +249,7 @@ impl RuntimeCliClient {
                     result = Some(envelope.data);
                 }
                 "uta.runtime.error" => {
-                    let error: RuntimeErrorEnvelopeV1 =
+                    let error: RuntimeErrorEnvelope =
                         serde_json::from_value(frame).map_err(|parse| {
                             BackendCliError::MalformedFrame(format!(
                                 "invalid runtime error: {parse}"
@@ -314,6 +305,6 @@ impl Drop for ChildReaper {
     }
 }
 
-fn resource_args(resources: &[RuntimeResourceRefWireV1]) -> Vec<String> {
+fn resource_args(resources: &[RuntimeResourceRefWire]) -> Vec<String> {
     resources.iter().map(ToString::to_string).collect()
 }

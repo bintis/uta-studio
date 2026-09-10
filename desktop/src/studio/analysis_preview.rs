@@ -1,6 +1,6 @@
 use crate::studio::*;
 
-fn analysis_route_summary(plan: &app_core::AnalysisPlanWireV1) -> String {
+fn analysis_route_summary(plan: &app_core::AnalysisPlanWire) -> String {
     let capabilities = plan
         .source_route
         .preparation
@@ -39,7 +39,7 @@ fn analysis_route_summary(plan: &app_core::AnalysisPlanWireV1) -> String {
     )
 }
 
-fn workflow_execution_topology(workflow: &app_core::WorkflowExecutionPlanWireV1) -> Vec<String> {
+fn workflow_execution_topology(workflow: &app_core::WorkflowExecutionPlanWire) -> Vec<String> {
     workflow
         .nodes
         .iter()
@@ -57,7 +57,7 @@ fn workflow_execution_topology(workflow: &app_core::WorkflowExecutionPlanWireV1)
         .collect()
 }
 
-fn workflow_planned_evidence(workflow: &app_core::WorkflowExecutionPlanWireV1) -> Vec<String> {
+fn workflow_planned_evidence(workflow: &app_core::WorkflowExecutionPlanWire) -> Vec<String> {
     workflow
         .nodes
         .iter()
@@ -74,11 +74,11 @@ fn workflow_planned_evidence(workflow: &app_core::WorkflowExecutionPlanWireV1) -
                         _ => None,
                     })?;
             let state = match node.execution_state {
-                app_core::WorkflowNodeExecutionStateWireV1::Ready => "ready",
-                app_core::WorkflowNodeExecutionStateWireV1::Deferred => "conditional",
-                app_core::WorkflowNodeExecutionStateWireV1::ProfileSkipped => "profile skipped",
-                app_core::WorkflowNodeExecutionStateWireV1::Disabled
-                | app_core::WorkflowNodeExecutionStateWireV1::NotRequested => return None,
+                app_core::WorkflowNodeExecutionStateWire::Ready => "ready",
+                app_core::WorkflowNodeExecutionStateWire::Deferred => "conditional",
+                app_core::WorkflowNodeExecutionStateWire::ProfileSkipped => "profile skipped",
+                app_core::WorkflowNodeExecutionStateWire::Disabled
+                | app_core::WorkflowNodeExecutionStateWire::NotRequested => return None,
             };
             Some(format!("{label} ({state})"))
         })
@@ -136,15 +136,15 @@ pub(crate) fn spawn_preview_request_summary(
             );
         }
         let decision_mode = match workflow.fusion_mode {
-            app_core::FusionModeWireV1::Algorithm => "Algorithm",
-            app_core::FusionModeWireV1::AiJudgment => "AI judgment",
+            app_core::FusionModeWire::Algorithm => "Algorithm",
+            app_core::FusionModeWire::AiJudgment => "AI judgment",
         };
         spawn_wrapped_text(
             parent,
             font.clone(),
             format!("Decision mode · {decision_mode}"),
             9.0,
-            if workflow.fusion_mode == app_core::FusionModeWireV1::AiJudgment {
+            if workflow.fusion_mode == app_core::FusionModeWire::AiJudgment {
                 theme.editor_warning
             } else {
                 theme.primary
@@ -152,16 +152,16 @@ pub(crate) fn spawn_preview_request_summary(
         );
         if let Some(policy) = workflow.fusion_policy {
             let continuous_f0 = match policy.continuous_f0 {
-                app_core::ContinuousF0SourceWireV1::Rmvpe => "RMVPE",
+                app_core::ContinuousF0SourceWire::Rmvpe => "RMVPE",
             };
             let note_lengths = match policy.note_lengths {
-                app_core::NoteLengthSourceWireV1::F0Derived => {
+                app_core::NoteLengthSourceWire::F0Derived => {
                     "F0-derived fallback regions · review required"
                 }
             };
             let onset_support = match policy.onset_support {
-                app_core::OnsetSupportSourceWireV1::Automatic => "Automatic",
-                app_core::OnsetSupportSourceWireV1::Acoustic => "Acoustic DSP",
+                app_core::OnsetSupportSourceWire::Automatic => "Automatic",
+                app_core::OnsetSupportSourceWire::Acoustic => "Acoustic DSP",
             };
             spawn_wrapped_text(
                 parent,
@@ -192,7 +192,7 @@ mod tests {
 
     #[test]
     fn plan_preview_keeps_an_independent_lead_stem_out_of_the_analyzer_route() {
-        let plan: app_core::AnalysisPlanWireV1 =
+        let plan: app_core::AnalysisPlanWire =
             serde_json::from_value(serde_json::json!({
                 "schema": "uta.analysis-engine.plan",
                 "schema_version": 1,
@@ -227,7 +227,7 @@ mod tests {
 
     #[test]
     fn plan_preview_preserves_the_exact_preparation_order() {
-        let plan: app_core::AnalysisPlanWireV1 =
+        let plan: app_core::AnalysisPlanWire =
             serde_json::from_value(serde_json::json!({
                 "schema": "uta.analysis-engine.plan",
                 "schema_version": 1,
@@ -257,7 +257,7 @@ mod tests {
 
     #[test]
     fn plan_preview_names_all_evidence_present_in_the_exact_plan() {
-        let workflow: app_core::WorkflowExecutionPlanWireV1 =
+        let workflow: app_core::WorkflowExecutionPlanWire =
             serde_json::from_value(serde_json::json!({
                 "identity": {
                     "contract": "uta.workflow-execution",
@@ -306,7 +306,7 @@ mod tests {
 
     #[test]
     fn plan_preview_exposes_exact_typed_provider_invocations() {
-        let workflow: app_core::WorkflowExecutionPlanWireV1 =
+        let workflow: app_core::WorkflowExecutionPlanWire =
             serde_json::from_value(serde_json::json!({
                 "identity": {
                     "contract": "uta.workflow-execution",

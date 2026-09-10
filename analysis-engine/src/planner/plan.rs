@@ -1,12 +1,12 @@
 use crate::contract::{
-    AnalysisProfile, AnalyzeRequestV1, AudioRole, CLEANUP_CONSISTENCY_GATE, CLIPPING_GATE,
+    AnalysisProfile, AnalyzeRequest, AudioRole, CLEANUP_CONSISTENCY_GATE, CLIPPING_GATE,
     CapabilityDescriptor, CapabilityId, ENERGY_RATIO_GATE, EngineError, EngineErrorCode,
-    EngineRequirementResourceV1, EngineRequirementsV1, EngineResult, FINITE_SAMPLES_GATE,
+    EngineRequirementResource, EngineRequirements, EngineResult, FINITE_SAMPLES_GATE,
     LEAD_PURITY_GATE, LyricsMode, MUSICAL_DAMAGE_GATE, SILENCE_RATIO_GATE, TIMELINE_VALID_GATE,
     VOCAL_LEAKAGE_GATE, VOCAL_TOPOLOGY_GATE, capability_registry,
 };
-use crate::workflow::{FusionModeV1, WorkflowExecutionPolicyV1, WorkflowExecutionV1};
-use crate::workflow_executor::CompiledWorkflowExecutionPlanV1;
+use crate::workflow::{FusionMode, WorkflowExecution, WorkflowExecutionPolicy};
+use crate::workflow_executor::CompiledWorkflowExecutionPlan;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use uta_runtime_manager::{ResourceRef, ResourceStatus, RuntimeManager};
@@ -19,14 +19,14 @@ pub struct EnginePlan {
     pub requested_outputs: Vec<String>,
     pub required_capabilities: Vec<CapabilityId>,
     pub optional_capabilities: Vec<CapabilityId>,
-    pub requirements: EngineRequirementsV1,
+    pub requirements: EngineRequirements,
     pub resolved_resources: Vec<PlannedResourceStatus>,
     pub execution_nodes: Vec<ExecutionNode>,
     pub quality_gates: Vec<String>,
     pub fallback_policy: Vec<FallbackRule>,
     pub artifact_declarations: Vec<ArtifactDeclaration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workflow_execution: Option<CompiledWorkflowExecutionPlanV1>,
+    pub workflow_execution: Option<CompiledWorkflowExecutionPlan>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceRoute {
@@ -44,7 +44,7 @@ pub struct ExecutionNode {
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlannedResourceStatus {
-    pub requirement: EngineRequirementResourceV1,
+    pub requirement: EngineRequirementResource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<ResourceStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -80,12 +80,12 @@ impl RequirementAccumulator {
         entry.1.insert(reason.to_string());
     }
 
-    fn finish(self) -> EngineRequirementsV1 {
-        EngineRequirementsV1::new(
+    fn finish(self) -> EngineRequirements {
+        EngineRequirements::new(
             self.0
                 .into_iter()
                 .map(
-                    |(resource, (required, reasons))| EngineRequirementResourceV1 {
+                    |(resource, (required, reasons))| EngineRequirementResource {
                         resource,
                         required,
                         reason: reasons.into_iter().collect::<Vec<_>>().join(","),
@@ -99,14 +99,14 @@ impl RequirementAccumulator {
 pub struct Planner;
 
 impl Planner {
-    pub fn requirements(request: &AnalyzeRequestV1) -> EngineResult<EngineRequirementsV1> {
+    pub fn requirements(request: &AnalyzeRequest) -> EngineResult<EngineRequirements> {
         request.validate()?;
         let intent = AnalysisIntent::from_request(request);
-        let workflow = WorkflowExecutionV1::from_request(request)?;
+        let workflow = WorkflowExecution::from_request(request)?;
         let acoustic_required = workflow.as_ref().is_some_and(|workflow| {
             workflow.nodes.iter().any(|node| {
                 node.capability_id == "analysis.acoustic_dsp"
-                    && node.execution_policy == WorkflowExecutionPolicyV1::Always
+                    && node.execution_policy == WorkflowExecutionPolicy::Always
             })
         });
         let primary_role = request.primary_source()?.role;
@@ -128,7 +128,7 @@ impl Planner {
         if intent.needs_notes
             && workflow
                 .as_ref()
-                .is_some_and(|workflow| workflow.fusion_mode() == FusionModeV1::AiJudgment)
+                .is_some_and(|workflow| workflow.fusion_mode() == FusionMode::AiJudgment)
         {
             requirements.add_resource(
                 "tool:fusion_agent_adapter",
@@ -274,7 +274,7 @@ impl Planner {
         {
             return Err(EngineError::new(
                 EngineErrorCode::MissingCapability,
-                "backing/harmony stem extraction is future capability work, not Engine v1",
+                "backing/harmony stem extraction is future capability work, not Engine",
             )
             .with_capability("audio.lead_partition"));
         }
@@ -284,17 +284,17 @@ impl Planner {
     }
 
     pub fn plan(
-        request: &AnalyzeRequestV1,
+        request: &AnalyzeRequest,
         runtime_manager: Option<&RuntimeManager>,
     ) -> EngineResult<EnginePlan> {
         request.validate()?;
         let requirements = Self::requirements(request)?;
         let intent = AnalysisIntent::from_request(request);
-        let workflow = WorkflowExecutionV1::from_request(request)?;
+        let workflow = WorkflowExecution::from_request(request)?;
         let acoustic_required = workflow.as_ref().is_some_and(|workflow| {
             workflow.nodes.iter().any(|node| {
                 node.capability_id == "analysis.acoustic_dsp"
-                    && node.execution_policy == WorkflowExecutionPolicyV1::Always
+                    && node.execution_policy == WorkflowExecutionPolicy::Always
             })
         });
         let primary_role = request.primary_source()?.role;
@@ -311,7 +311,7 @@ impl Planner {
             ) || (intent.requests_lead_stem
                 && workflow.as_ref().is_some_and(|workflow| {
                     workflow.policy_for_engine_capability("audio.lead_isolate")
-                        != Some(WorkflowExecutionPolicyV1::Disabled)
+                        != Some(WorkflowExecutionPolicy::Disabled)
                 })));
         let run_lead_isolate = source_supports_lead_isolation
             && (intent.requests_lead_stem || analyze_with_lead_isolate);
@@ -520,7 +520,7 @@ impl Planner {
         let workflow_execution = workflow
             .as_ref()
             .map(|workflow| {
-                CompiledWorkflowExecutionPlanV1::compile(
+                CompiledWorkflowExecutionPlan::compile(
                     workflow,
                     request.analysis.profile,
                     Some(&requested_workflow_capabilities),
@@ -654,9 +654,9 @@ impl Planner {
 }
 
 fn require_workflow_baseline(
-    workflow: Option<&WorkflowExecutionV1>,
+    workflow: Option<&WorkflowExecution>,
     capability: &str,
-    request: &AnalyzeRequestV1,
+    request: &AnalyzeRequest,
 ) -> EngineResult<()> {
     let Some(workflow) = workflow else {
         return Ok(());
@@ -672,7 +672,7 @@ fn require_workflow_baseline(
         return Ok(());
     }
     match policy {
-        Some(WorkflowExecutionPolicyV1::Always) => Ok(()),
+        Some(WorkflowExecutionPolicy::Always) => Ok(()),
         Some(policy) => Err(EngineError::new(
             EngineErrorCode::MissingCapability,
             format!(
@@ -694,7 +694,7 @@ fn require_workflow_baseline(
 /// supplied primary audio source already reflects this capability's output,
 /// so it must not be re-requested this run. See the field's doc comment in
 /// `contract::request` for why this exists alongside `primary_role`.
-fn capability_satisfied(request: &AnalyzeRequestV1, capability: &str) -> bool {
+fn capability_satisfied(request: &AnalyzeRequest, capability: &str) -> bool {
     request
         .satisfied_capabilities
         .iter()
@@ -702,7 +702,7 @@ fn capability_satisfied(request: &AnalyzeRequestV1, capability: &str) -> bool {
 }
 
 fn workflow_selects(
-    workflow: Option<&WorkflowExecutionV1>,
+    workflow: Option<&WorkflowExecution>,
     capability: &str,
     profile: AnalysisProfile,
     default_when_workflow_absent: bool,
@@ -726,7 +726,7 @@ struct AnalysisIntent {
 }
 
 impl AnalysisIntent {
-    fn from_request(request: &AnalyzeRequestV1) -> Self {
+    fn from_request(request: &AnalyzeRequest) -> Self {
         let outputs = &request.requested_artifacts;
         let needs_notes = outputs.vocal_chart || outputs.singing_analysis;
         let needs_pitch = outputs.pitch_evidence || needs_notes;
@@ -894,7 +894,7 @@ fn model_for_capability(capability: &str) -> Option<&'static str> {
 }
 
 fn scheduled_core_note_experts(
-    workflow: Option<&WorkflowExecutionV1>,
+    workflow: Option<&WorkflowExecution>,
     profile: AnalysisProfile,
 ) -> Vec<(&'static str, &'static str, &'static str)> {
     let Some(workflow) = workflow else {
@@ -913,7 +913,7 @@ fn scheduled_core_note_experts(
 }
 
 fn scheduled_advanced_experts(
-    workflow: Option<&WorkflowExecutionV1>,
+    workflow: Option<&WorkflowExecution>,
     profile: AnalysisProfile,
 ) -> Vec<(&'static str, &'static str, &'static str)> {
     let Some(workflow) = workflow else {
@@ -932,7 +932,7 @@ fn scheduled_advanced_experts(
     .collect()
 }
 
-fn requested_outputs(request: &AnalyzeRequestV1) -> Vec<String> {
+fn requested_outputs(request: &AnalyzeRequest) -> Vec<String> {
     let outputs = &request.requested_artifacts;
     let mut result = Vec::new();
     for (requested, name) in [
@@ -1004,7 +1004,7 @@ fn fallback_policy() -> Vec<FallbackRule> {
 }
 
 fn artifact_declarations(
-    request: &AnalyzeRequestV1,
+    request: &AnalyzeRequest,
     nodes: &[ExecutionNode],
 ) -> Vec<ArtifactDeclaration> {
     let mut declarations = requested_outputs(request)

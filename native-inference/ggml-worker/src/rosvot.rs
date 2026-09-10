@@ -9,7 +9,7 @@ use uta_ggml_runtime::{DeviceDescriptor, GgmlRuntime};
 use crate::pitch_input::read_shared_rmvpe;
 
 const UPSTREAM_COMMIT: &str = "3c8332bf43adae35f6e4d64971862f2f6139b310";
-const FRONTEND_PROFILE: &str = "shared-singing-frontend-24k-v1";
+const FRONTEND_PROFILE: &str = "shared-singing-frontend-24k";
 
 #[derive(Debug, Deserialize)]
 struct Request {
@@ -122,7 +122,7 @@ pub fn infer(
         capabilities: Vec::new(),
         upstream_commit: UPSTREAM_COMMIT.to_string(),
         checkpoint_sha256: request.model_content_digest,
-        config_sha256: "rosvot-native-ggml-config-v1".to_string(),
+        config_sha256: "rosvot-native-ggml-config".to_string(),
         model_generation: request.model_generation,
         runtime_manifest_sha256: runtime_manifest_digest.to_string(),
         backend: backend.to_string(),

@@ -810,7 +810,7 @@ mod tests {
             producer_node: app_core::AnalysisNodeId::new("separate"),
             input_revisions: Vec::new(),
             config_hash: "config".to_string(),
-            algorithm_version: "v1".to_string(),
+            algorithm_version: "analysis".to_string(),
             created_at_ms: 1,
             byte_size: 1,
             active,
@@ -900,11 +900,11 @@ mod tests {
             }],
             "provenance":{
                 "execution_fingerprint":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-                "fusion_algorithm":"fusion-v17",
+                "fusion_algorithm":"fusion",
                 "fusion_decision":{
                     "decision_mode":"algorithm",
                     "selector":"hsmm_viterbi",
-                    "selector_version":"hsmm-v15",
+                    "selector_version":"hsmm",
                     "candidate_set_digest":"ff56f669f0e2df22931f619b2d607b080479dfd21bf88198e67da0d4e8101847",
                     "selected_candidate_ids":["selected"],
                     "reuse_policy":"deterministic"

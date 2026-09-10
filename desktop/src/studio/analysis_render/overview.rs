@@ -493,7 +493,7 @@ fn spawn_analysis_session_surface(
     let current_workflow = session
         .workflow_snapshot
         .as_ref()
-        .and_then(|snapshot| app_core::WorkflowExecutionWireV1::from_snapshot(snapshot).ok());
+        .and_then(|snapshot| app_core::WorkflowExecutionWire::from_snapshot(snapshot).ok());
     let workflow_wire = select_context_snapshot(
         viewing_history || active_task.is_some(),
         exact_workflow.as_ref().map(|(workflow, _)| workflow),

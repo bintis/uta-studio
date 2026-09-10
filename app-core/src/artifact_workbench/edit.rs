@@ -156,7 +156,7 @@ pub fn commit_artifact_edit(
         producer_node: AnalysisNodeId::new(producer),
         input_revisions: vec![draft.source.revision_id.clone()],
         config_hash: format!("source:{}", draft.source.revision_id),
-        algorithm_version: format!("artifact-edit-v1/app-{}", env!("CARGO_PKG_VERSION")),
+        algorithm_version: format!("artifact-edit/app-{}", env!("CARGO_PKG_VERSION")),
         created_at_ms: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()

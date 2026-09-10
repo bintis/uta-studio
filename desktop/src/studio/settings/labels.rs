@@ -1,21 +1,21 @@
 use super::*;
 use crate::studio::*;
 
-pub(crate) fn readiness_reason_label(reason: &app_core::ReadinessReasonWireV1) -> &'static str {
+pub(crate) fn readiness_reason_label(reason: &app_core::ReadinessReasonWire) -> &'static str {
     match reason {
-        app_core::ReadinessReasonWireV1::UnknownResource => "Unknown resource",
-        app_core::ReadinessReasonWireV1::Absent => "Not configured",
-        app_core::ReadinessReasonWireV1::Incomplete => "Configuration incomplete",
-        app_core::ReadinessReasonWireV1::Corrupt => "Configuration corrupt",
-        app_core::ReadinessReasonWireV1::Legacy => "Legacy configuration",
-        app_core::ReadinessReasonWireV1::DependencyMissing => "Dependency missing",
-        app_core::ReadinessReasonWireV1::RuntimeMissing => "Runtime missing",
-        app_core::ReadinessReasonWireV1::ExecutableMissing => "Executable missing",
-        app_core::ReadinessReasonWireV1::WorkerCapabilityMissing => "Capability missing",
-        app_core::ReadinessReasonWireV1::ProtocolMismatch => "Protocol mismatch",
-        app_core::ReadinessReasonWireV1::BackendUnvalidated => "Backend unvalidated",
-        app_core::ReadinessReasonWireV1::CpuProductionForbidden => "CPU production forbidden",
-        app_core::ReadinessReasonWireV1::UnsupportedPlatform => "Unsupported platform",
+        app_core::ReadinessReasonWire::UnknownResource => "Unknown resource",
+        app_core::ReadinessReasonWire::Absent => "Not configured",
+        app_core::ReadinessReasonWire::Incomplete => "Configuration incomplete",
+        app_core::ReadinessReasonWire::Corrupt => "Configuration corrupt",
+        app_core::ReadinessReasonWire::Legacy => "Legacy configuration",
+        app_core::ReadinessReasonWire::DependencyMissing => "Dependency missing",
+        app_core::ReadinessReasonWire::RuntimeMissing => "Runtime missing",
+        app_core::ReadinessReasonWire::ExecutableMissing => "Executable missing",
+        app_core::ReadinessReasonWire::WorkerCapabilityMissing => "Capability missing",
+        app_core::ReadinessReasonWire::ProtocolMismatch => "Protocol mismatch",
+        app_core::ReadinessReasonWire::BackendUnvalidated => "Backend unvalidated",
+        app_core::ReadinessReasonWire::CpuProductionForbidden => "CPU production forbidden",
+        app_core::ReadinessReasonWire::UnsupportedPlatform => "Unsupported platform",
     }
 }
 

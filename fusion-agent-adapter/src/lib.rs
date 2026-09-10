@@ -973,7 +973,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn fake_provider_reads_scoped_files_and_returns_v4_indices() {
+    fn fake_provider_reads_scoped_files_and_returns_selected_indices() {
         let root = std::env::temp_dir().join(format!(
             "uta-fusion-agent-fake-provider-{}-{}",
             std::process::id(),

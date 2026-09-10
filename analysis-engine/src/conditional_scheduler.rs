@@ -4,9 +4,9 @@
 use crate::contract::{AnalysisProfile, EngineError, EngineErrorCode, EngineResult};
 use crate::execution::CancellationToken;
 use crate::fusion::{SingingReviewReason, SingingReviewRegion, TimeRange};
-use crate::workflow::WorkflowExecutionPolicyV1;
+use crate::workflow::WorkflowExecutionPolicy;
 
-pub const CONDITIONAL_SCHEDULER_VERSION: &str = "uta.conditional-scheduler.v1";
+pub const CONDITIONAL_SCHEDULER_VERSION: &str = "uta.conditional-scheduler";
 const DEFAULT_REGION_PADDING: u64 = 250_000;
 const DEFAULT_COALESCE_GAP: u64 = 100_000;
 
@@ -53,7 +53,7 @@ pub enum ScheduledExecution {
 #[derive(Debug, Clone, Copy)]
 pub struct ConditionalScheduleRequest<'a> {
     pub capability: &'a str,
-    pub policy: WorkflowExecutionPolicyV1,
+    pub policy: WorkflowExecutionPolicy,
     pub profile: AnalysisProfile,
     pub source_range: TimeRange,
     pub review_regions: &'a [SingingReviewRegion],
@@ -67,18 +67,18 @@ pub struct ConditionalScheduleRequest<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct ConditionalScheduleRecordV1 {
+pub struct ConditionalScheduleRecord {
     pub scheduler: &'static str,
     pub capability: String,
-    pub policy: WorkflowExecutionPolicyV1,
+    pub policy: WorkflowExecutionPolicy,
     pub decision: String,
     pub windows: Vec<TimeRange>,
 }
 
-impl ConditionalScheduleRecordV1 {
+impl ConditionalScheduleRecord {
     pub fn new(
         capability: &str,
-        policy: WorkflowExecutionPolicyV1,
+        policy: WorkflowExecutionPolicy,
         scheduled: &ScheduledExecution,
     ) -> Self {
         let (decision, windows) = match scheduled {
@@ -113,10 +113,10 @@ pub fn schedule(request: ConditionalScheduleRequest<'_>) -> EngineResult<Schedul
         )
         .with_capability(request.capability));
     }
-    if request.policy == WorkflowExecutionPolicyV1::Disabled {
+    if request.policy == WorkflowExecutionPolicy::Disabled {
         return Ok(ScheduledExecution::Skip(ScheduleSkipReason::Disabled));
     }
-    if request.policy == WorkflowExecutionPolicyV1::MaximumOnly
+    if request.policy == WorkflowExecutionPolicy::MaximumOnly
         && request.profile != AnalysisProfile::Maximum
     {
         return Ok(ScheduledExecution::Skip(
@@ -137,12 +137,11 @@ pub fn schedule(request: ConditionalScheduleRequest<'_>) -> EngineResult<Schedul
     }
 
     match request.policy {
-        WorkflowExecutionPolicyV1::Always | WorkflowExecutionPolicyV1::MaximumOnly => {
+        WorkflowExecutionPolicy::Always | WorkflowExecutionPolicy::MaximumOnly => {
             Ok(ScheduledExecution::FullInput)
         }
-        WorkflowExecutionPolicyV1::Disabled => unreachable!("disabled policy returned above"),
-        WorkflowExecutionPolicyV1::OnDisagreement
-        | WorkflowExecutionPolicyV1::DisagreementWindows => {
+        WorkflowExecutionPolicy::Disabled => unreachable!("disabled policy returned above"),
+        WorkflowExecutionPolicy::OnDisagreement | WorkflowExecutionPolicy::DisagreementWindows => {
             let ranges = disagreement_windows(
                 request.source_range,
                 request.review_regions,
@@ -310,7 +309,7 @@ mod tests {
     }
 
     fn request<'a>(
-        policy: WorkflowExecutionPolicyV1,
+        policy: WorkflowExecutionPolicy,
         profile: AnalysisProfile,
         regions: &'a [SingingReviewRegion],
     ) -> ConditionalScheduleRequest<'a> {
@@ -335,7 +334,7 @@ mod tests {
     fn always_disabled_and_maximum_only_are_truthful() {
         assert_eq!(
             schedule(request(
-                WorkflowExecutionPolicyV1::Always,
+                WorkflowExecutionPolicy::Always,
                 AnalysisProfile::Fast,
                 &[]
             ))
@@ -344,7 +343,7 @@ mod tests {
         );
         assert_eq!(
             schedule(request(
-                WorkflowExecutionPolicyV1::Disabled,
+                WorkflowExecutionPolicy::Disabled,
                 AnalysisProfile::Maximum,
                 &[]
             ))
@@ -353,7 +352,7 @@ mod tests {
         );
         assert_eq!(
             schedule(request(
-                WorkflowExecutionPolicyV1::MaximumOnly,
+                WorkflowExecutionPolicy::MaximumOnly,
                 AnalysisProfile::Balanced,
                 &[]
             ))
@@ -362,7 +361,7 @@ mod tests {
         );
         assert_eq!(
             schedule(request(
-                WorkflowExecutionPolicyV1::MaximumOnly,
+                WorkflowExecutionPolicy::MaximumOnly,
                 AnalysisProfile::Maximum,
                 &[]
             ))
@@ -374,7 +373,7 @@ mod tests {
     #[test]
     fn always_executes_exactly_once_and_typed_record_preserves_decision() {
         let scheduled = schedule(request(
-            WorkflowExecutionPolicyV1::Always,
+            WorkflowExecutionPolicy::Always,
             AnalysisProfile::Balanced,
             &[],
         ))
@@ -402,9 +401,9 @@ mod tests {
                 end: 11_000_000
             }]
         );
-        let record = ConditionalScheduleRecordV1::new(
+        let record = ConditionalScheduleRecord::new(
             "pitch.secondary",
-            WorkflowExecutionPolicyV1::Always,
+            WorkflowExecutionPolicy::Always,
             &scheduled,
         );
         assert_eq!(record.decision, "full_input");
@@ -421,7 +420,7 @@ mod tests {
         )];
         assert_eq!(
             schedule(request(
-                WorkflowExecutionPolicyV1::OnDisagreement,
+                WorkflowExecutionPolicy::OnDisagreement,
                 AnalysisProfile::Balanced,
                 &regions
             ))
@@ -454,7 +453,7 @@ mod tests {
         ];
         assert_eq!(
             schedule(request(
-                WorkflowExecutionPolicyV1::DisagreementWindows,
+                WorkflowExecutionPolicy::DisagreementWindows,
                 AnalysisProfile::Balanced,
                 &regions
             ))
@@ -475,7 +474,7 @@ mod tests {
     #[test]
     fn optional_unavailability_degrades_but_required_loss_fails_closed() {
         let mut optional = request(
-            WorkflowExecutionPolicyV1::Always,
+            WorkflowExecutionPolicy::Always,
             AnalysisProfile::Balanced,
             &[],
         );
@@ -485,7 +484,7 @@ mod tests {
             ScheduledExecution::Skip(ScheduleSkipReason::OptionalUnavailable)
         );
         let mut disabled = optional;
-        disabled.policy = WorkflowExecutionPolicyV1::Disabled;
+        disabled.policy = WorkflowExecutionPolicy::Disabled;
         assert_eq!(
             schedule(disabled).unwrap(),
             ScheduledExecution::Skip(ScheduleSkipReason::Disabled),
@@ -507,7 +506,7 @@ mod tests {
             SingingReviewReason::PitchDisagreement,
         )];
         let mut value = request(
-            WorkflowExecutionPolicyV1::OnDisagreement,
+            WorkflowExecutionPolicy::OnDisagreement,
             AnalysisProfile::Balanced,
             &regions,
         );

@@ -1,6 +1,6 @@
 use super::*;
 use crate::backend_cli::{
-    AnalysisCancelHandle, AnalysisPlanWireV1, AnalyzeRequestWireV1, AudioSourceWireV1,
+    AnalysisCancelHandle, AnalysisPlanWire, AnalyzeRequestWire, AudioSourceWire,
 };
 
 static ACTIVE_ENGINE_CANCELS: LazyLock<Mutex<HashMap<String, AnalysisCancelHandle>>> =
@@ -78,9 +78,9 @@ pub(super) fn mark_snapshot_cancelled(snapshot: &mut AnalysisProgressSnapshot, m
 }
 
 pub(super) fn validated_primary_source_binding<'a>(
-    request: &'a AnalyzeRequestWireV1,
-    plan: &AnalysisPlanWireV1,
-) -> Result<&'a AudioSourceWireV1, String> {
+    request: &'a AnalyzeRequestWire,
+    plan: &AnalysisPlanWire,
+) -> Result<&'a AudioSourceWire, String> {
     let mut primaries = request.audio_sources.iter().filter(|source| source.primary);
     let primary = primaries
         .next()
@@ -96,8 +96,8 @@ pub(super) fn validated_primary_source_binding<'a>(
 }
 
 pub(super) fn validate_exact_execution_source_binding(
-    request: &AnalyzeRequestWireV1,
-    plan: &AnalysisPlanWireV1,
+    request: &AnalyzeRequestWire,
+    plan: &AnalysisPlanWire,
     library_true_source: &Path,
     queued_true_source: &Path,
 ) -> Result<(), String> {
@@ -120,7 +120,7 @@ mod tests {
 
     #[test]
     fn cached_primary_input_is_distinct_from_the_queued_true_source() {
-        let request: AnalyzeRequestWireV1 = serde_json::from_value(serde_json::json!({
+        let request: AnalyzeRequestWire = serde_json::from_value(serde_json::json!({
             "contract":"uta.analysis-engine.request","version":1,"request_id":"cached-input",
             "audio_sources":[{"id":"true_source","kind":"local_file","path":"/cache/guide.flac","sha256":"library-id","role":"guide_vocals","primary":true,"timeline":{"timebase":1000000,"source_start":0}}],
             "lyrics":{"mode":"none","tokens":[]},"boundary_constraints":[],
@@ -128,7 +128,7 @@ mod tests {
             "requested_artifacts":{"transcript":true},"execution_policy":{},"extensions":{}
         }))
         .unwrap();
-        let plan: AnalysisPlanWireV1 = serde_json::from_value(serde_json::json!({
+        let plan: AnalysisPlanWire = serde_json::from_value(serde_json::json!({
             "schema":"uta.analysis-engine.plan","schema_version":1,"request_id":"cached-input",
             "source_route":{"primary_source_id":"true_source","input_role":"guide_vocals","preparation":[]},
             "requested_outputs":["transcript"],"required_capabilities":[],"optional_capabilities":[],

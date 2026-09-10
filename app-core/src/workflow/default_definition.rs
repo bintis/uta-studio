@@ -55,7 +55,7 @@ pub fn default_workflow(file_hash: &str) -> WorkflowDefinition {
             900,
         ),
     ];
-    nodes[1].separation_strategy = Some(super::SeparationStrategyV1::LeapDualOutput);
+    nodes[1].separation_strategy = Some(super::SeparationStrategy::LeapDualOutput);
     // Separation is the expensive, stable Step 1 boundary. New workflows
     // reuse its lossless vocal/instrumental pair whenever source, models and
     // parameters still match; later analysis stages remain fresh by default.
@@ -310,7 +310,7 @@ pub fn default_workflow(file_hash: &str) -> WorkflowDefinition {
         workflow_id: WorkflowId(format!("song:{file_hash}:workflow")),
         revision: 1,
         quality_mode: QualityMode::Balanced,
-        preset_id: Some("balanced-v1".to_string()),
+        preset_id: Some("balanced".to_string()),
         nodes,
         edges,
         analyzer_bindings,

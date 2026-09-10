@@ -5,9 +5,9 @@ use std::time::Duration;
 use uta_runtime_manager::{RuntimeManager, StorePaths};
 
 use crate::artifact::{
-    AdvancedNoteEvidenceV1, AlignmentArtifactV1, BasicPitchEvidenceV1, GameEvidenceV1,
-    Jbm555ExpectedInputsV1, PitchEvidenceV03, SingingAnalysisV1, TechniqueEvidenceV1,
-    TimedNoteExpertEvidenceV1, artifact_ref_for_existing, finalize_candidate_vocal_chart,
+    AdvancedNoteEvidence, AlignmentArtifact, BasicPitchEvidence, GameEvidence,
+    Jbm555ExpectedInputs, PitchEvidence, SingingAnalysis, TechniqueEvidence,
+    TimedNoteExpertEvidence, artifact_ref_for_existing, finalize_candidate_vocal_chart,
     parse_advanced_note_evidence, parse_alignment_artifact, parse_basic_pitch_evidence,
     parse_fcpe_pitch, parse_firered_transcript, parse_game_evidence, parse_jbm555_evidence,
     parse_rmvpe_pitch, parse_transcript_artifact, write_json_artifact,
@@ -19,17 +19,17 @@ use crate::audio::{
     topology_review_regions,
 };
 use crate::candidate_pipeline::{
-    CandidatePathDecisionV1, FusionDecisionModeV1, SingingStagesOutput, attach_caller_lyric_ranges,
+    CandidatePathDecision, FusionDecisionMode, SingingStagesOutput, attach_caller_lyric_ranges,
     build_transcript_disagreement_regions, execute_candidate_graph_stage,
     execute_singing_fusion_stage_with_timed_notes, fuse_alignment_stage, fuse_transcript_stage,
 };
 use crate::contract::{
-    ANALYSIS_RESULT_CONTRACT, ANALYSIS_RESULT_VERSION, AnalysisArtifactsV1, AnalysisDiagnosticsV1,
-    AnalysisProvenanceV1, AnalysisResultManifestV1, AnalysisReusePolicyV1, AnalysisStatus,
-    AnalyzeRequestV1, BoundaryAuthority, CapabilityDescriptor, DecodedAudioFactsV1, EngineError,
-    EngineErrorCode, EngineRequirementsV1, EngineResult, FUSION_AGENT_ADAPTER_RESOURCE,
-    FUSION_AGENT_PROTOCOL, FusionDecisionProvenanceV1, HSMM_VITERBI_SELECTOR, LyricsMode,
-    StemArtifactRefV1, VOCAL_TOPOLOGY_GATE,
+    ANALYSIS_RESULT_CONTRACT, ANALYSIS_RESULT_VERSION, AnalysisArtifacts, AnalysisDiagnostics,
+    AnalysisProvenance, AnalysisResultManifest, AnalysisReusePolicy, AnalysisStatus,
+    AnalyzeRequest, BoundaryAuthority, CapabilityDescriptor, DecodedAudioFacts, EngineError,
+    EngineErrorCode, EngineRequirements, EngineResult, FUSION_AGENT_ADAPTER_RESOURCE,
+    FUSION_AGENT_PROTOCOL, FusionDecisionProvenance, HSMM_VITERBI_SELECTOR, LyricsMode,
+    StemArtifactRef, VOCAL_TOPOLOGY_GATE,
 };
 use crate::events::{EngineEventSink, begin_node, emit_degraded, emit_warning, with_event_sink};
 use crate::execution::CancellationToken;
@@ -42,8 +42,8 @@ use crate::fusion::{TimeRange, merge_regions};
 use crate::planner::{EnginePlan, Planner};
 use crate::quantization::quantize_singing_track;
 use crate::separation::SeparationOutput;
-use crate::workflow::{FusionModeV1, WorkflowExecutionV1};
-use crate::workflow_executor::{CompiledWorkflowExecutionPlanV1, WorkflowNodeExecutionStateV1};
+use crate::workflow::{FusionMode, WorkflowExecution};
+use crate::workflow_executor::{CompiledWorkflowExecutionPlan, WorkflowNodeExecutionState};
 
 mod export;
 mod output_guard;
@@ -84,19 +84,19 @@ impl AnalysisEngine {
         &self.runtime_manager
     }
 
-    pub fn validate(&self, request: &AnalyzeRequestV1) -> EngineResult<()> {
+    pub fn validate(&self, request: &AnalyzeRequest) -> EngineResult<()> {
         request.validate()?;
-        WorkflowExecutionV1::from_request(request)?;
+        WorkflowExecution::from_request(request)?;
         Ok(())
     }
 
-    pub fn validate_inputs(&self, request: &AnalyzeRequestV1) -> EngineResult<()> {
+    pub fn validate_inputs(&self, request: &AnalyzeRequest) -> EngineResult<()> {
         self.validate_inputs_with_cancellation(request, &CancellationToken::default())
     }
 
     fn validate_inputs_with_cancellation(
         &self,
-        request: &AnalyzeRequestV1,
+        request: &AnalyzeRequest,
         cancellation: &CancellationToken,
     ) -> EngineResult<()> {
         request.validate()?;
@@ -117,8 +117,8 @@ impl AnalysisEngine {
 
     pub fn decoded_audio_facts(
         &self,
-        request: &AnalyzeRequestV1,
-    ) -> EngineResult<Vec<DecodedAudioFactsV1>> {
+        request: &AnalyzeRequest,
+    ) -> EngineResult<Vec<DecodedAudioFacts>> {
         self.validate_inputs(request)?;
         self.decode_validated_audio(request, &CancellationToken::default())
             .map(|decoded| decoded.into_iter().map(|audio| audio.facts).collect())
@@ -126,7 +126,7 @@ impl AnalysisEngine {
 
     fn decode_validated_audio(
         &self,
-        request: &AnalyzeRequestV1,
+        request: &AnalyzeRequest,
         cancellation: &CancellationToken,
     ) -> EngineResult<Vec<crate::audio::DecodedAudio>> {
         let ffmpeg = self
@@ -168,11 +168,11 @@ impl AnalysisEngine {
             .collect()
     }
 
-    pub fn requirements(&self, request: &AnalyzeRequestV1) -> EngineResult<EngineRequirementsV1> {
+    pub fn requirements(&self, request: &AnalyzeRequest) -> EngineResult<EngineRequirements> {
         Planner::requirements(request)
     }
 
-    pub fn plan(&self, request: &AnalyzeRequestV1) -> EngineResult<EnginePlan> {
+    pub fn plan(&self, request: &AnalyzeRequest) -> EngineResult<EnginePlan> {
         Planner::plan(request, Some(&self.runtime_manager))
     }
 
@@ -185,20 +185,20 @@ impl AnalysisEngine {
 
     pub fn analyze(
         &self,
-        request: &AnalyzeRequestV1,
+        request: &AnalyzeRequest,
         output_dir: impl AsRef<Path>,
-    ) -> EngineResult<AnalysisResultManifestV1> {
+    ) -> EngineResult<AnalysisResultManifest> {
         self.analyze_with_cancellation(request, output_dir, &CancellationToken::default())
     }
 
     pub fn analyze_with_events(
         &self,
-        request: &AnalyzeRequestV1,
+        request: &AnalyzeRequest,
         output_dir: impl AsRef<Path>,
         cancellation: &CancellationToken,
         sink: EngineEventSink,
-    ) -> EngineResult<AnalysisResultManifestV1> {
-        let workflow = WorkflowExecutionV1::from_request(request)?;
+    ) -> EngineResult<AnalysisResultManifest> {
+        let workflow = WorkflowExecution::from_request(request)?;
         let plan_nodes = self
             .plan(request)?
             .execution_nodes
@@ -212,10 +212,10 @@ impl AnalysisEngine {
 
     pub fn analyze_with_cancellation(
         &self,
-        request: &AnalyzeRequestV1,
+        request: &AnalyzeRequest,
         output_dir: impl AsRef<Path>,
         cancellation: &CancellationToken,
-    ) -> EngineResult<AnalysisResultManifestV1> {
+    ) -> EngineResult<AnalysisResultManifest> {
         if cancellation.is_cancelled() {
             return Err(cancelled(request));
         }
@@ -224,7 +224,7 @@ impl AnalysisEngine {
         let output_root = run_guard.root().to_path_buf();
         let plan = self.plan(request)?;
         Planner::ensure_required_capabilities(&plan)?;
-        let workflow = WorkflowExecutionV1::from_request(request)?;
+        let workflow = WorkflowExecution::from_request(request)?;
         let fusion_policy = workflow
             .as_ref()
             .and_then(|workflow| workflow.resolved_expert_fusion_policy(request.analysis.profile))
@@ -232,9 +232,9 @@ impl AnalysisEngine {
         let fusion_pitch_owner = fusion_policy.continuous_f0.model_id().to_string();
         let fusion_mode = workflow
             .as_ref()
-            .map(WorkflowExecutionV1::fusion_mode)
+            .map(WorkflowExecution::fusion_mode)
             .unwrap_or_default();
-        let fusion_adapter = if fusion_mode == FusionModeV1::AiJudgment {
+        let fusion_adapter = if fusion_mode == FusionMode::AiJudgment {
             Some(
                 self.runtime_manager
                     .resolve_tool(
@@ -280,7 +280,7 @@ impl AnalysisEngine {
                 .for_request(&request.request_id)
             })?,
         };
-        let mut artifacts = AnalysisArtifactsV1::default();
+        let mut artifacts = AnalysisArtifacts::default();
         let ffmpeg = self
             .runtime_manager
             .paths()
@@ -354,7 +354,7 @@ impl AnalysisEngine {
                 source.role,
                 cancellation,
             )?;
-            artifacts.stems.push(StemArtifactRefV1 {
+            artifacts.stems.push(StemArtifactRef {
                 role: output.role,
                 artifact: output.artifact,
             });
@@ -373,6 +373,16 @@ impl AnalysisEngine {
                 .unwrap_or("bs_roformer_leap_xe90_vocals");
             let model = resolved_model(&resolved, provider)?;
             let route = resolve_roformer_route(model, request)?;
+            let presentation_node_id = workflow.as_ref().and_then(|workflow| {
+                workflow
+                    .presentation_node_for_engine_execution("audio.extract_vocals", Some(provider))
+                    .or_else(|| {
+                        workflow.presentation_node_for_engine_execution(
+                            "audio.extract_instrumental",
+                            Some(provider),
+                        )
+                    })
+            });
             let output = run_ggml_dual_separation(
                 &DenoiseTask {
                     model_path: &model.model_path,
@@ -386,6 +396,7 @@ impl AnalysisEngine {
                     task_id: &format!("{}-vocal-instrumental", request.request_id),
                 },
                 provider,
+                presentation_node_id.as_deref(),
                 cancellation,
             )?;
             if has_capability(&plan, "audio.extract_vocals") {
@@ -406,7 +417,7 @@ impl AnalysisEngine {
                     .stems
                     .contains(&crate::contract::AudioRole::GuideVocals)
                 {
-                    artifacts.stems.push(StemArtifactRefV1 {
+                    artifacts.stems.push(StemArtifactRef {
                         role: output.vocals.role,
                         artifact: output.vocals.artifact,
                     });
@@ -423,7 +434,7 @@ impl AnalysisEngine {
                     &path,
                     crate::contract::AudioRole::Instrumental.as_str(),
                 );
-                artifacts.stems.push(StemArtifactRefV1 {
+                artifacts.stems.push(StemArtifactRef {
                     role: output.instrumental.role,
                     artifact: output.instrumental.artifact,
                 });
@@ -470,7 +481,7 @@ impl AnalysisEngine {
                 .stems
                 .contains(&crate::contract::AudioRole::LeadVocal)
             {
-                artifacts.stems.push(StemArtifactRefV1 {
+                artifacts.stems.push(StemArtifactRef {
                     role: output.stem.role,
                     artifact: output.stem.artifact,
                 });
@@ -591,7 +602,7 @@ impl AnalysisEngine {
             .contains(&crate::contract::AudioRole::CleanLeadVocal)
             && let Some(output) = cleanup_output
         {
-            artifacts.stems.push(StemArtifactRefV1 {
+            artifacts.stems.push(StemArtifactRef {
                 role: output.role,
                 artifact: output.artifact,
             });
@@ -604,7 +615,7 @@ impl AnalysisEngine {
             artifacts
                 .stems
                 .retain(|stem| stem.role != crate::contract::AudioRole::Instrumental);
-            artifacts.stems.push(StemArtifactRefV1 {
+            artifacts.stems.push(StemArtifactRef {
                 role: output.role,
                 artifact: output.artifact,
             });
@@ -832,7 +843,7 @@ impl AnalysisEngine {
             )?);
         }
 
-        let alignment_evidence: Option<AlignmentArtifactV1> = if needs_alignment {
+        let alignment_evidence: Option<AlignmentArtifact> = if needs_alignment {
             let transcript = canonical_lyrics.as_ref().ok_or_else(|| {
                 EngineError::new(
                     EngineErrorCode::MissingRequiredInput,
@@ -921,7 +932,7 @@ impl AnalysisEngine {
         }
 
         let mut shared_rmvpe_evidence_path = None;
-        let pitch_evidence: Option<PitchEvidenceV03> = if needs_pitch {
+        let pitch_evidence: Option<PitchEvidence> = if needs_pitch {
             let (input, _) = workflow_bound_audio(
                 plan.workflow_execution.as_ref(),
                 "pitch.track",
@@ -957,7 +968,7 @@ impl AnalysisEngine {
         } else {
             None
         };
-        let fcpe_evidence: Option<PitchEvidenceV03> =
+        let fcpe_evidence: Option<PitchEvidence> =
             if has_capability(&plan, "pitch.secondary.fcpe") {
                 if let Some(model) = resolved.iter().find(|model| model.model_id == "fcpe") {
                     let (input, _) = workflow_bound_audio(
@@ -1009,7 +1020,7 @@ impl AnalysisEngine {
             } else {
                 None
             };
-        let basic_pitch_evidence: Option<BasicPitchEvidenceV1> =
+        let basic_pitch_evidence: Option<BasicPitchEvidence> =
             if has_capability(&plan, "notes.basic_pitch") {
                 let (input, _) = workflow_bound_audio(
                     plan.workflow_execution.as_ref(),
@@ -1057,7 +1068,7 @@ impl AnalysisEngine {
             .with_capability("notes.game"));
         }
         let mut game_conditioned_boundary_count = 0usize;
-        let game_evidence: Option<GameEvidenceV1> = if has_capability(&plan, "notes.game") {
+        let game_evidence: Option<GameEvidence> = if has_capability(&plan, "notes.game") {
             let model = game_model.first().copied().ok_or_else(|| {
                 EngineError::new(
                     EngineErrorCode::RuntimeResolutionFailed,
@@ -1107,7 +1118,7 @@ impl AnalysisEngine {
         } else {
             None
         };
-        let mut timed_note_evidence = Vec::<TimedNoteExpertEvidenceV1>::new();
+        let mut timed_note_evidence = Vec::<TimedNoteExpertEvidence>::new();
         if has_capability(&plan, "notes.jbm555") {
             let mix = request
                 .audio_sources
@@ -1159,7 +1170,7 @@ impl AnalysisEngine {
                         .find(|resolved| resolved.model_id == model_id)
                         .map(|resolved| resolved.generation.clone())
                 })
-                .unwrap_or_else(|| "caller-supplied-vocal-v1".to_string());
+                .unwrap_or_else(|| "caller-supplied-vocal".to_string());
             let vocal_preparation_generation = resolved
                 .iter()
                 .filter(|resolved| {
@@ -1174,11 +1185,11 @@ impl AnalysisEngine {
                 .collect::<Vec<_>>()
                 .join("+");
             let vocal_preparation_generation = if vocal_preparation_generation.is_empty() {
-                "analysis-ready-lead-v1".to_string()
+                "analysis-ready-lead".to_string()
             } else {
                 vocal_preparation_generation
             };
-            let expected = Jbm555ExpectedInputsV1 {
+            let expected = Jbm555ExpectedInputs {
                 source_start,
                 source_duration,
                 mix_audio_identity: &mix_audio_identity,
@@ -1194,7 +1205,7 @@ impl AnalysisEngine {
             config["upstream_revision"] = serde_json::json!("jbm555-public");
             config["checkpoint_identity"] = serde_json::json!(model.model_content_digest);
             config["config_identity"] = serde_json::json!("cectc80-public");
-            config["conversion_identity"] = serde_json::json!("gguf-f32-v1");
+            config["conversion_identity"] = serde_json::json!("gguf-f32");
             config["model_generation"] = serde_json::json!(model.generation);
             config["mix_audio_identity"] = serde_json::json!(mix_audio_identity);
             config["vocal_audio_identity"] = serde_json::json!(vocal_audio_identity);
@@ -1239,8 +1250,8 @@ impl AnalysisEngine {
                 })
             })
             .collect::<Vec<_>>();
-        let mut advanced_note_evidence = Vec::<AdvancedNoteEvidenceV1>::new();
-        let mut technique_evidence = Vec::<TechniqueEvidenceV1>::new();
+        let mut advanced_note_evidence = Vec::<AdvancedNoteEvidence>::new();
+        let mut technique_evidence = Vec::<TechniqueEvidence>::new();
         if run_stars_notes || run_stars_technique {
             let capability = if run_stars_notes {
                 "notes.stars"
@@ -1407,8 +1418,8 @@ impl AnalysisEngine {
         };
         let singing = if has_capability(&plan, "fusion.candidate_graph") {
             let decision_implementation = match fusion_mode {
-                FusionModeV1::Algorithm => HSMM_VERSION.to_string(),
-                FusionModeV1::AiJudgment => {
+                FusionMode::Algorithm => HSMM_VERSION.to_string(),
+                FusionMode::AiJudgment => {
                     let adapter = fusion_adapter
                         .as_ref()
                         .expect("AI mode resolved its required adapter");
@@ -1441,8 +1452,8 @@ impl AnalysisEngine {
                     )
                 })?,
                 match fusion_mode {
-                    FusionModeV1::Algorithm => FusionDecisionModeV1::Algorithm,
-                    FusionModeV1::AiJudgment => FusionDecisionModeV1::AiJudgment {
+                    FusionMode::Algorithm => FusionDecisionMode::Algorithm,
+                    FusionMode::AiJudgment => FusionDecisionMode::AiJudgment {
                         executable: &fusion_adapter
                             .as_ref()
                             .expect("AI mode resolved its required adapter")
@@ -1562,17 +1573,17 @@ impl AnalysisEngine {
         let fusion_decision = singing
             .as_ref()
             .map(|output| match &output.decision {
-                CandidatePathDecisionV1::Algorithm {
+                CandidatePathDecision::Algorithm {
                     candidate_set_digest,
                     selected_candidate_ids,
-                } => Ok::<_, EngineError>(FusionDecisionProvenanceV1::Algorithm {
+                } => Ok::<_, EngineError>(FusionDecisionProvenance::Algorithm {
                     selector: HSMM_VITERBI_SELECTOR.to_string(),
                     selector_version: HSMM_VERSION.to_string(),
                     candidate_set_digest: candidate_set_digest.clone(),
                     selected_candidate_ids: selected_candidate_ids.clone(),
-                    reuse_policy: AnalysisReusePolicyV1::Deterministic,
+                    reuse_policy: AnalysisReusePolicy::Deterministic,
                 }),
-                CandidatePathDecisionV1::AiJudgment {
+                CandidatePathDecision::AiJudgment {
                     candidate_set_digest,
                     selected_candidate_ids,
                     response_digest,
@@ -1583,7 +1594,7 @@ impl AnalysisEngine {
                             "AI fusion decision lost its resolved adapter identity",
                         )
                     })?;
-                    Ok(FusionDecisionProvenanceV1::AiJudgment {
+                    Ok(FusionDecisionProvenance::AiJudgment {
                         adapter_resource: FUSION_AGENT_ADAPTER_RESOURCE.to_string(),
                         adapter_protocol: FUSION_AGENT_PROTOCOL.to_string(),
                         adapter_protocol_version: adapter.protocol_version,
@@ -1592,7 +1603,7 @@ impl AnalysisEngine {
                         candidate_set_digest: candidate_set_digest.clone(),
                         selected_candidate_ids: selected_candidate_ids.clone(),
                         response_digest: response_digest.clone(),
-                        reuse_policy: AnalysisReusePolicyV1::PreservedRevisionOnly,
+                        reuse_policy: AnalysisReusePolicy::PreservedRevisionOnly,
                     })
                 }
             })
@@ -1674,7 +1685,7 @@ impl AnalysisEngine {
             .map(|output| output.fusion.candidates.len());
         let singing_analysis_emitted = artifacts.singing_analysis.is_some();
         let candidate_vocal_chart_emitted = artifacts.candidate_vocal_chart.is_some();
-        let provenance = AnalysisProvenanceV1 {
+        let provenance = AnalysisProvenance {
             resources: participating_resources
                 .iter()
                 .map(|resource| resource_provenance(resource))
@@ -1686,7 +1697,7 @@ impl AnalysisEngine {
             audio_quality_version: AUDIO_QUALITY_VERSION.to_string(),
             postprocess_version: POSTPROCESS_VERSION.to_string(),
         };
-        let result = AnalysisResultManifestV1 {
+        let result = AnalysisResultManifest {
             contract: ANALYSIS_RESULT_CONTRACT.to_string(),
             version: ANALYSIS_RESULT_VERSION,
             request_id: request.request_id.clone(),
@@ -1696,7 +1707,7 @@ impl AnalysisEngine {
                 AnalysisStatus::OkDegraded
             },
             artifacts,
-            diagnostics: AnalysisDiagnosticsV1 {
+            diagnostics: AnalysisDiagnostics {
                 decoded_audio: decoded_sources
                     .into_iter()
                     .map(|decoded| decoded.facts)

@@ -1,5 +1,5 @@
 //! Throwaway internal harness for item-6 final acceptance: builds a real,
-//! fully-compiled `AnalyzeRequestV1` (including the Processing Studio
+//! fully-compiled `AnalyzeRequest` (including the Processing Studio
 //! workflow extension) via app-core's actual production compile path,
 //! without needing a populated library database. Test-only; not part of the
 //! shipped crate surface. Safe to delete after acceptance testing.
@@ -16,7 +16,7 @@ use crate::analysis_engine_adapter::{
 use crate::analysis_experience::{
     AnalysisExperienceSettings, AnalysisOutputSelection, resolve_analysis_experience,
 };
-use crate::backend_cli::AudioRoleWireV1;
+use crate::backend_cli::AudioRoleWire;
 use crate::workflow::{
     WorkflowNodeId, compile_workflow, default_workflow, set_workflow_parameter,
     workflow_execution_extension,
@@ -61,7 +61,7 @@ fn generate_acceptance_request() {
         library_file_hash: sha256.clone(),
         path: audio_path,
         sha256: sha256.clone(),
-        role: AudioRoleWireV1::OriginalMix,
+        role: AudioRoleWire::OriginalMix,
     };
 
     let intent = AnalysisRequestIntent {

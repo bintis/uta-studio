@@ -6,7 +6,7 @@ pub const FFT_SIZE: usize = 512;
 pub const HOP_SIZE: usize = 128;
 pub const MEL_BINS: usize = 80;
 pub const ROSVOT_MEL_BINS: usize = 40;
-pub const PROFILE: &str = "shared-singing-frontend-24k-v1";
+pub const PROFILE: &str = "shared-singing-frontend-24k";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AnnotationPitch {

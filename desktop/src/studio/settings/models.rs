@@ -184,7 +184,7 @@ pub(crate) fn spawn_model_settings(
             let adapter_description = if let Some(status) = adapter {
                 let state = if status.usable {
                     "Usable"
-                } else if matches!(status.install_state, app_core::InstallStateWireV1::Absent) {
+                } else if matches!(status.install_state, app_core::InstallStateWire::Absent) {
                     "Missing"
                 } else {
                     "Unusable"
@@ -237,7 +237,7 @@ pub(crate) fn spawn_model_settings(
                 && adapter.is_some_and(|status| {
                     matches!(
                         status.origin,
-                        app_core::ResourceOriginWireV1::ExternalConfiguration
+                        app_core::ResourceOriginWire::ExternalConfiguration
                     )
                 })
             {
@@ -284,24 +284,24 @@ fn validation_label(validation: app_core::RuntimeValidationPresentation) -> &'st
     }
 }
 
-fn model_install_state_label(state: app_core::InstallStateWireV1) -> &'static str {
+fn model_install_state_label(state: app_core::InstallStateWire) -> &'static str {
     match state {
-        app_core::InstallStateWireV1::Absent => "not installed",
-        app_core::InstallStateWireV1::Installed => "installed",
-        app_core::InstallStateWireV1::Incomplete => "incomplete",
-        app_core::InstallStateWireV1::Corrupt => "corrupt",
-        app_core::InstallStateWireV1::Legacy => "external GGUF layout",
+        app_core::InstallStateWire::Absent => "not installed",
+        app_core::InstallStateWire::Installed => "installed",
+        app_core::InstallStateWire::Incomplete => "incomplete",
+        app_core::InstallStateWire::Corrupt => "corrupt",
+        app_core::InstallStateWire::Legacy => "external GGUF layout",
     }
 }
 
-fn model_origin_label(origin: app_core::ResourceOriginWireV1) -> &'static str {
+fn model_origin_label(origin: app_core::ResourceOriginWire) -> &'static str {
     match origin {
-        app_core::ResourceOriginWireV1::Missing => "missing",
-        app_core::ResourceOriginWireV1::Managed => "managed store",
-        app_core::ResourceOriginWireV1::Legacy => "external model directory",
-        app_core::ResourceOriginWireV1::EnvironmentOverride => "environment override",
-        app_core::ResourceOriginWireV1::ExternalConfiguration => "external configuration",
-        app_core::ResourceOriginWireV1::Derived => "derived",
+        app_core::ResourceOriginWire::Missing => "missing",
+        app_core::ResourceOriginWire::Managed => "managed store",
+        app_core::ResourceOriginWire::Legacy => "external model directory",
+        app_core::ResourceOriginWire::EnvironmentOverride => "environment override",
+        app_core::ResourceOriginWire::ExternalConfiguration => "external configuration",
+        app_core::ResourceOriginWire::Derived => "derived",
     }
 }
 

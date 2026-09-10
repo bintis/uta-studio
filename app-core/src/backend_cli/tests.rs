@@ -22,10 +22,10 @@ fn analysis_request(request_id: &str) -> serde_json::Value {
 fn omitted_analysis_policy_defaults_to_production() {
     let mut request = analysis_request("default-policy");
     request.as_object_mut().unwrap().remove("execution_policy");
-    let request: AnalyzeRequestWireV1 = serde_json::from_value(request).unwrap();
+    let request: AnalyzeRequestWire = serde_json::from_value(request).unwrap();
     assert_eq!(
         request.execution_policy.runtime_policy,
-        RuntimePolicyWireV1::Production
+        RuntimePolicyWire::Production
     );
 }
 
@@ -68,7 +68,7 @@ fn real_analysis_cli_validates_and_projects_the_current_compiled_workflow() {
         .validate(&request, "workflow-contract-1")
         .expect("backend must independently validate the Studio workflow DTO");
     let plan = client.plan(&request, "workflow-contract-1").unwrap();
-    let request: AnalyzeRequestWireV1 = serde_json::from_value(request).unwrap();
+    let request: AnalyzeRequestWire = serde_json::from_value(request).unwrap();
     crate::analysis_engine_adapter::validate_workflow_plan_identity(&request, &plan).unwrap();
     let workflow = plan.workflow_execution.unwrap();
     assert_eq!(workflow.identity.workflow_id, snapshot.workflow_id);
@@ -80,7 +80,7 @@ fn real_analysis_cli_validates_and_projects_the_current_compiled_workflow() {
         workflow.identity.definition_digest,
         snapshot.definition_digest
     );
-    assert_eq!(workflow.fusion_mode, FusionModeWireV1::Algorithm);
+    assert_eq!(workflow.fusion_mode, FusionModeWire::Algorithm);
     assert!(
         plan.requirements
             .resources
@@ -114,10 +114,7 @@ fn real_analysis_cli_explicit_lead_stem_forces_the_disabled_workflow_branch() {
         })
         .unwrap();
     assert_eq!(lead.execution_policy, "disabled");
-    assert_eq!(
-        lead.execution_state,
-        WorkflowNodeExecutionStateWireV1::Ready
-    );
+    assert_eq!(lead.execution_state, WorkflowNodeExecutionStateWire::Ready);
 }
 
 #[test]
@@ -146,12 +143,12 @@ fn real_runtime_cli_result_error_status_and_read_paths_are_non_mutating() {
         .with_store(&root);
     let statuses = client.list().unwrap();
     assert!(!statuses.is_empty());
-    let rmvpe = RuntimeResourceRefWireV1::model("rmvpe").unwrap();
+    let rmvpe = RuntimeResourceRefWire::model("rmvpe").unwrap();
     let status = client.status(std::slice::from_ref(&rmvpe)).unwrap();
     assert_eq!(status[0].resource, rmvpe);
     assert!(!root.join("downloads").exists());
     assert!(!root.join("staging").exists());
-    let unknown = RuntimeResourceRefWireV1::model("definitely_unknown").unwrap();
+    let unknown = RuntimeResourceRefWire::model("definitely_unknown").unwrap();
     let error = client.show(&unknown).unwrap_err();
     assert!(matches!(error, BackendCliError::Domain { code, .. } if code == "unknown_resource"));
     let _ = std::fs::remove_dir_all(root);
@@ -232,7 +229,7 @@ fn runtime_client_configures_observes_resolves_and_clears_the_fusion_adapter() {
         .unwrap();
     assert!(configured.usable);
     assert_eq!(configured.tool_version.as_deref(), Some("app-core-smoke"));
-    let resource = RuntimeResourceRefWireV1::tool("fusion_agent_adapter").unwrap();
+    let resource = RuntimeResourceRefWire::tool("fusion_agent_adapter").unwrap();
     let status = client.status(std::slice::from_ref(&resource)).unwrap();
     assert!(status[0].usable);
     let resolved = client.resolve_tool("fusion_agent_adapter").unwrap();

@@ -4,13 +4,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
-use crate::workflow::WorkflowExecutionV1;
+use crate::workflow::WorkflowExecution;
 
-pub type EngineEventSink = Arc<dyn Fn(EngineLifecycleEventV1) + Send + Sync + 'static>;
+pub type EngineEventSink = Arc<dyn Fn(EngineLifecycleEvent) + Send + Sync + 'static>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum EngineLifecycleKindV1 {
+pub enum EngineLifecycleKind {
     NodeStarted,
     NodeProgress,
     NodeCompleted,
@@ -21,9 +21,9 @@ pub enum EngineLifecycleKindV1 {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct EngineLifecycleEventV1 {
+pub struct EngineLifecycleEvent {
     #[serde(rename = "type")]
-    pub kind: EngineLifecycleKindV1,
+    pub kind: EngineLifecycleKind,
     pub schema_version: u32,
     pub request_id: String,
     /// Engine-owned execution identity.
@@ -73,7 +73,7 @@ struct EventIdentity {
 struct EventContext {
     sink: EngineEventSink,
     request_id: String,
-    workflow: Option<WorkflowExecutionV1>,
+    workflow: Option<WorkflowExecution>,
     plan_nodes: Vec<(String, String)>,
 }
 
@@ -83,7 +83,7 @@ thread_local! {
 
 pub(crate) fn with_event_sink<T>(
     request_id: &str,
-    workflow: Option<WorkflowExecutionV1>,
+    workflow: Option<WorkflowExecution>,
     plan_nodes: Vec<(String, String)>,
     sink: EngineEventSink,
     execute: impl FnOnce() -> T,
@@ -116,7 +116,7 @@ impl LifecycleNodeGuard {
             return;
         }
         if let Some(identity) = self.identity.as_ref() {
-            emit(identity, EngineLifecycleKindV1::NodeProgress, |event| {
+            emit(identity, EngineLifecycleKind::NodeProgress, |event| {
                 event.progress = Some(fraction);
                 event.worker_task_id = Some(worker_task_id.into());
                 event.message = Some(message.into());
@@ -140,7 +140,7 @@ impl LifecycleNodeGuard {
             return;
         }
         if let Some(identity) = self.identity.as_ref() {
-            emit(identity, EngineLifecycleKindV1::NodeProgress, |event| {
+            emit(identity, EngineLifecycleKind::NodeProgress, |event| {
                 event.progress = Some(fraction);
                 event.work_units_completed = Some(completed);
                 event.work_units_total = Some(total);
@@ -152,7 +152,7 @@ impl LifecycleNodeGuard {
 
     pub(crate) fn artifact(&self, artifact: impl Into<String>) {
         if let Some(identity) = self.identity.as_ref() {
-            emit(identity, EngineLifecycleKindV1::Artifact, |event| {
+            emit(identity, EngineLifecycleKind::Artifact, |event| {
                 event.artifact = Some(artifact.into());
             });
         }
@@ -165,7 +165,7 @@ impl LifecycleNodeGuard {
     /// unrelated node failure might prevent from ever being produced.
     pub(crate) fn artifact_with_path(&self, artifact: impl Into<String>, path: impl Into<String>) {
         if let Some(identity) = self.identity.as_ref() {
-            emit(identity, EngineLifecycleKindV1::Artifact, |event| {
+            emit(identity, EngineLifecycleKind::Artifact, |event| {
                 event.artifact = Some(artifact.into());
                 event.path = Some(path.into());
             });
@@ -174,7 +174,7 @@ impl LifecycleNodeGuard {
 
     pub(crate) fn complete(mut self) {
         if let Some(identity) = self.identity.take() {
-            emit(&identity, EngineLifecycleKindV1::NodeCompleted, |_| {});
+            emit(&identity, EngineLifecycleKind::NodeCompleted, |_| {});
         }
     }
 }
@@ -182,7 +182,7 @@ impl LifecycleNodeGuard {
 impl Drop for LifecycleNodeGuard {
     fn drop(&mut self) {
         if let Some(identity) = self.identity.take() {
-            emit(&identity, EngineLifecycleKindV1::NodeFailed, |event| {
+            emit(&identity, EngineLifecycleKind::NodeFailed, |event| {
                 event.message = Some("execution ended before node completion".to_string());
             });
         }
@@ -238,20 +238,20 @@ pub(crate) fn begin_node_for_presentation(
         })
     });
     if let Some(identity) = identity.as_ref() {
-        emit(identity, EngineLifecycleKindV1::NodeStarted, |_| {});
+        emit(identity, EngineLifecycleKind::NodeStarted, |_| {});
     }
     LifecycleNodeGuard { identity }
 }
 
 pub(crate) fn emit_degraded(message: impl Into<String>) {
-    emit_run_message(EngineLifecycleKindV1::Degraded, message.into());
+    emit_run_message(EngineLifecycleKind::Degraded, message.into());
 }
 
 pub(crate) fn emit_warning(message: impl Into<String>) {
-    emit_run_message(EngineLifecycleKindV1::Warning, message.into());
+    emit_run_message(EngineLifecycleKind::Warning, message.into());
 }
 
-fn emit_run_message(kind: EngineLifecycleKindV1, message: String) {
+fn emit_run_message(kind: EngineLifecycleKind, message: String) {
     let identity = EVENT_CONTEXT.with(|slot| {
         let context = slot.borrow();
         let context = context.as_ref()?;
@@ -271,10 +271,10 @@ fn emit_run_message(kind: EngineLifecycleKindV1, message: String) {
 
 fn emit(
     identity: &EventIdentity,
-    kind: EngineLifecycleKindV1,
-    update: impl FnOnce(&mut EngineLifecycleEventV1),
+    kind: EngineLifecycleKind,
+    update: impl FnOnce(&mut EngineLifecycleEvent),
 ) {
-    let mut event = EngineLifecycleEventV1 {
+    let mut event = EngineLifecycleEvent {
         kind,
         schema_version: 1,
         request_id: identity.request_id.clone(),
@@ -331,7 +331,7 @@ mod tests {
         );
         let events = events.lock().unwrap();
         assert_eq!(events.len(), 5);
-        assert_eq!(events[0].kind, EngineLifecycleKindV1::NodeStarted);
+        assert_eq!(events[0].kind, EngineLifecycleKind::NodeStarted);
         assert_eq!(events[1].progress, Some(0.2));
         assert_eq!(events[1].worker_task_id.as_deref(), Some("rmvpe-task-7"));
         assert_eq!(events[2].progress, Some(0.25));
@@ -339,7 +339,7 @@ mod tests {
         assert_eq!(events[2].work_units_total, Some(8));
         assert_eq!(events[2].worker_task_id.as_deref(), Some("rmvpe-task-7"));
         assert_eq!(events[3].artifact.as_deref(), Some("pitch_evidence"));
-        assert_eq!(events[4].kind, EngineLifecycleKindV1::NodeCompleted);
+        assert_eq!(events[4].kind, EngineLifecycleKind::NodeCompleted);
     }
 
     #[test]

@@ -9,8 +9,7 @@ use std::time::Duration;
 use sha2::{Digest, Sha256};
 
 use crate::artifact::{
-    ACOUSTIC_EVIDENCE_CONTRACT, ACOUSTIC_EVIDENCE_VERSION, AcousticEvidenceFrameV1,
-    AcousticEvidenceV1,
+    ACOUSTIC_EVIDENCE_CONTRACT, ACOUSTIC_EVIDENCE_VERSION, AcousticEvidence, AcousticEvidenceFrame,
 };
 use crate::contract::{CANONICAL_TIMEBASE, EngineError, EngineErrorCode, EngineResult};
 use crate::execution::CancellationToken;
@@ -29,7 +28,7 @@ pub fn analyze_acoustic_evidence(
     source_start: u64,
     source_duration: u64,
     cancellation: &CancellationToken,
-) -> EngineResult<AcousticEvidenceV1> {
+) -> EngineResult<AcousticEvidence> {
     if !ffmpeg.is_file() || !input.is_file() {
         return Err(EngineError::new(
             EngineErrorCode::MissingRequiredInput,
@@ -211,7 +210,7 @@ pub fn analyze_acoustic_evidence(
             "acoustic DSP decode duration differs from the validated semantic input",
         ));
     }
-    let evidence = AcousticEvidenceV1 {
+    let evidence = AcousticEvidence {
         contract: ACOUSTIC_EVIDENCE_CONTRACT.to_string(),
         version: ACOUSTIC_EVIDENCE_VERSION,
         algorithm: ACOUSTIC_DSP_VERSION.to_string(),
@@ -236,7 +235,7 @@ struct AcousticProcessor {
     previous_periodicity: Option<f32>,
     previous_fundamental_hz: Option<f32>,
     pitch_deltas_cents: VecDeque<f32>,
-    frames: Vec<AcousticEvidenceFrameV1>,
+    frames: Vec<AcousticEvidenceFrame>,
 }
 
 impl AcousticProcessor {
@@ -331,7 +330,7 @@ impl AcousticProcessor {
             .map(|previous| (periodicity - previous).abs())
             .unwrap_or(0.0)
             .clamp(0.0, 1.0);
-        self.frames.push(AcousticEvidenceFrameV1 {
+        self.frames.push(AcousticEvidenceFrame {
             start,
             rms,
             spectral_flux,
@@ -516,7 +515,7 @@ mod tests {
         assert!(first[1].spectral_flux.is_some());
     }
 
-    fn analyze_samples(samples: &[f32]) -> Vec<AcousticEvidenceFrameV1> {
+    fn analyze_samples(samples: &[f32]) -> Vec<AcousticEvidenceFrame> {
         let mut processor = AcousticProcessor::new(0);
         for sample in samples {
             processor.push(*sample).unwrap();

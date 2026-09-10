@@ -4,9 +4,9 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::backend_cli::{
-    InstallStateWireV1, NativeBackendWireV1, ReadinessReasonWireV1, ResourceOriginWireV1,
-    RuntimeCliClient, RuntimeFusionProviderReportWireV1, RuntimePolicyWireV1,
-    RuntimeResourceRefWireV1, RuntimeResourceStatusWireV1, ValidationStateWireV1,
+    InstallStateWire, NativeBackendWire, ReadinessReasonWire, ResourceOriginWire, RuntimeCliClient,
+    RuntimeFusionProviderReportWire, RuntimePolicyWire, RuntimeResourceRefWire,
+    RuntimeResourceStatusWire, ValidationStateWire,
 };
 
 pub const FUSION_AGENT_ADAPTER_RESOURCE_ID: &str = "fusion_agent_adapter";
@@ -41,12 +41,12 @@ pub struct RuntimeModelPresentation {
     pub purpose: String,
     pub capabilities: Vec<String>,
     pub component_id: String,
-    pub install_state: InstallStateWireV1,
-    pub origin: ResourceOriginWireV1,
+    pub install_state: InstallStateWire,
+    pub origin: ResourceOriginWire,
     pub runnable: bool,
     pub usable: bool,
     #[serde(default)]
-    pub reasons: Vec<ReadinessReasonWireV1>,
+    pub reasons: Vec<ReadinessReasonWire>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generation: Option<String>,
     pub backends: Vec<RuntimeBackendCapabilityPresentation>,
@@ -81,7 +81,7 @@ pub(crate) fn invalidate_runtime_presentation_cache() {
 
 fn load_runtime_presentations() -> Vec<RuntimeModelPresentation> {
     let Ok(client) = RuntimeCliClient::discover()
-        .map(|client| client.with_policy(RuntimePolicyWireV1::Production))
+        .map(|client| client.with_policy(RuntimePolicyWire::Production))
     else {
         return Vec::new();
     };
@@ -137,11 +137,11 @@ fn load_runtime_presentations() -> Vec<RuntimeModelPresentation> {
         .collect()
 }
 
-pub fn fusion_agent_adapter_status() -> Result<RuntimeResourceStatusWireV1, String> {
+pub fn fusion_agent_adapter_status() -> Result<RuntimeResourceStatusWire, String> {
     let client = RuntimeCliClient::discover()
-        .map(|client| client.with_policy(RuntimePolicyWireV1::Production))
+        .map(|client| client.with_policy(RuntimePolicyWire::Production))
         .map_err(|error| error.to_string())?;
-    let resource = RuntimeResourceRefWireV1::tool(FUSION_AGENT_ADAPTER_RESOURCE_ID)?;
+    let resource = RuntimeResourceRefWire::tool(FUSION_AGENT_ADAPTER_RESOURCE_ID)?;
     client
         .status(&[resource])
         .map_err(|error| error.to_string())?
@@ -152,9 +152,9 @@ pub fn fusion_agent_adapter_status() -> Result<RuntimeResourceStatusWireV1, Stri
 
 pub fn configure_fusion_agent_adapter(
     executable: &std::path::Path,
-) -> Result<RuntimeResourceStatusWireV1, String> {
+) -> Result<RuntimeResourceStatusWire, String> {
     let status = RuntimeCliClient::discover()
-        .map(|client| client.with_policy(RuntimePolicyWireV1::Production))
+        .map(|client| client.with_policy(RuntimePolicyWire::Production))
         .map_err(|error| error.to_string())?
         .configure_tool(FUSION_AGENT_ADAPTER_RESOURCE_ID, executable)
         .map_err(|error| error.to_string())?;
@@ -163,9 +163,9 @@ pub fn configure_fusion_agent_adapter(
     Ok(status)
 }
 
-pub fn clear_fusion_agent_adapter() -> Result<RuntimeResourceStatusWireV1, String> {
+pub fn clear_fusion_agent_adapter() -> Result<RuntimeResourceStatusWire, String> {
     let status = RuntimeCliClient::discover()
-        .map(|client| client.with_policy(RuntimePolicyWireV1::Production))
+        .map(|client| client.with_policy(RuntimePolicyWire::Production))
         .map_err(|error| error.to_string())?
         .clear_tool(FUSION_AGENT_ADAPTER_RESOURCE_ID)
         .map_err(|error| error.to_string())?;
@@ -176,9 +176,9 @@ pub fn clear_fusion_agent_adapter() -> Result<RuntimeResourceStatusWireV1, Strin
 
 /// Discover provider CLIs and native adapters through Runtime Manager. This
 /// projection contains no raw executable path and performs no provider call.
-pub fn fusion_provider_status() -> Result<RuntimeFusionProviderReportWireV1, String> {
+pub fn fusion_provider_status() -> Result<RuntimeFusionProviderReportWire, String> {
     RuntimeCliClient::discover()
-        .map(|client| client.with_policy(RuntimePolicyWireV1::Production))
+        .map(|client| client.with_policy(RuntimePolicyWire::Production))
         .map_err(|error| error.to_string())?
         .fusion_providers()
         .map_err(|error| error.to_string())
@@ -189,9 +189,9 @@ pub fn fusion_provider_status() -> Result<RuntimeFusionProviderReportWireV1, Str
 /// policy; Studio never receives or stores its executable path.
 pub fn configure_fusion_provider(
     provider: &str,
-) -> Result<RuntimeFusionProviderReportWireV1, String> {
+) -> Result<RuntimeFusionProviderReportWire, String> {
     let report = RuntimeCliClient::discover()
-        .map(|client| client.with_policy(RuntimePolicyWireV1::Production))
+        .map(|client| client.with_policy(RuntimePolicyWire::Production))
         .map_err(|error| error.to_string())?
         .configure_fusion_provider(provider)
         .map_err(|error| error.to_string())?;
@@ -200,9 +200,9 @@ pub fn configure_fusion_provider(
     Ok(report)
 }
 
-pub fn clear_fusion_provider() -> Result<RuntimeFusionProviderReportWireV1, String> {
+pub fn clear_fusion_provider() -> Result<RuntimeFusionProviderReportWire, String> {
     let report = RuntimeCliClient::discover()
-        .map(|client| client.with_policy(RuntimePolicyWireV1::Production))
+        .map(|client| client.with_policy(RuntimePolicyWire::Production))
         .map_err(|error| error.to_string())?
         .clear_fusion_provider()
         .map_err(|error| error.to_string())?;
@@ -229,19 +229,19 @@ pub fn runtime_model_presentations() -> Vec<RuntimeModelPresentation> {
     value
 }
 
-pub(crate) fn map_backend(value: NativeBackendWireV1) -> RuntimeBackendPresentation {
+pub(crate) fn map_backend(value: NativeBackendWire) -> RuntimeBackendPresentation {
     match value {
-        NativeBackendWireV1::Ggml => RuntimeBackendPresentation::Ggml,
+        NativeBackendWire::Ggml => RuntimeBackendPresentation::Ggml,
     }
 }
 
-pub(crate) fn map_validation(value: ValidationStateWireV1) -> RuntimeValidationPresentation {
+pub(crate) fn map_validation(value: ValidationStateWire) -> RuntimeValidationPresentation {
     match value {
-        ValidationStateWireV1::ProductionPinned => RuntimeValidationPresentation::ProductionPinned,
-        ValidationStateWireV1::BenchmarkCandidate => {
+        ValidationStateWire::ProductionPinned => RuntimeValidationPresentation::ProductionPinned,
+        ValidationStateWire::BenchmarkCandidate => {
             RuntimeValidationPresentation::BenchmarkCandidate
         }
-        ValidationStateWireV1::Experimental => RuntimeValidationPresentation::Experimental,
-        ValidationStateWireV1::Unsupported => RuntimeValidationPresentation::Unsupported,
+        ValidationStateWire::Experimental => RuntimeValidationPresentation::Experimental,
+        ValidationStateWire::Unsupported => RuntimeValidationPresentation::Unsupported,
     }
 }

@@ -570,7 +570,7 @@ pub(super) fn spawn_node_card(
             if node.capability_id.as_str() == "audio.separate_vocal_bgm" {
                 let strategy = node
                     .separation_strategy
-                    .unwrap_or(app_core::SeparationStrategyV1::LeapDualOutput);
+                    .unwrap_or(app_core::SeparationStrategy::LeapDualOutput);
                 let descriptor = app_core::separation_strategy_descriptor(strategy);
                 spawn_wrapped_text(
                     card,

@@ -276,9 +276,12 @@ mod node_duration_copy_tests {
     }
 
     #[test]
-    fn a_route_still_running_reads_as_not_yet_available() {
+    fn a_route_still_running_formats_elapsed_time() {
         let r = route(Some(1_700_000_000_000), None);
-        assert_eq!(node_duration_copy(Some(&r)), "Not yet available");
+        assert_eq!(
+            super::node_duration_copy_at(Some(&r), 1_700_000_004_500),
+            super::format_duration(4.5)
+        );
     }
 
     #[test]
@@ -294,6 +297,29 @@ mod node_duration_copy_tests {
     fn a_corrupt_finished_before_started_reads_as_not_yet_available() {
         let r = route(Some(1_700_000_004_500), Some(1_700_000_000_000));
         assert_eq!(node_duration_copy(Some(&r)), "Not yet available");
+    }
+}
+
+#[cfg(test)]
+mod compact_analysis_operation_tests {
+    use super::compact_analysis_operation;
+
+    #[test]
+    fn worker_task_prefix_is_stripped_from_compact_copy() {
+        assert_eq!(
+            compact_analysis_operation(
+                "[worker task studio-auto-1-vocal-instrumental] Running measured Rust-to-GGML work unit"
+            ),
+            "Running measured Rust-to-GGML work unit"
+        );
+    }
+
+    #[test]
+    fn ordinary_operations_are_kept() {
+        assert_eq!(
+            compact_analysis_operation("Loading GGML shared libraries from Rust"),
+            "Loading GGML shared libraries from Rust"
+        );
     }
 }
 

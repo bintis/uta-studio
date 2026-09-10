@@ -154,7 +154,7 @@ fn separation_picker_exposes_only_typed_executable_strategies() {
     let option = &options[0];
     assert_eq!(
         option.strategy,
-        app_core::SeparationStrategyV1::LeapDualOutput
+        app_core::SeparationStrategy::LeapDualOutput
     );
     assert_eq!(option.executions.len(), 1);
     assert_eq!(
@@ -165,7 +165,7 @@ fn separation_picker_exposes_only_typed_executable_strategies() {
     let instrumental_direct_option = &options[1];
     assert_eq!(
         instrumental_direct_option.strategy,
-        app_core::SeparationStrategyV1::LeapInstrumentalDirect
+        app_core::SeparationStrategy::LeapInstrumentalDirect
     );
     assert_eq!(instrumental_direct_option.executions.len(), 1);
     assert_eq!(
@@ -179,7 +179,7 @@ fn separation_picker_exposes_only_typed_executable_strategies() {
     let polarformer_both_option = &options[2];
     assert_eq!(
         polarformer_both_option.strategy,
-        app_core::SeparationStrategyV1::PolarformerBoth
+        app_core::SeparationStrategy::PolarformerBoth
     );
     assert_eq!(polarformer_both_option.executions.len(), 1);
     assert_eq!(
@@ -431,7 +431,7 @@ fn expert_fusion_stage_hides_internal_execution_cards() {
     .unwrap();
     assert_eq!(
         app_core::fusion_mode(&workflow),
-        app_core::FusionModeV1::AiJudgment
+        app_core::FusionMode::AiJudgment
     );
 }
 

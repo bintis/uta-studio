@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::contract::{
-    BoundaryAuthority, BoundaryConstraintV1, BoundaryLevel, CANONICAL_TIMEBASE, CanonicalTime,
+    BoundaryAuthority, BoundaryConstraint, BoundaryLevel, CANONICAL_TIMEBASE, CanonicalTime,
 };
 
 pub const CANONICAL_TIMELINE_STEP_MS: u32 = 10;
@@ -90,7 +90,7 @@ impl TimeRange {
 /// authority by carrying a copied boolean.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct HardBoundaryV1 {
+pub struct HardBoundary {
     pub source: String,
     pub level: BoundaryLevel,
     pub range: TimeRange,
@@ -101,14 +101,14 @@ pub struct HardBoundaryV1 {
 /// while querying their edges.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct HardBoundarySetV1 {
+pub struct HardBoundarySet {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub boundaries: Vec<HardBoundaryV1>,
+    pub boundaries: Vec<HardBoundary>,
 }
 
-impl HardBoundarySetV1 {
+impl HardBoundarySet {
     pub fn from_constraints(
-        constraints: &[BoundaryConstraintV1],
+        constraints: &[BoundaryConstraint],
         source_start: u64,
         source_end: u64,
     ) -> Result<Self, String> {
@@ -130,7 +130,7 @@ impl HardBoundarySetV1 {
             if constraint.source.trim().is_empty() {
                 return Err("hard boundary source identity is empty".to_string());
             }
-            boundaries.push(HardBoundaryV1 {
+            boundaries.push(HardBoundary {
                 source: constraint.source.clone(),
                 level: constraint.level,
                 range: TimeRange::new(constraint.start, end)?,
@@ -237,8 +237,8 @@ impl TechniqueScores {
 mod tests {
     use super::*;
 
-    fn constraint(source: &str, start: u64, authority: BoundaryAuthority) -> BoundaryConstraintV1 {
-        BoundaryConstraintV1 {
+    fn constraint(source: &str, start: u64, authority: BoundaryAuthority) -> BoundaryConstraint {
+        BoundaryConstraint {
             token_id: None,
             level: BoundaryLevel::Word,
             start,
@@ -251,7 +251,7 @@ mod tests {
 
     #[test]
     fn hard_boundary_set_keeps_only_caller_hard_authority_and_normalizes_by_time() {
-        let set = HardBoundarySetV1::from_constraints(
+        let set = HardBoundarySet::from_constraints(
             &[
                 constraint("hard-late", 500_000, BoundaryAuthority::Hard),
                 constraint("soft", 250_000, BoundaryAuthority::Soft),
@@ -266,8 +266,8 @@ mod tests {
         assert_eq!(set.boundaries[1].source, "hard-late");
         assert_eq!(set.edge_times(), [100_000, 200_000, 500_000, 600_000]);
 
-        let invalid = HardBoundarySetV1 {
-            boundaries: vec![HardBoundaryV1 {
+        let invalid = HardBoundarySet {
+            boundaries: vec![HardBoundary {
                 source: "invalid".to_string(),
                 level: BoundaryLevel::Phrase,
                 range: TimeRange {

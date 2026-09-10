@@ -10,18 +10,16 @@ use crate::analysis_artifact::{
 use crate::analysis_graph::{AnalysisNodeId, ArtifactKind};
 use crate::backend_cli::{
     ANALYSIS_RESULT_CONTRACT, ANALYSIS_RESULT_VERSION, AUDIO_QUALITY_REPORT_CONTRACT,
-    AUDIO_QUALITY_REPORT_VERSION, AnalysisCliClient, AnalysisLifecycleFrameWireV1,
-    AnalysisPlanWireV1, AnalysisResultManifestWireV1, AnalysisReusePolicyWireV1,
-    AnalysisStatusWireV1, AnalyzeRequestWireV1, ArtifactRefWireV1, AudioQualityReportWireV1,
-    AudioRoleWireV1, BackendCliError, FusionDecisionProvenanceWireV1, FusionModeWireV1,
-    QualityGateRequirementWireV1, QualityGateStatusWireV1, QualityRegionWireV1,
-    VocalTopologyModeWireV1,
+    AUDIO_QUALITY_REPORT_VERSION, AnalysisCliClient, AnalysisLifecycleFrameWire, AnalysisPlanWire,
+    AnalysisResultManifestWire, AnalysisReusePolicyWire, AnalysisStatusWire, AnalyzeRequestWire,
+    ArtifactRefWire, AudioQualityReportWire, AudioRoleWire, BackendCliError,
+    FusionDecisionProvenanceWire, FusionModeWire, QualityGateRequirementWire,
+    QualityGateStatusWire, QualityRegionWire, VocalTopologyModeWire,
 };
 use crate::library_db::EngineQueueIntent;
 
 const SOURCE_DURATION_METADATA_TOLERANCE: u64 = 100_000;
-const SUPPORTED_AUDIO_QUALITY_ALGORITHMS: [&str; 2] =
-    ["audio-quality-gates-v1", "audio-quality-gates-v2"];
+const SUPPORTED_AUDIO_QUALITY_ALGORITHMS: [&str; 1] = ["audio-quality-gates"];
 
 pub(crate) fn process_engine_queue_intent(
     file_hash: &str,
@@ -142,13 +140,13 @@ fn execute_exact_intent(
     cache: &CacheDir,
     intent: &EngineQueueIntent,
     log_path: Option<&Path>,
-) -> Result<AnalysisResultManifestWireV1, String> {
+) -> Result<AnalysisResultManifestWire, String> {
     if take_force_stop_request(file_hash) {
         return Err("cancelled: analysis was force-stopped".to_string());
     }
-    let request: AnalyzeRequestWireV1 = serde_json::from_str(&intent.request_json)
+    let request: AnalyzeRequestWire = serde_json::from_str(&intent.request_json)
         .map_err(|error| format!("persisted Engine request is malformed: {error}"))?;
-    let plan: AnalysisPlanWireV1 = serde_json::from_str(&intent.plan_json)
+    let plan: AnalysisPlanWire = serde_json::from_str(&intent.plan_json)
         .map_err(|error| format!("persisted Engine plan is malformed: {error}"))?;
     if intent.file_hash != file_hash
         || request.request_id != intent.request_id
@@ -231,49 +229,49 @@ fn execute_exact_intent(
     outcome
 }
 
-fn audio_role_name(role: AudioRoleWireV1) -> &'static str {
+fn audio_role_name(role: AudioRoleWire) -> &'static str {
     match role {
-        AudioRoleWireV1::OriginalMix => "original_mix",
-        AudioRoleWireV1::VocalStem => "vocal_stem",
-        AudioRoleWireV1::GuideVocals => "guide_vocals",
-        AudioRoleWireV1::LeadVocal => "lead_vocal",
-        AudioRoleWireV1::CleanLeadVocal => "clean_lead_vocal",
-        AudioRoleWireV1::Instrumental => "instrumental",
-        AudioRoleWireV1::BackingVocal => "backing_vocal",
-        AudioRoleWireV1::HarmonyVocal => "harmony_vocal",
+        AudioRoleWire::OriginalMix => "original_mix",
+        AudioRoleWire::VocalStem => "vocal_stem",
+        AudioRoleWire::GuideVocals => "guide_vocals",
+        AudioRoleWire::LeadVocal => "lead_vocal",
+        AudioRoleWire::CleanLeadVocal => "clean_lead_vocal",
+        AudioRoleWire::Instrumental => "instrumental",
+        AudioRoleWire::BackingVocal => "backing_vocal",
+        AudioRoleWire::HarmonyVocal => "harmony_vocal",
     }
 }
 
-fn evaluated_audio_role_matches_plan(plan: &AnalysisPlanWireV1, evaluated_role: &str) -> bool {
+fn evaluated_audio_role_matches_plan(plan: &AnalysisPlanWire, evaluated_role: &str) -> bool {
     let baseline_role = if plan
         .source_route
         .preparation
         .iter()
         .any(|capability| capability.as_str() == "audio.lead_isolate")
     {
-        AudioRoleWireV1::LeadVocal
+        AudioRoleWire::LeadVocal
     } else if plan
         .source_route
         .preparation
         .iter()
         .any(|capability| capability.as_str() == "audio.extract_vocals")
     {
-        AudioRoleWireV1::GuideVocals
+        AudioRoleWire::GuideVocals
     } else {
         plan.source_route.input_role
     };
     evaluated_role == audio_role_name(baseline_role)
         || (matches!(
             baseline_role,
-            AudioRoleWireV1::VocalStem
-                | AudioRoleWireV1::GuideVocals
-                | AudioRoleWireV1::LeadVocal
-                | AudioRoleWireV1::CleanLeadVocal
+            AudioRoleWire::VocalStem
+                | AudioRoleWire::GuideVocals
+                | AudioRoleWire::LeadVocal
+                | AudioRoleWire::CleanLeadVocal
         ) && workflow_analysis_route_uses_cleanup(plan)
-            && evaluated_role == audio_role_name(AudioRoleWireV1::CleanLeadVocal))
+            && evaluated_role == audio_role_name(AudioRoleWire::CleanLeadVocal))
 }
 
-fn workflow_analysis_route_uses_cleanup(plan: &AnalysisPlanWireV1) -> bool {
+fn workflow_analysis_route_uses_cleanup(plan: &AnalysisPlanWire) -> bool {
     let Some(workflow) = plan.workflow_execution.as_ref() else {
         return plan
             .execution_nodes
@@ -282,7 +280,7 @@ fn workflow_analysis_route_uses_cleanup(plan: &AnalysisPlanWireV1) -> bool {
     };
     let analyzer_roots = workflow.nodes.iter().flat_map(|node| {
         node.input_bindings.iter().filter_map(|binding| {
-            (node.execution_state == crate::backend_cli::WorkflowNodeExecutionStateWireV1::Ready
+            (node.execution_state == crate::backend_cli::WorkflowNodeExecutionStateWire::Ready
                 && binding.execution_active
                 && binding.analyzer_attachment
                 && binding.semantic_type == "audio")
@@ -300,7 +298,7 @@ fn workflow_analysis_route_uses_cleanup(plan: &AnalysisPlanWireV1) -> bool {
 }
 
 fn workflow_path_uses_cleanup(
-    workflow: &crate::backend_cli::WorkflowExecutionPlanWireV1,
+    workflow: &crate::backend_cli::WorkflowExecutionPlanWire,
     analysis_node: &str,
     visited: &mut BTreeSet<String>,
 ) -> bool {
@@ -314,7 +312,7 @@ fn workflow_path_uses_cleanup(
     else {
         return false;
     };
-    if node.execution_state != crate::backend_cli::WorkflowNodeExecutionStateWireV1::Ready {
+    if node.execution_state != crate::backend_cli::WorkflowNodeExecutionStateWire::Ready {
         return false;
     }
     if node
@@ -370,7 +368,7 @@ fn preserve_engine_error(file_hash: &str, error: &BackendCliError) {
 fn apply_engine_lifecycle_event(
     file_hash: &str,
     log_path: Option<&Path>,
-    event: AnalysisLifecycleFrameWireV1,
+    event: AnalysisLifecycleFrameWire,
 ) {
     append_analysis_lifecycle_log(log_path, &event);
     // Cache a Step 1 audio-chain stem the instant its own worker succeeds,
@@ -543,9 +541,9 @@ fn validate_and_publish_engine_result(
     cache: &CacheDir,
     output_root: &Path,
     expected_source_duration: u64,
-    request: &AnalyzeRequestWireV1,
-    plan: &AnalysisPlanWireV1,
-    manifest: &AnalysisResultManifestWireV1,
+    request: &AnalyzeRequestWire,
+    plan: &AnalysisPlanWire,
+    manifest: &AnalysisResultManifestWire,
 ) -> Result<(), String> {
     if manifest.contract != ANALYSIS_RESULT_CONTRACT || manifest.version != ANALYSIS_RESULT_VERSION
     {
@@ -556,18 +554,17 @@ fn validate_and_publish_engine_result(
     }
     if !matches!(
         manifest.status,
-        AnalysisStatusWireV1::Ok | AnalysisStatusWireV1::OkDegraded
+        AnalysisStatusWire::Ok | AnalysisStatusWire::OkDegraded
     ) {
         return Err(format!(
             "Engine returned non-success status {:?}",
             manifest.status
         ));
     }
-    if matches!(manifest.status, AnalysisStatusWireV1::Ok) && !manifest.degraded_reasons.is_empty()
-    {
+    if matches!(manifest.status, AnalysisStatusWire::Ok) && !manifest.degraded_reasons.is_empty() {
         return Err("Engine ok result unexpectedly contains degraded reasons".to_string());
     }
-    if matches!(manifest.status, AnalysisStatusWireV1::OkDegraded)
+    if matches!(manifest.status, AnalysisStatusWire::OkDegraded)
         && manifest.degraded_reasons.is_empty()
     {
         return Err("Engine degraded result omitted degraded reasons".to_string());
@@ -624,12 +621,12 @@ fn validate_and_publish_engine_result(
         }
         if !matches!(
             stem.role,
-            AudioRoleWireV1::Instrumental
-                | AudioRoleWireV1::GuideVocals
-                | AudioRoleWireV1::LeadVocal
-                | AudioRoleWireV1::CleanLeadVocal
-                | AudioRoleWireV1::BackingVocal
-                | AudioRoleWireV1::HarmonyVocal
+            AudioRoleWire::Instrumental
+                | AudioRoleWire::GuideVocals
+                | AudioRoleWire::LeadVocal
+                | AudioRoleWire::CleanLeadVocal
+                | AudioRoleWire::BackingVocal
+                | AudioRoleWire::HarmonyVocal
         ) {
             return Err("Engine result contains an unsupported output stem role".to_string());
         }
@@ -763,8 +760,8 @@ fn valid_decision_digest(value: &str) -> bool {
 }
 
 fn validate_fusion_decision_result(
-    plan: &AnalysisPlanWireV1,
-    manifest: &AnalysisResultManifestWireV1,
+    plan: &AnalysisPlanWire,
+    manifest: &AnalysisResultManifestWire,
 ) -> Result<(), String> {
     let candidate_graph_planned = plan
         .execution_nodes
@@ -783,19 +780,19 @@ fn validate_fusion_decision_result(
     let planned_mode = plan
         .workflow_execution
         .as_ref()
-        .map_or(FusionModeWireV1::Algorithm, |workflow| workflow.fusion_mode);
+        .map_or(FusionModeWire::Algorithm, |workflow| workflow.fusion_mode);
     let (candidate_set_digest, selected_candidate_ids) = match decision {
-        FusionDecisionProvenanceWireV1::Algorithm {
+        FusionDecisionProvenanceWire::Algorithm {
             selector,
             selector_version,
             candidate_set_digest,
             selected_candidate_ids,
             reuse_policy,
         } => {
-            if planned_mode != FusionModeWireV1::Algorithm
+            if planned_mode != FusionModeWire::Algorithm
                 || selector != "hsmm_viterbi"
-                || selector_version != "hsmm-v15"
-                || *reuse_policy != AnalysisReusePolicyWireV1::Deterministic
+                || selector_version != "hsmm"
+                || *reuse_policy != AnalysisReusePolicyWire::Deterministic
             {
                 return Err(
                     "Engine algorithmic fusion provenance does not match the exact plan"
@@ -804,7 +801,7 @@ fn validate_fusion_decision_result(
             }
             (candidate_set_digest, selected_candidate_ids)
         }
-        FusionDecisionProvenanceWireV1::AiJudgment {
+        FusionDecisionProvenanceWire::AiJudgment {
             adapter_resource,
             adapter_protocol,
             adapter_protocol_version,
@@ -815,14 +812,14 @@ fn validate_fusion_decision_result(
             response_digest,
             reuse_policy,
         } => {
-            if planned_mode != FusionModeWireV1::AiJudgment
+            if planned_mode != FusionModeWire::AiJudgment
                 || adapter_resource != "tool:fusion_agent_adapter"
                 || adapter_protocol != "uta.fusion_agent_request/uta.fusion_agent_response"
                 || *adapter_protocol_version != 4
                 || adapter_identity.trim().is_empty()
                 || adapter_version.trim().is_empty()
                 || !valid_decision_digest(response_digest)
-                || *reuse_policy != AnalysisReusePolicyWireV1::PreservedRevisionOnly
+                || *reuse_policy != AnalysisReusePolicyWire::PreservedRevisionOnly
             {
                 return Err(
                     "Engine AI judgment provenance does not match the exact plan and adapter contract"
@@ -845,9 +842,9 @@ fn validate_fusion_decision_result(
 }
 
 fn validate_audio_quality_result(
-    request: &AnalyzeRequestWireV1,
-    plan: &AnalysisPlanWireV1,
-    manifest: &AnalysisResultManifestWireV1,
+    request: &AnalyzeRequestWire,
+    plan: &AnalysisPlanWire,
+    manifest: &AnalysisResultManifestWire,
     expected_source_duration: u64,
 ) -> Result<(), String> {
     const GATE_ORDER: &[&str] = &[
@@ -896,22 +893,22 @@ fn validate_audio_quality_result(
             .ok_or_else(|| format!("Engine Plan contains unknown audio quality gate {planned}"))?;
         let expected_requirement = match planned.as_str() {
             "timeline_valid" | "finite_samples" | "silence_ratio" | "energy_ratio" => {
-                QualityGateRequirementWireV1::Required
+                QualityGateRequirementWire::Required
             }
-            _ => QualityGateRequirementWireV1::Degrading,
+            _ => QualityGateRequirementWire::Degrading,
         };
         if previous_order.is_some_and(|previous| order <= previous)
             || outcome.gate != *planned
             || outcome.requirement != expected_requirement
             || outcome.summary.trim().is_empty()
-            || (expected_requirement == QualityGateRequirementWireV1::Required
-                && outcome.status != QualityGateStatusWireV1::Passed)
+            || (expected_requirement == QualityGateRequirementWire::Required
+                && outcome.status != QualityGateStatusWire::Passed)
         {
             return Err("Engine audio quality gate outcome is inconsistent".to_string());
         }
         previous_order = Some(order);
-        degrading_uncertainty |= expected_requirement == QualityGateRequirementWireV1::Degrading
-            && outcome.status != QualityGateStatusWireV1::Passed;
+        degrading_uncertainty |= expected_requirement == QualityGateRequirementWire::Degrading
+            && outcome.status != QualityGateStatusWire::Passed;
         for metric in &outcome.metrics {
             if metric.name.trim().is_empty()
                 || metric.unit.trim().is_empty()
@@ -953,16 +950,16 @@ fn validate_audio_quality_result(
             ));
         }
     }
-    if degrading_uncertainty && manifest.status != AnalysisStatusWireV1::OkDegraded {
+    if degrading_uncertainty && manifest.status != AnalysisStatusWire::OkDegraded {
         return Err("Engine audio quality uncertainty was not surfaced as degraded".to_string());
     }
     Ok(())
 }
 
 fn validate_vocal_topology_result(
-    request: &AnalyzeRequestWireV1,
-    plan: &AnalysisPlanWireV1,
-    report: &AudioQualityReportWireV1,
+    request: &AnalyzeRequestWire,
+    plan: &AnalysisPlanWire,
+    report: &AudioQualityReportWire,
     expected_source_duration: u64,
 ) -> Result<(), String> {
     let required = plan
@@ -985,7 +982,7 @@ fn validate_vocal_topology_result(
     let topology_end = source_start
         .checked_add(topology.duration)
         .ok_or_else(|| "Engine vocal topology timeline overflows".to_string())?;
-    let valid_regions = |regions: &[QualityRegionWireV1]| {
+    let valid_regions = |regions: &[QualityRegionWire]| {
         regions.iter().all(|region| {
             region.start >= source_start
                 && region.end <= source_end
@@ -995,12 +992,12 @@ fn validate_vocal_topology_result(
         }) && regions.windows(2).all(|pair| pair[0].end <= pair[1].start)
     };
     let mode_shape_valid = match topology.mode {
-        VocalTopologyModeWireV1::SingleLead | VocalTopologyModeWireV1::Unknown => {
+        VocalTopologyModeWire::SingleLead | VocalTopologyModeWire::Unknown => {
             topology.overlap_regions.is_empty() && topology.support_regions.is_empty()
         }
-        VocalTopologyModeWireV1::AlternatingMultiLead => topology.overlap_regions.is_empty(),
-        VocalTopologyModeWireV1::OverlappingMultiLead => !topology.overlap_regions.is_empty(),
-        VocalTopologyModeWireV1::LeadWithSupport => !topology.support_regions.is_empty(),
+        VocalTopologyModeWire::AlternatingMultiLead => topology.overlap_regions.is_empty(),
+        VocalTopologyModeWire::OverlappingMultiLead => !topology.overlap_regions.is_empty(),
+        VocalTopologyModeWire::LeadWithSupport => !topology.support_regions.is_empty(),
     };
     if topology.contract != "uta.analysis-engine.vocal-topology-estimate"
         || topology.version != 1
@@ -1025,8 +1022,8 @@ fn validate_vocal_topology_result(
 }
 
 fn validate_quantization_result(
-    request: &AnalyzeRequestWireV1,
-    manifest: &AnalysisResultManifestWireV1,
+    request: &AnalyzeRequestWire,
+    manifest: &AnalysisResultManifestWire,
 ) -> Result<(), String> {
     match (
         request.analysis.enable_quantization,
@@ -1063,8 +1060,8 @@ fn validate_quantization_result(
 }
 
 fn result_artifacts(
-    manifest: &AnalysisResultManifestWireV1,
-) -> Vec<(String, &ArtifactRefWireV1, ArtifactKind, &'static str)> {
+    manifest: &AnalysisResultManifestWire,
+) -> Vec<(String, &ArtifactRefWire, ArtifactKind, &'static str)> {
     let mut result = Vec::new();
     for (semantic, artifact, kind, producer) in [
         (
@@ -1110,29 +1107,29 @@ fn result_artifacts(
     }
     for stem in &manifest.artifacts.stems {
         let (role, kind, producer) = match stem.role {
-            AudioRoleWireV1::Instrumental => {
+            AudioRoleWire::Instrumental => {
                 let (kind, producer) = instrumental_result_kind(&stem.artifact.path);
                 ("instrumental", kind, producer)
             }
-            AudioRoleWireV1::GuideVocals => {
+            AudioRoleWire::GuideVocals => {
                 ("guide_vocals", ArtifactKind::VocalStem, "extract-vocals")
             }
-            AudioRoleWireV1::LeadVocal => (
+            AudioRoleWire::LeadVocal => (
                 "lead_vocal",
                 ArtifactKind::AnalysisVocalStem,
                 "lead-isolate",
             ),
-            AudioRoleWireV1::BackingVocal => (
+            AudioRoleWire::BackingVocal => (
                 "backing_vocal",
                 ArtifactKind::RawVocalStem,
                 "lead-partition",
             ),
-            AudioRoleWireV1::HarmonyVocal => (
+            AudioRoleWire::HarmonyVocal => (
                 "harmony_vocal",
                 ArtifactKind::RawVocalStem,
                 "lead-partition",
             ),
-            AudioRoleWireV1::CleanLeadVocal => (
+            AudioRoleWire::CleanLeadVocal => (
                 "clean_lead_vocal",
                 ArtifactKind::DereverbedVocalStem,
                 "cleanup",
@@ -1170,7 +1167,7 @@ fn validate_semantic_artifact(semantic: &str, path: &Path) -> Result<(), String>
         crate::vocal_chart::migrate_engine_candidate_chart(&value)
             .map_err(|error| format!("Engine Candidate projection is invalid: {error}"))?
     } else {
-        serde_json::from_value::<utz::VocalChartV1>(value)
+        serde_json::from_value::<utz::VocalChart>(value)
             .map_err(|error| format!("Engine Candidate VocalChart is invalid: {error}"))?
     };
     chart
@@ -1178,7 +1175,7 @@ fn validate_semantic_artifact(semantic: &str, path: &Path) -> Result<(), String>
         .map_err(|error| format!("Engine Candidate VocalChart failed validation: {error}"))
 }
 
-fn validate_artifact(output_root: &Path, artifact: &ArtifactRefWireV1) -> Result<PathBuf, String> {
+fn validate_artifact(output_root: &Path, artifact: &ArtifactRefWire) -> Result<PathBuf, String> {
     if artifact.path.is_absolute()
         || artifact.path.as_os_str().is_empty()
         || artifact.path.components().any(|component| {
@@ -1231,8 +1228,8 @@ mod tests {
         root.canonicalize().unwrap()
     }
 
-    fn artifact(path: &str, bytes: &[u8]) -> ArtifactRefWireV1 {
-        ArtifactRefWireV1 {
+    fn artifact(path: &str, bytes: &[u8]) -> ArtifactRefWire {
+        ArtifactRefWire {
             path: PathBuf::from(path),
             media_type: "application/json".to_string(),
             sha256: format!("{:x}", Sha256::digest(bytes)),
@@ -1312,7 +1309,7 @@ mod tests {
 
     #[test]
     fn quantization_wire_result_matches_exact_request_intent() {
-        let request: AnalyzeRequestWireV1 = serde_json::from_value(serde_json::json!({
+        let request: AnalyzeRequestWire = serde_json::from_value(serde_json::json!({
             "contract":"uta.analysis-engine.request","version":1,"request_id":"quantized",
             "audio_sources":[{"id":"main","kind":"local_file","path":"song.flac","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","role":"lead_vocal","primary":true,"timeline":{"timebase":1000000,"source_start":0}}],
             "lyrics":{"mode":"none","tokens":[]},"boundary_constraints":[],
@@ -1320,11 +1317,11 @@ mod tests {
             "analysis":{"profile":"fast","track_target":"lead","preserve_continuous_pitch":true,"enable_quantization":true},
             "requested_artifacts":{"vocal_chart":true},"execution_policy":{},"extensions":{}
         })).unwrap();
-        let mut manifest: AnalysisResultManifestWireV1 = serde_json::from_value(serde_json::json!({
+        let mut manifest: AnalysisResultManifestWire = serde_json::from_value(serde_json::json!({
             "contract":"uta.analysis-engine.result","version":1,"request_id":"quantized","status":"ok",
             "artifacts":{"candidate_vocal_chart":{"path":"candidate/vocal-chart.json","media_type":"application/vnd.uta.vocal-chart+json;version=0.3","sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","bytes":1}},
-            "diagnostics":{"quantization":{"algorithm":"rhythm-grid-dp-v1","bpm":120.0,"grid":"sixteenth","grid_step":125000,"minimum_note_duration":125000,"source_start":0,"source_end":1000000,"hard_boundary_count":0,"note_count":2,"adjusted_notes":2,"maximum_shift":12000}},
-            "provenance":{"resources":[],"calibration_version":"c","fusion_version":"f","hsmm_version":"h","quantization_version":"rhythm-grid-dp-v1","postprocess_version":"p"},
+            "diagnostics":{"quantization":{"algorithm":"rhythm-grid-dp","bpm":120.0,"grid":"sixteenth","grid_step":125000,"minimum_note_duration":125000,"source_start":0,"source_end":1000000,"hard_boundary_count":0,"note_count":2,"adjusted_notes":2,"maximum_shift":12000}},
+            "provenance":{"resources":[],"calibration_version":"c","fusion_version":"f","hsmm_version":"h","quantization_version":"rhythm-grid-dp","postprocess_version":"p"},
             "fingerprint":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","degraded_reasons":[]
         })).unwrap();
         validate_quantization_result(&request, &manifest).unwrap();
@@ -1341,7 +1338,7 @@ mod tests {
 
     #[test]
     fn audio_quality_wire_result_is_bound_to_plan_and_surfaces_uncertainty() {
-        let request: AnalyzeRequestWireV1 = serde_json::from_value(serde_json::json!({
+        let request: AnalyzeRequestWire = serde_json::from_value(serde_json::json!({
             "contract":"uta.analysis-engine.request","version":1,"request_id":"quality",
             "audio_sources":[{"id":"main","kind":"local_file","path":"song.flac","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","role":"lead_vocal","primary":true,"timeline":{"timebase":1000000,"source_start":0}}],
             "lyrics":{"mode":"none","tokens":[]},"boundary_constraints":[],
@@ -1363,7 +1360,7 @@ mod tests {
                 "status":"passed","summary":"measured","metrics":[],"regions":[]
             }))
             .collect::<Vec<_>>();
-        let plan: AnalysisPlanWireV1 = serde_json::from_value(serde_json::json!({
+        let plan: AnalysisPlanWire = serde_json::from_value(serde_json::json!({
             "schema":"uta.analysis-engine.plan","schema_version":1,"request_id":"quality",
             "source_route":{"primary_source_id":"main","input_role":"lead_vocal","preparation":[]},
             "requested_outputs":["pitch_evidence"],"required_capabilities":[],"optional_capabilities":[],
@@ -1371,11 +1368,11 @@ mod tests {
             "resolved_resources":[],"execution_nodes":[],"quality_gates":gates.clone(),
             "fallback_policy":[],"artifact_declarations":[]
         })).unwrap();
-        let mut manifest: AnalysisResultManifestWireV1 = serde_json::from_value(serde_json::json!({
+        let mut manifest: AnalysisResultManifestWire = serde_json::from_value(serde_json::json!({
             "contract":"uta.analysis-engine.result","version":1,"request_id":"quality","status":"ok",
             "artifacts":{},
-            "diagnostics":{"audio_quality":{"contract":"uta.analysis-engine.audio-quality-report","version":1,"algorithm":"audio-quality-gates-v1","profile":"fast","evaluated_audio_role":"lead_vocal","duration":1000000,"planned_gates":gates,"outcomes":outcomes}},
-            "provenance":{"resources":[],"calibration_version":"c","fusion_version":"f","hsmm_version":"h","quantization_version":"q","audio_quality_version":"audio-quality-gates-v1","postprocess_version":"p"},
+            "diagnostics":{"audio_quality":{"contract":"uta.analysis-engine.audio-quality-report","version":1,"algorithm":"audio-quality-gates","profile":"fast","evaluated_audio_role":"lead_vocal","duration":1000000,"planned_gates":gates,"outcomes":outcomes}},
+            "provenance":{"resources":[],"calibration_version":"c","fusion_version":"f","hsmm_version":"h","quantization_version":"q","audio_quality_version":"audio-quality-gates","postprocess_version":"p"},
             "fingerprint":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","degraded_reasons":[]
         })).unwrap();
         validate_audio_quality_result(&request, &plan, &manifest, 1_000_000).unwrap();
@@ -1386,9 +1383,9 @@ mod tests {
             .audio_quality
             .as_mut()
             .unwrap()
-            .algorithm = "audio-quality-gates-v3".to_string();
+            .algorithm = "audio-quality-gates-unsupported".to_string();
         unsupported_algorithm.provenance.audio_quality_version =
-            "audio-quality-gates-v3".to_string();
+            "audio-quality-gates-unsupported".to_string();
         assert!(
             validate_audio_quality_result(&request, &plan, &unsupported_algorithm, 1_000_000,)
                 .is_err()
@@ -1443,13 +1440,13 @@ mod tests {
             .as_mut()
             .unwrap()
             .outcomes[2];
-        clipping.status = QualityGateStatusWireV1::Unknown;
+        clipping.status = QualityGateStatusWire::Unknown;
         assert!(validate_audio_quality_result(&request, &plan, &manifest, 1_000_000).is_err());
-        manifest.status = AnalysisStatusWireV1::OkDegraded;
+        manifest.status = AnalysisStatusWire::OkDegraded;
         validate_audio_quality_result(&request, &plan, &manifest, 1_000_000).unwrap();
         let report = manifest.diagnostics.audio_quality.as_mut().unwrap();
         report.duration = 1_100_000;
-        report.outcomes[2].regions.push(QualityRegionWireV1 {
+        report.outcomes[2].regions.push(QualityRegionWire {
             start: 1_000_000,
             end: 1_050_000,
             reason: "outside_app_owned_source".to_string(),
@@ -1462,12 +1459,12 @@ mod tests {
         let report = manifest.diagnostics.audio_quality.as_mut().unwrap();
         report.duration = 1_000_000;
         report.outcomes[2].regions = vec![
-            QualityRegionWireV1 {
+            QualityRegionWire {
                 start: 100,
                 end: 300,
                 reason: "first".to_string(),
             },
-            QualityRegionWireV1 {
+            QualityRegionWire {
                 start: 200,
                 end: 400,
                 reason: "overlap".to_string(),
@@ -1489,7 +1486,7 @@ mod tests {
         // extending past the Engine's own `report_end` is actually invalid.
         // Every other gate keeps the strict `source_end` bound (see the
         // `outside_app_owned_source` case above).
-        let request: AnalyzeRequestWireV1 = serde_json::from_value(serde_json::json!({
+        let request: AnalyzeRequestWire = serde_json::from_value(serde_json::json!({
             "contract":"uta.analysis-engine.request","version":1,"request_id":"topology",
             "audio_sources":[{"id":"main","kind":"local_file","path":"song.flac","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","role":"lead_vocal","primary":true,"timeline":{"timebase":1000000,"source_start":0}}],
             "lyrics":{"mode":"none","tokens":[]},"boundary_constraints":[],
@@ -1498,7 +1495,7 @@ mod tests {
         }))
         .unwrap();
         let gates = vec!["timeline_valid", "vocal_topology"];
-        let plan: AnalysisPlanWireV1 = serde_json::from_value(serde_json::json!({
+        let plan: AnalysisPlanWire = serde_json::from_value(serde_json::json!({
             "schema":"uta.analysis-engine.plan","schema_version":1,"request_id":"topology",
             "source_route":{"primary_source_id":"main","input_role":"lead_vocal","preparation":[]},
             "requested_outputs":["pitch_evidence"],"required_capabilities":[],"optional_capabilities":[],
@@ -1507,11 +1504,11 @@ mod tests {
             "fallback_policy":[],"artifact_declarations":[]
         }))
         .unwrap();
-        let manifest: AnalysisResultManifestWireV1 = serde_json::from_value(serde_json::json!({
+        let manifest: AnalysisResultManifestWire = serde_json::from_value(serde_json::json!({
             "contract":"uta.analysis-engine.result","version":1,"request_id":"topology","status":"ok_degraded",
             "artifacts":{},
             "diagnostics":{"audio_quality":{
-                "contract":"uta.analysis-engine.audio-quality-report","version":1,"algorithm":"audio-quality-gates-v1","profile":"fast","evaluated_audio_role":"lead_vocal",
+                "contract":"uta.analysis-engine.audio-quality-report","version":1,"algorithm":"audio-quality-gates","profile":"fast","evaluated_audio_role":"lead_vocal",
                 "duration":1_000_333,
                 "planned_gates":gates,
                 "outcomes":[
@@ -1527,7 +1524,7 @@ mod tests {
                     "evidence_sources":["caller_or_unpartitioned_vocal_input"]
                 }
             }},
-            "provenance":{"resources":[],"calibration_version":"c","fusion_version":"f","hsmm_version":"h","quantization_version":"q","audio_quality_version":"audio-quality-gates-v1","postprocess_version":"p"},
+            "provenance":{"resources":[],"calibration_version":"c","fusion_version":"f","hsmm_version":"h","quantization_version":"q","audio_quality_version":"audio-quality-gates","postprocess_version":"p"},
             "fingerprint":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","degraded_reasons":["vocal_topology_ambiguous"]
         }))
         .unwrap();
@@ -1537,7 +1534,7 @@ mod tests {
         // The same overshoot on a non-topology gate stays invalid.
         let mut mismatched = manifest.clone();
         let report = mismatched.diagnostics.audio_quality.as_mut().unwrap();
-        report.outcomes[0].regions.push(QualityRegionWireV1 {
+        report.outcomes[0].regions.push(QualityRegionWire {
             start: 0,
             end: 1_000_333,
             reason: "timeline_valid_past_app_window".to_string(),
@@ -1547,7 +1544,7 @@ mod tests {
 
     #[test]
     fn clean_evaluated_role_requires_a_bound_workflow_cleanup_route() {
-        let mut plan: AnalysisPlanWireV1 = serde_json::from_value(serde_json::json!({
+        let mut plan: AnalysisPlanWire = serde_json::from_value(serde_json::json!({
             "schema":"uta.analysis-engine.plan","schema_version":1,"request_id":"role-route",
             "source_route":{"primary_source_id":"main","input_role":"lead_vocal","preparation":[]},
             "requested_outputs":["pitch_evidence"],"required_capabilities":[],
@@ -1607,7 +1604,7 @@ mod tests {
                 .find(|node| node.analysis_node == "workflow.pitch")
                 .unwrap();
             pitch.input_bindings[0].from_node = "workflow.intermediate".to_string();
-            let intermediate: crate::backend_cli::WorkflowExecutionNodePlanWireV1 =
+            let intermediate: crate::backend_cli::WorkflowExecutionNodePlanWire =
                 serde_json::from_value(serde_json::json!({
                     "instance_id":"intermediate","analysis_node":"workflow.intermediate",
                     "capabilities":["audio.refine"],"execution_policy":"disabled",
@@ -1632,17 +1629,16 @@ mod tests {
                 .iter_mut()
                 .find(|node| node.analysis_node == "workflow.pitch")
                 .unwrap()
-                .execution_state =
-                crate::backend_cli::WorkflowNodeExecutionStateWireV1::NotRequested;
+                .execution_state = crate::backend_cli::WorkflowNodeExecutionStateWire::NotRequested;
             workflow
                 .nodes
                 .iter_mut()
                 .find(|node| node.analysis_node == "workflow.cleanup")
                 .unwrap()
-                .execution_state = crate::backend_cli::WorkflowNodeExecutionStateWireV1::Disabled;
+                .execution_state = crate::backend_cli::WorkflowNodeExecutionStateWire::Disabled;
             workflow
                 .terminal_outputs
-                .push(crate::workflow::WorkflowTerminalOutputWireV1 {
+                .push(crate::workflow::WorkflowTerminalOutputWire {
                     node: "workflow.cleanup".to_string(),
                     port: "audio".to_string(),
                     semantic_type: "audio".to_string(),
@@ -1673,7 +1669,7 @@ mod tests {
             let file_hash = format!("file-{request_id}");
             let output = cache.path.join(request_id);
             std::fs::create_dir_all(&output).unwrap();
-            let request: AnalyzeRequestWireV1 =
+            let request: AnalyzeRequestWire =
                 serde_json::from_value(serde_json::json!({
                     "contract":"uta.analysis-engine.request","version":1,
                     "request_id":request_id,
@@ -1689,7 +1685,7 @@ mod tests {
                     "execution_policy":{},"extensions":{}
                 }))
                 .unwrap();
-            let plan: AnalysisPlanWireV1 = serde_json::from_value(serde_json::json!({
+            let plan: AnalysisPlanWire = serde_json::from_value(serde_json::json!({
                 "schema":"uta.analysis-engine.plan","schema_version":1,
                 "request_id":request_id,
                 "source_route":{"primary_source_id":"main","input_role":"lead_vocal","preparation":[]},
@@ -1715,36 +1711,35 @@ mod tests {
             if present {
                 std::fs::write(output.join("technique.json"), &technique).unwrap();
             }
-            let technique_ref = present.then(|| ArtifactRefWireV1 {
+            let technique_ref = present.then(|| ArtifactRefWire {
                 path: PathBuf::from("technique.json"),
                 media_type: "application/vnd.uta.technique-evidence+json;version=1".to_string(),
                 sha256: "b".repeat(64),
                 bytes: technique.len() as u64,
             });
-            let manifest: AnalysisResultManifestWireV1 =
-                serde_json::from_value(serde_json::json!({
-                    "contract":"uta.analysis-engine.result","version":1,
-                    "request_id":request_id,"status":"ok",
-                    "artifacts":{"technique_evidence":technique_ref},
-                    "diagnostics":{"audio_quality":{
-                        "contract":"uta.analysis-engine.audio-quality-report","version":1,
-                        "algorithm":"audio-quality-gates-v1","profile":"maximum",
-                        "evaluated_audio_role":"lead_vocal","duration":1000000,
-                        "planned_gates":gates,
-                        "outcomes":[{
-                            "gate":"timeline_valid","requirement":"required",
-                            "status":"passed","summary":"measured","metrics":[],"regions":[]
-                        }]
-                    }},
-                    "provenance":{
-                        "resources":[],"calibration_version":"c","fusion_version":"f",
-                        "hsmm_version":"h","quantization_version":"q",
-                        "audio_quality_version":"audio-quality-gates-v1","postprocess_version":"p"
-                    },
-                    "fingerprint":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-                    "degraded_reasons":[]
-                }))
-                .unwrap();
+            let manifest: AnalysisResultManifestWire = serde_json::from_value(serde_json::json!({
+                "contract":"uta.analysis-engine.result","version":1,
+                "request_id":request_id,"status":"ok",
+                "artifacts":{"technique_evidence":technique_ref},
+                "diagnostics":{"audio_quality":{
+                    "contract":"uta.analysis-engine.audio-quality-report","version":1,
+                    "algorithm":"audio-quality-gates","profile":"maximum",
+                    "evaluated_audio_role":"lead_vocal","duration":1000000,
+                    "planned_gates":gates,
+                    "outcomes":[{
+                        "gate":"timeline_valid","requirement":"required",
+                        "status":"passed","summary":"measured","metrics":[],"regions":[]
+                    }]
+                }},
+                "provenance":{
+                    "resources":[],"calibration_version":"c","fusion_version":"f",
+                    "hsmm_version":"h","quantization_version":"q",
+                    "audio_quality_version":"audio-quality-gates","postprocess_version":"p"
+                },
+                "fingerprint":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "degraded_reasons":[]
+            }))
+            .unwrap();
 
             if present {
                 let mut wrong_media = manifest.clone();
@@ -1802,7 +1797,7 @@ mod tests {
         let file_hash = "file-stem-compat";
         let output = cache.path.join(request_id);
         std::fs::create_dir_all(&output).unwrap();
-        let request: AnalyzeRequestWireV1 = serde_json::from_value(serde_json::json!({
+        let request: AnalyzeRequestWire = serde_json::from_value(serde_json::json!({
             "contract":"uta.analysis-engine.request","version":1,
             "request_id":request_id,
             "audio_sources":[{
@@ -1817,7 +1812,7 @@ mod tests {
             "execution_policy":{},"extensions":{}
         }))
         .unwrap();
-        let plan: AnalysisPlanWireV1 = serde_json::from_value(serde_json::json!({
+        let plan: AnalysisPlanWire = serde_json::from_value(serde_json::json!({
             "schema":"uta.analysis-engine.plan","schema_version":1,
             "request_id":request_id,
             "source_route":{"primary_source_id":"main","input_role":"lead_vocal","preparation":[]},
@@ -1834,7 +1829,7 @@ mod tests {
         .unwrap();
         let instrumental_bytes = b"fake-flac-bytes".to_vec();
         std::fs::write(output.join("instrumental.flac"), &instrumental_bytes).unwrap();
-        let manifest: AnalysisResultManifestWireV1 = serde_json::from_value(serde_json::json!({
+        let manifest: AnalysisResultManifestWire = serde_json::from_value(serde_json::json!({
             "contract":"uta.analysis-engine.result","version":1,
             "request_id":request_id,"status":"ok",
             "artifacts":{"stems":[{
@@ -1848,7 +1843,7 @@ mod tests {
             }]},
             "diagnostics":{"audio_quality":{
                 "contract":"uta.analysis-engine.audio-quality-report","version":1,
-                "algorithm":"audio-quality-gates-v1","profile":"maximum",
+                "algorithm":"audio-quality-gates","profile":"maximum",
                 "evaluated_audio_role":"lead_vocal","duration":1000000,
                 "planned_gates":gates,
                 "outcomes":[{
@@ -1859,7 +1854,7 @@ mod tests {
             "provenance":{
                 "resources":[],"calibration_version":"c","fusion_version":"f",
                 "hsmm_version":"h","quantization_version":"q",
-                "audio_quality_version":"audio-quality-gates-v1","postprocess_version":"p"
+                "audio_quality_version":"audio-quality-gates","postprocess_version":"p"
             },
             "fingerprint":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
             "degraded_reasons":[]
@@ -1880,7 +1875,7 @@ mod tests {
 
     #[test]
     fn typed_vocal_topology_wire_is_plan_bound_and_fails_closed_on_shape_conflict() {
-        let request: AnalyzeRequestWireV1 = serde_json::from_value(serde_json::json!({
+        let request: AnalyzeRequestWire = serde_json::from_value(serde_json::json!({
             "contract":"uta.analysis-engine.request","version":1,"request_id":"topology",
             "audio_sources":[{"id":"main","kind":"local_file","path":"song.flac","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","role":"lead_vocal","primary":true,"timeline":{"timebase":1000000,"source_start":2000000}}],
             "lyrics":{"mode":"none","tokens":[]},"boundary_constraints":[],
@@ -1888,7 +1883,7 @@ mod tests {
             "requested_artifacts":{"pitch_evidence":true},"execution_policy":{},"extensions":{}
         }))
         .unwrap();
-        let plan: AnalysisPlanWireV1 = serde_json::from_value(serde_json::json!({
+        let plan: AnalysisPlanWire = serde_json::from_value(serde_json::json!({
             "schema":"uta.analysis-engine.plan","schema_version":1,"request_id":"topology",
             "source_route":{"primary_source_id":"main","input_role":"lead_vocal","preparation":[]},
             "requested_outputs":["pitch_evidence"],"required_capabilities":[],"optional_capabilities":[],
@@ -1897,9 +1892,9 @@ mod tests {
             "fallback_policy":[],"artifact_declarations":[]
         }))
         .unwrap();
-        let mut report: AudioQualityReportWireV1 = serde_json::from_value(serde_json::json!({
+        let mut report: AudioQualityReportWire = serde_json::from_value(serde_json::json!({
             "contract":"uta.analysis-engine.audio-quality-report","version":1,
-            "algorithm":"audio-quality-gates-v2","profile":"balanced",
+            "algorithm":"audio-quality-gates","profile":"balanced",
             "evaluated_audio_role":"lead_vocal","duration":1000000,
             "planned_gates":["vocal_topology"],"outcomes":[],
             "vocal_topology":{
@@ -1912,8 +1907,7 @@ mod tests {
         .unwrap();
         validate_vocal_topology_result(&request, &plan, &report, 1_000_000).unwrap();
 
-        report.vocal_topology.as_mut().unwrap().mode =
-            VocalTopologyModeWireV1::OverlappingMultiLead;
+        report.vocal_topology.as_mut().unwrap().mode = VocalTopologyModeWire::OverlappingMultiLead;
         assert!(validate_vocal_topology_result(&request, &plan, &report, 1_000_000).is_err());
         report.vocal_topology = None;
         assert!(
@@ -1943,7 +1937,7 @@ mod tests {
                      progress: Option<f32>,
                      work_units: Option<(u64, u64)>,
                      artifact: Option<&str>| {
-            AnalysisLifecycleFrameWireV1 {
+            AnalysisLifecycleFrameWire {
                 frame_type: frame_type.to_string(),
                 schema_version: 1,
                 request_id: "request".to_string(),

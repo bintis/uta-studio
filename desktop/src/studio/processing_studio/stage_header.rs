@@ -379,7 +379,7 @@ pub(super) fn optional_card_add_button(
     theme: &StudioTheme,
     definition: &app_core::WorkflowDefinition,
     source: &(app_core::WorkflowNodeId, String),
-    card: app_core::OptionalWorkflowCardV1,
+    card: app_core::OptionalWorkflowCard,
 ) {
     if app_core::workflow_has_optional_card(definition, card) {
         spawn_quiet_present_button(parent, font, theme, format!("✓ {} · present", card.label()));

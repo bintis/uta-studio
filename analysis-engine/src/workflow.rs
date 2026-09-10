@@ -1,6 +1,6 @@
 //! Independently owned wire contract for compiled Processing Studio execution.
 //!
-//! app-core serializes a local DTO into `AnalyzeRequestV1.extensions`; this
+//! app-core serializes a local DTO into `AnalyzeRequest.extensions`; this
 //! module deliberately mirrors the JSON shape without importing app-core.
 //! Validation therefore occurs after the CLI process boundary and cannot be
 //! bypassed by a stale or hand-edited Studio snapshot.
@@ -10,17 +10,17 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use serde::{Deserialize, Serialize};
 
 use crate::contract::{
-    AnalysisProfile, AnalyzeRequestV1, AudioRole, EngineError, EngineErrorCode, EngineResult,
+    AnalysisProfile, AnalyzeRequest, AudioRole, EngineError, EngineErrorCode, EngineResult,
 };
 
-pub const WORKFLOW_EXECUTION_EXTENSION_KEY: &str = "uta.workflow_execution.v1";
+pub const WORKFLOW_EXECUTION_EXTENSION_KEY: &str = "uta.workflow_execution";
 pub const WORKFLOW_EXECUTION_CONTRACT: &str = "uta.workflow-execution";
 pub const WORKFLOW_EXECUTION_VERSION: u32 = 1;
 pub const WORKFLOW_SCHEMA_VERSION: u32 = 7;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum WorkflowExecutionPolicyV1 {
+pub enum WorkflowExecutionPolicy {
     Always,
     Disabled,
     MaximumOnly,
@@ -30,11 +30,11 @@ pub enum WorkflowExecutionPolicyV1 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ContinuousF0SourceV1 {
+pub enum ContinuousF0Source {
     Rmvpe,
 }
 
-impl ContinuousF0SourceV1 {
+impl ContinuousF0Source {
     pub fn model_id(self) -> &'static str {
         match self {
             Self::Rmvpe => "rmvpe",
@@ -44,11 +44,11 @@ impl ContinuousF0SourceV1 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum NoteLengthSourceV1 {
+pub enum NoteLengthSource {
     F0Derived,
 }
 
-impl NoteLengthSourceV1 {
+impl NoteLengthSource {
     pub fn parameter_value(self) -> &'static str {
         match self {
             Self::F0Derived => "f0",
@@ -58,12 +58,12 @@ impl NoteLengthSourceV1 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum OnsetSupportSourceV1 {
+pub enum OnsetSupportSource {
     Automatic,
     Acoustic,
 }
 
-impl OnsetSupportSourceV1 {
+impl OnsetSupportSource {
     pub fn parameter_value(self) -> &'static str {
         match self {
             Self::Automatic => "automatic",
@@ -74,7 +74,7 @@ impl OnsetSupportSourceV1 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum FusionModeV1 {
+pub enum FusionMode {
     /// The algorithmic HSMM candidate-graph decode. Default and only
     /// production-pinned path.
     #[default]
@@ -85,7 +85,7 @@ pub enum FusionModeV1 {
     AiJudgment,
 }
 
-impl FusionModeV1 {
+impl FusionMode {
     pub fn parameter_value(self) -> &'static str {
         match self {
             Self::Algorithm => "algorithm",
@@ -96,25 +96,25 @@ impl FusionModeV1 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ExpertFusionPolicyV1 {
-    pub continuous_f0: ContinuousF0SourceV1,
-    pub note_lengths: NoteLengthSourceV1,
-    pub onset_support: OnsetSupportSourceV1,
+pub struct ExpertFusionPolicy {
+    pub continuous_f0: ContinuousF0Source,
+    pub note_lengths: NoteLengthSource,
+    pub onset_support: OnsetSupportSource,
 }
 
-impl Default for ExpertFusionPolicyV1 {
+impl Default for ExpertFusionPolicy {
     fn default() -> Self {
         Self {
-            continuous_f0: ContinuousF0SourceV1::Rmvpe,
-            note_lengths: NoteLengthSourceV1::F0Derived,
-            onset_support: OnsetSupportSourceV1::Automatic,
+            continuous_f0: ContinuousF0Source::Rmvpe,
+            note_lengths: NoteLengthSource::F0Derived,
+            onset_support: OnsetSupportSource::Automatic,
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct WorkflowExecutionV1 {
+pub struct WorkflowExecution {
     pub contract: String,
     pub version: u32,
     pub workflow_schema_version: u32,
@@ -122,18 +122,18 @@ pub struct WorkflowExecutionV1 {
     pub workflow_revision: u64,
     pub quality_mode: String,
     pub definition_digest: String,
-    pub nodes: Vec<WorkflowNodeV1>,
-    pub bindings: Vec<WorkflowBindingV1>,
-    pub terminal_outputs: Vec<WorkflowTerminalOutputV1>,
+    pub nodes: Vec<WorkflowNode>,
+    pub bindings: Vec<WorkflowBinding>,
+    pub terminal_outputs: Vec<WorkflowTerminalOutput>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fusion_policy: Option<ExpertFusionPolicyV1>,
+    pub fusion_policy: Option<ExpertFusionPolicy>,
     #[serde(default)]
-    pub fusion_mode: FusionModeV1,
+    pub fusion_mode: FusionMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct WorkflowProviderPreferencesV1 {
+pub struct WorkflowProviderPreferences {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub primary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -142,7 +142,7 @@ pub struct WorkflowProviderPreferencesV1 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct WorkflowExecutionInvocationV1 {
+pub struct WorkflowExecutionInvocation {
     pub invocation_id: String,
     pub provider_id: String,
     pub capabilities: Vec<String>,
@@ -151,20 +151,20 @@ pub struct WorkflowExecutionInvocationV1 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct WorkflowNodeV1 {
+pub struct WorkflowNode {
     pub instance_id: String,
     pub capability_id: String,
-    pub execution_policy: WorkflowExecutionPolicyV1,
+    pub execution_policy: WorkflowExecutionPolicy,
     pub priority: i32,
     #[serde(default)]
-    pub provider_preferences: WorkflowProviderPreferencesV1,
+    pub provider_preferences: WorkflowProviderPreferences,
     #[serde(default)]
-    pub execution_invocations: Vec<WorkflowExecutionInvocationV1>,
+    pub execution_invocations: Vec<WorkflowExecutionInvocation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct WorkflowBindingV1 {
+pub struct WorkflowBinding {
     pub from_node: String,
     pub from_port: String,
     pub to_node: String,
@@ -178,7 +178,7 @@ pub struct WorkflowBindingV1 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct WorkflowTerminalOutputV1 {
+pub struct WorkflowTerminalOutput {
     pub node: String,
     pub port: String,
     pub semantic_type: String,
@@ -186,8 +186,8 @@ pub struct WorkflowTerminalOutputV1 {
     pub audio_role: Option<String>,
 }
 
-impl WorkflowExecutionV1 {
-    pub fn from_request(request: &AnalyzeRequestV1) -> EngineResult<Option<Self>> {
+impl WorkflowExecution {
+    pub fn from_request(request: &AnalyzeRequest) -> EngineResult<Option<Self>> {
         let Some(value) = request.extensions.get(WORKFLOW_EXECUTION_EXTENSION_KEY) else {
             return Ok(None);
         };
@@ -201,7 +201,7 @@ impl WorkflowExecutionV1 {
         Ok(Some(workflow))
     }
 
-    pub fn validate(&self, request: &AnalyzeRequestV1) -> EngineResult<()> {
+    pub fn validate(&self, request: &AnalyzeRequest) -> EngineResult<()> {
         if self.contract != WORKFLOW_EXECUTION_CONTRACT
             || self.version != WORKFLOW_EXECUTION_VERSION
             || self.workflow_schema_version != WORKFLOW_SCHEMA_VERSION
@@ -294,8 +294,8 @@ impl WorkflowExecutionV1 {
                 ))
                 .for_request(&request.request_id));
             }
-            let expected_active = from.execution_policy != WorkflowExecutionPolicyV1::Disabled
-                && to.execution_policy != WorkflowExecutionPolicyV1::Disabled;
+            let expected_active = from.execution_policy != WorkflowExecutionPolicy::Disabled
+                && to.execution_policy != WorkflowExecutionPolicy::Disabled;
             if binding.execution_active != expected_active {
                 return Err(invalid(
                     "workflow binding active state disagrees with node execution policies",
@@ -353,7 +353,7 @@ impl WorkflowExecutionV1 {
     pub fn policy_for_engine_capability(
         &self,
         capability: &str,
-    ) -> Option<WorkflowExecutionPolicyV1> {
+    ) -> Option<WorkflowExecutionPolicy> {
         self.nodes
             .iter()
             .filter_map(|node| {
@@ -363,11 +363,11 @@ impl WorkflowExecutionV1 {
             })
             .max_by_key(|(policy, priority)| {
                 let policy_rank = match policy {
-                    WorkflowExecutionPolicyV1::Always => 4,
-                    WorkflowExecutionPolicyV1::OnDisagreement
-                    | WorkflowExecutionPolicyV1::DisagreementWindows => 3,
-                    WorkflowExecutionPolicyV1::MaximumOnly => 2,
-                    WorkflowExecutionPolicyV1::Disabled => 0,
+                    WorkflowExecutionPolicy::Always => 4,
+                    WorkflowExecutionPolicy::OnDisagreement
+                    | WorkflowExecutionPolicy::DisagreementWindows => 3,
+                    WorkflowExecutionPolicy::MaximumOnly => 2,
+                    WorkflowExecutionPolicy::Disabled => 0,
                 };
                 (policy_rank, *priority)
             })
@@ -379,6 +379,13 @@ impl WorkflowExecutionV1 {
         capability: &str,
         model_id: Option<&str>,
     ) -> Option<String> {
+        // Dual-output Leap/PolarFormer is one worker call that the Engine still
+        // plans as extract_vocals + extract_instrumental. Lifecycle frames that
+        // still name the workflow capability must resolve to that same card.
+        let capability = match capability {
+            "audio.separate_vocal_bgm" => "audio.extract_vocals",
+            other => other,
+        };
         let node = self
             .nodes
             .iter()
@@ -390,11 +397,11 @@ impl WorkflowExecutionV1 {
             })
             .max_by_key(|node| {
                 let policy_rank = match node.execution_policy {
-                    WorkflowExecutionPolicyV1::Always => 4,
-                    WorkflowExecutionPolicyV1::OnDisagreement
-                    | WorkflowExecutionPolicyV1::DisagreementWindows => 3,
-                    WorkflowExecutionPolicyV1::MaximumOnly => 2,
-                    WorkflowExecutionPolicyV1::Disabled => 0,
+                    WorkflowExecutionPolicy::Always => 4,
+                    WorkflowExecutionPolicy::OnDisagreement
+                    | WorkflowExecutionPolicy::DisagreementWindows => 3,
+                    WorkflowExecutionPolicy::MaximumOnly => 2,
+                    WorkflowExecutionPolicy::Disabled => 0,
                 };
                 (policy_rank, node.priority)
             })?;
@@ -418,22 +425,22 @@ impl WorkflowExecutionV1 {
     pub fn model_for_engine_capability(&self, capability: &str) -> Option<&str> {
         self.nodes
             .iter()
-            .filter(|node| node.execution_policy != WorkflowExecutionPolicyV1::Disabled)
+            .filter(|node| node.execution_policy != WorkflowExecutionPolicy::Disabled)
             .filter(|node| engine_capabilities(node).contains(&capability))
             .max_by_key(|node| {
                 let policy_rank = match node.execution_policy {
-                    WorkflowExecutionPolicyV1::Always => 4,
-                    WorkflowExecutionPolicyV1::OnDisagreement
-                    | WorkflowExecutionPolicyV1::DisagreementWindows => 3,
-                    WorkflowExecutionPolicyV1::MaximumOnly => 2,
-                    WorkflowExecutionPolicyV1::Disabled => 0,
+                    WorkflowExecutionPolicy::Always => 4,
+                    WorkflowExecutionPolicy::OnDisagreement
+                    | WorkflowExecutionPolicy::DisagreementWindows => 3,
+                    WorkflowExecutionPolicy::MaximumOnly => 2,
+                    WorkflowExecutionPolicy::Disabled => 0,
                 };
                 (policy_rank, node.priority)
             })
             .and_then(|node| engine_model_for_capability(node, capability))
     }
 
-    pub fn policy_for_model(&self, model_id: &str) -> Option<WorkflowExecutionPolicyV1> {
+    pub fn policy_for_model(&self, model_id: &str) -> Option<WorkflowExecutionPolicy> {
         self.nodes
             .iter()
             .find(|node| node.provider_preferences.primary.as_deref() == Some(model_id))
@@ -443,11 +450,11 @@ impl WorkflowExecutionV1 {
     pub fn should_schedule_model(&self, model_id: &str, profile: AnalysisProfile) -> bool {
         self.policy_for_model(model_id)
             .is_some_and(|policy| match policy {
-                WorkflowExecutionPolicyV1::Always => true,
-                WorkflowExecutionPolicyV1::Disabled => false,
-                WorkflowExecutionPolicyV1::MaximumOnly => profile == AnalysisProfile::Maximum,
-                WorkflowExecutionPolicyV1::OnDisagreement
-                | WorkflowExecutionPolicyV1::DisagreementWindows => {
+                WorkflowExecutionPolicy::Always => true,
+                WorkflowExecutionPolicy::Disabled => false,
+                WorkflowExecutionPolicy::MaximumOnly => profile == AnalysisProfile::Maximum,
+                WorkflowExecutionPolicy::OnDisagreement
+                | WorkflowExecutionPolicy::DisagreementWindows => {
                     profile != AnalysisProfile::Fast
                 }
             })
@@ -462,7 +469,7 @@ impl WorkflowExecutionV1 {
         Some(self.engine_resolved_parameters(node))
     }
 
-    pub fn engine_resolved_parameters(&self, node: &WorkflowNodeV1) -> serde_json::Value {
+    pub fn engine_resolved_parameters(&self, node: &WorkflowNode) -> serde_json::Value {
         if node.capability_id == "fusion.singing_evidence" {
             serde_json::json!({
                 "fusion_mode": self.fusion_mode.parameter_value(),
@@ -477,28 +484,28 @@ impl WorkflowExecutionV1 {
     pub fn resolved_expert_fusion_policy(
         &self,
         profile: AnalysisProfile,
-    ) -> Option<ExpertFusionPolicyV1> {
+    ) -> Option<ExpertFusionPolicy> {
         self.nodes
             .iter()
             .any(|node| {
                 node.capability_id == "fusion.singing_evidence"
-                    && node.execution_policy != WorkflowExecutionPolicyV1::Disabled
+                    && node.execution_policy != WorkflowExecutionPolicy::Disabled
             })
             .then(|| {
                 let _ = profile;
-                ExpertFusionPolicyV1 {
-                    continuous_f0: ContinuousF0SourceV1::Rmvpe,
-                    note_lengths: NoteLengthSourceV1::F0Derived,
-                    onset_support: OnsetSupportSourceV1::Automatic,
+                ExpertFusionPolicy {
+                    continuous_f0: ContinuousF0Source::Rmvpe,
+                    note_lengths: NoteLengthSource::F0Derived,
+                    onset_support: OnsetSupportSource::Automatic,
                 }
             })
     }
 
-    pub fn fusion_mode(&self) -> FusionModeV1 {
+    pub fn fusion_mode(&self) -> FusionMode {
         self.fusion_mode
     }
 
-    fn validate_expert_fusion_policy(&self, request: &AnalyzeRequestV1) -> EngineResult<()> {
+    fn validate_expert_fusion_policy(&self, request: &AnalyzeRequest) -> EngineResult<()> {
         let fusion_node = self
             .nodes
             .iter()
@@ -506,7 +513,7 @@ impl WorkflowExecutionV1 {
         let Some(fusion_node) = fusion_node else {
             return Ok(());
         };
-        if fusion_node.execution_policy == WorkflowExecutionPolicyV1::Disabled {
+        if fusion_node.execution_policy == WorkflowExecutionPolicy::Disabled {
             return Ok(());
         }
         if !self.should_schedule_model("rmvpe", request.analysis.profile) {
@@ -518,7 +525,7 @@ impl WorkflowExecutionV1 {
         Ok(())
     }
 
-    pub fn node_for_model(&self, model_id: &str) -> Option<&WorkflowNodeV1> {
+    pub fn node_for_model(&self, model_id: &str) -> Option<&WorkflowNode> {
         self.nodes
             .iter()
             .filter(|node| {
@@ -533,11 +540,11 @@ impl WorkflowExecutionV1 {
             .iter()
             .filter(|node| engine_capabilities(node).contains(&engine_capability_id))
             .any(|node| match node.execution_policy {
-                WorkflowExecutionPolicyV1::Always => true,
-                WorkflowExecutionPolicyV1::Disabled => false,
-                WorkflowExecutionPolicyV1::MaximumOnly => profile == AnalysisProfile::Maximum,
-                WorkflowExecutionPolicyV1::OnDisagreement
-                | WorkflowExecutionPolicyV1::DisagreementWindows => {
+                WorkflowExecutionPolicy::Always => true,
+                WorkflowExecutionPolicy::Disabled => false,
+                WorkflowExecutionPolicy::MaximumOnly => profile == AnalysisProfile::Maximum,
+                WorkflowExecutionPolicy::OnDisagreement
+                | WorkflowExecutionPolicy::DisagreementWindows => {
                     profile != AnalysisProfile::Fast
                 }
             })
@@ -545,8 +552,8 @@ impl WorkflowExecutionV1 {
 
     fn validate_outputs(
         &self,
-        request: &AnalyzeRequestV1,
-        nodes: &BTreeMap<&str, &WorkflowNodeV1>,
+        request: &AnalyzeRequest,
+        nodes: &BTreeMap<&str, &WorkflowNode>,
     ) -> EngineResult<()> {
         for output in &self.terminal_outputs {
             let node = nodes.get(output.node.as_str()).ok_or_else(|| {
@@ -566,7 +573,7 @@ impl WorkflowExecutionV1 {
             } else {
                 output.audio_role.is_none()
             };
-            if node.execution_policy == WorkflowExecutionPolicyV1::Disabled
+            if node.execution_policy == WorkflowExecutionPolicy::Disabled
                 || output.semantic_type != contract.semantic
                 || !terminal_role_valid
                 || !known_semantic_type(&output.semantic_type)
@@ -589,7 +596,7 @@ impl WorkflowExecutionV1 {
             .nodes
             .iter()
             .filter(|node| {
-                node.execution_policy != WorkflowExecutionPolicyV1::Disabled
+                node.execution_policy != WorkflowExecutionPolicy::Disabled
                     || (force_lead_isolation
                         && engine_capabilities(node).contains(&"audio.lead_isolate"))
             })
@@ -658,14 +665,14 @@ impl WorkflowExecutionV1 {
     }
 }
 
-fn engine_model_for_capability<'a>(node: &'a WorkflowNodeV1, capability: &str) -> Option<&'a str> {
+fn engine_model_for_capability<'a>(node: &'a WorkflowNode, capability: &str) -> Option<&'a str> {
     if capability == "audio.extract_instrumental" {
         return node.provider_preferences.instrumental.as_deref();
     }
     node.provider_preferences.primary.as_deref()
 }
 
-pub fn engine_capabilities(node: &WorkflowNodeV1) -> Vec<&'static str> {
+pub fn engine_capabilities(node: &WorkflowNode) -> Vec<&'static str> {
     match (
         node.capability_id.as_str(),
         node.provider_preferences.primary.as_deref(),
@@ -723,9 +730,9 @@ pub fn engine_capabilities(node: &WorkflowNodeV1) -> Vec<&'static str> {
 }
 
 fn validate_execution_invocations<'a>(
-    node: &'a WorkflowNodeV1,
+    node: &'a WorkflowNode,
     invocation_ids: &mut BTreeSet<&'a str>,
-    request: &AnalyzeRequestV1,
+    request: &AnalyzeRequest,
 ) -> EngineResult<()> {
     let available = engine_capabilities(node);
     if node.execution_invocations.is_empty() {
@@ -825,14 +832,14 @@ fn validate_execution_invocations<'a>(
     Ok(())
 }
 
-fn validate_node(node: &WorkflowNodeV1, request: &AnalyzeRequestV1) -> EngineResult<()> {
+fn validate_node(node: &WorkflowNode, request: &AnalyzeRequest) -> EngineResult<()> {
     if engine_capabilities(node).is_empty()
-        && node.execution_policy != WorkflowExecutionPolicyV1::Disabled
+        && node.execution_policy != WorkflowExecutionPolicy::Disabled
     {
         return Err(EngineError::new(
             EngineErrorCode::MissingCapability,
             format!(
-                "workflow node {} has no compatible Engine v1 capability/model pair",
+                "workflow node {} has no compatible Engine capability/model pair",
                 node.instance_id
             ),
         )
@@ -882,7 +889,7 @@ const fn port(
 }
 
 fn port_contract(
-    node: &WorkflowNodeV1,
+    node: &WorkflowNode,
     port_id: &str,
     direction: PortDirection,
 ) -> Option<PortContract> {
@@ -984,41 +991,41 @@ fn port_contract(
 }
 
 fn producer_policy_covers_consumer(
-    producer: WorkflowExecutionPolicyV1,
-    consumer: WorkflowExecutionPolicyV1,
+    producer: WorkflowExecutionPolicy,
+    consumer: WorkflowExecutionPolicy,
 ) -> bool {
     match consumer {
-        WorkflowExecutionPolicyV1::Disabled => true,
-        WorkflowExecutionPolicyV1::Always => producer == WorkflowExecutionPolicyV1::Always,
-        WorkflowExecutionPolicyV1::OnDisagreement
-        | WorkflowExecutionPolicyV1::DisagreementWindows => matches!(
+        WorkflowExecutionPolicy::Disabled => true,
+        WorkflowExecutionPolicy::Always => producer == WorkflowExecutionPolicy::Always,
+        WorkflowExecutionPolicy::OnDisagreement
+        | WorkflowExecutionPolicy::DisagreementWindows => matches!(
             producer,
-            WorkflowExecutionPolicyV1::Always
-                | WorkflowExecutionPolicyV1::OnDisagreement
-                | WorkflowExecutionPolicyV1::DisagreementWindows
+            WorkflowExecutionPolicy::Always
+                | WorkflowExecutionPolicy::OnDisagreement
+                | WorkflowExecutionPolicy::DisagreementWindows
         ),
-        WorkflowExecutionPolicyV1::MaximumOnly => matches!(
+        WorkflowExecutionPolicy::MaximumOnly => matches!(
             producer,
-            WorkflowExecutionPolicyV1::Always | WorkflowExecutionPolicyV1::MaximumOnly
+            WorkflowExecutionPolicy::Always | WorkflowExecutionPolicy::MaximumOnly
         ),
     }
 }
 
 fn validate_required_inputs(
-    workflow: &WorkflowExecutionV1,
-    nodes: &BTreeMap<&str, &WorkflowNodeV1>,
-    request: &AnalyzeRequestV1,
+    workflow: &WorkflowExecution,
+    nodes: &BTreeMap<&str, &WorkflowNode>,
+    request: &AnalyzeRequest,
 ) -> EngineResult<()> {
     for node in nodes
         .values()
-        .filter(|node| node.execution_policy != WorkflowExecutionPolicyV1::Disabled)
+        .filter(|node| node.execution_policy != WorkflowExecutionPolicy::Disabled)
     {
         let input_ports = workflow
             .bindings
             .iter()
             .filter(|binding| binding.to_node == node.instance_id)
             .fold(
-                BTreeMap::<&str, Vec<&WorkflowBindingV1>>::new(),
+                BTreeMap::<&str, Vec<&WorkflowBinding>>::new(),
                 |mut map, binding| {
                     map.entry(binding.to_port.as_str())
                         .or_default()
@@ -1086,9 +1093,9 @@ fn validate_required_inputs(
 }
 
 fn validate_acyclic(
-    nodes: &BTreeMap<&str, &WorkflowNodeV1>,
+    nodes: &BTreeMap<&str, &WorkflowNode>,
     edges: &BTreeSet<(&str, &str)>,
-    request: &AnalyzeRequestV1,
+    request: &AnalyzeRequest,
 ) -> EngineResult<()> {
     let mut indegree = nodes
         .keys()
@@ -1258,7 +1265,7 @@ mod tests {
         })
     }
 
-    fn pitch_request() -> AnalyzeRequestV1 {
+    fn pitch_request() -> AnalyzeRequest {
         let mut request = valid_request(AudioRole::OriginalMix);
         request.requested_artifacts.vocal_chart = false;
         request.requested_artifacts.singing_analysis = false;
@@ -1274,22 +1281,22 @@ mod tests {
 
     #[test]
     fn independently_deserializes_and_validates_current_workflow_extension() {
-        let workflow = WorkflowExecutionV1::from_request(&pitch_request())
+        let workflow = WorkflowExecution::from_request(&pitch_request())
             .unwrap()
             .unwrap();
         assert_eq!(
             workflow.policy_for_engine_capability("pitch.track"),
-            Some(WorkflowExecutionPolicyV1::Always)
+            Some(WorkflowExecutionPolicy::Always)
         );
         assert_eq!(
             workflow.policy_for_engine_capability("audio.lead_isolate"),
-            Some(WorkflowExecutionPolicyV1::Always)
+            Some(WorkflowExecutionPolicy::Always)
         );
     }
 
     #[test]
     fn separation_is_one_typed_dual_output_invocation() {
-        let workflow = WorkflowExecutionV1::from_request(&pitch_request())
+        let workflow = WorkflowExecution::from_request(&pitch_request())
             .unwrap()
             .unwrap();
         let split = workflow
@@ -1317,7 +1324,7 @@ mod tests {
             serde_json::json!("bs_roformer_leap_xe90_instrumental");
         split["execution_invocations"][0]["provider_id"] =
             serde_json::json!("bs_roformer_leap_xe90_instrumental");
-        let workflow = WorkflowExecutionV1::from_request(&request)
+        let workflow = WorkflowExecution::from_request(&request)
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -1338,7 +1345,7 @@ mod tests {
             .get_mut(WORKFLOW_EXECUTION_EXTENSION_KEY)
             .unwrap()["nodes"][3]["provider_preferences"]["primary"] =
             serde_json::json!("retired-provider");
-        let error = WorkflowExecutionV1::from_request(&request).unwrap_err();
+        let error = WorkflowExecution::from_request(&request).unwrap_err();
         assert_eq!(error.code, EngineErrorCode::MissingCapability);
     }
 
@@ -1350,7 +1357,7 @@ mod tests {
             .get_mut(WORKFLOW_EXECUTION_EXTENSION_KEY)
             .unwrap()["workflow_schema_version"] = serde_json::json!(WORKFLOW_SCHEMA_VERSION - 1);
         assert_eq!(
-            WorkflowExecutionV1::from_request(&request)
+            WorkflowExecution::from_request(&request)
                 .unwrap_err()
                 .code,
             EngineErrorCode::UnsupportedContractVersion
@@ -1358,8 +1365,33 @@ mod tests {
     }
 
     #[test]
+    fn dual_separation_presentation_uses_the_split_invocation() {
+        let workflow = WorkflowExecution::from_request(&pitch_request())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            workflow
+                .presentation_node_for_engine_execution(
+                    "audio.extract_vocals",
+                    Some("bs_roformer_leap_xe90_vocals"),
+                )
+                .as_deref(),
+            Some("split")
+        );
+        assert_eq!(
+            workflow
+                .presentation_node_for_engine_execution(
+                    "audio.separate_vocal_bgm",
+                    Some("bs_roformer_leap_xe90_vocals"),
+                )
+                .as_deref(),
+            Some("split")
+        );
+    }
+
+    #[test]
     fn current_model_pairs_map_only_to_implemented_capabilities() {
-        let workflow = WorkflowExecutionV1::from_request(&pitch_request())
+        let workflow = WorkflowExecution::from_request(&pitch_request())
             .unwrap()
             .unwrap();
         assert_eq!(

@@ -38,14 +38,7 @@ fn queue_detail(task: &app_core::AnalysisTask) -> String {
                 )
             })
             .unwrap_or_else(|| "Waiting for an exact Engine request".to_string()),
-        (app_core::QueuedStatus::Analyzing(_), Some(live)) => {
-            let operation = if live.operation.trim().is_empty() {
-                live.stage.as_str()
-            } else {
-                live.operation.as_str()
-            };
-            format!("{} · {} · {}", operation, live.model, live.device)
-        }
+        (app_core::QueuedStatus::Analyzing(_), Some(live)) => running_queue_detail(live),
         (app_core::QueuedStatus::Analyzing(_), None) => {
             "Engine is processing this song".to_string()
         }
@@ -54,6 +47,38 @@ fn queue_detail(task: &app_core::AnalysisTask) -> String {
         }
         (app_core::QueuedStatus::Failed(error), _) => compact_queue_error(error),
         (_, None) => "Exact request is stored locally".to_string(),
+    }
+}
+
+fn running_queue_detail(live: &app_core::AnalysisProgressSnapshot) -> String {
+    let route = live
+        .node_id
+        .as_deref()
+        .and_then(|node_id| find_matching_route(&live.stage_routes, node_id));
+    let mut parts = Vec::new();
+    let model = live.model.trim();
+    if !model.is_empty() && model != "Engine native" {
+        parts.push(app_core::workflow_model_label(model).to_string());
+    }
+    if let Some((_, units)) = route.and_then(measured_work_unit_progress) {
+        parts.push(units);
+    } else {
+        let operation = compact_analysis_operation(if live.operation.trim().is_empty() {
+            live.stage.as_str()
+        } else {
+            live.operation.as_str()
+        });
+        if !operation.is_empty() {
+            parts.push(operation);
+        }
+    }
+    if let Some(elapsed) = node_elapsed_copy(route, unix_now_ms()) {
+        parts.push(elapsed);
+    }
+    if parts.is_empty() {
+        "Engine is processing this song".to_string()
+    } else {
+        parts.join(" · ")
     }
 }
 
@@ -303,4 +328,52 @@ pub(crate) fn spawn_analysis_queue_page(
                 spawn_queue_card(list, font.clone(), task, index, theme);
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::running_queue_detail;
+
+    fn live() -> app_core::AnalysisProgressSnapshot {
+        serde_json::from_value(serde_json::json!({
+            "stage": "audio.extract_vocals",
+            "overall_progress": 12,
+            "stage_progress": 0,
+            "operation": "[worker task studio-auto-1-vocal-instrumental] Running measured Rust-to-GGML work unit",
+            "detail": "audio.extract_vocals · bs_roformer_leap_xe90_vocals",
+            "implementation": "uta-ggml-worker",
+            "model": "bs_roformer_leap_xe90_vocals",
+            "device": "Engine-resolved; see Plan/Result provenance",
+            "requested_device": "Production policy",
+            "fallback_from": null,
+            "fallback_reason": null,
+            "backend_fallback_from": null,
+            "backend_fallback_reason": null,
+            "node_id": "vocal_bgm_split",
+            "stage_routes": [{
+                "stage": "audio.extract_vocals",
+                "node_id": "vocal_bgm_split",
+                "node_event": "node_progress",
+                "operation": "[worker task studio-auto-1-vocal-instrumental] Running measured Rust-to-GGML work unit",
+                "implementation": "uta-ggml-worker",
+                "model": "bs_roformer_leap_xe90_vocals",
+                "stage_progress": 0,
+                "requested_device": "gpu",
+                "actual_device": "gpu",
+                "work_units_completed": 3,
+                "work_units_total": 8,
+                "worker_task_id": "studio-auto-1-vocal-instrumental"
+            }]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn running_queue_detail_hides_the_worker_task_id_and_shows_work_units() {
+        let detail = running_queue_detail(&live());
+        assert!(detail.contains("BS-RoFormer Leap XE90 Vocals"));
+        assert!(detail.contains("3/8 work units"));
+        assert!(!detail.contains("studio-auto-1-vocal-instrumental"));
+        assert!(!detail.contains("Engine-resolved"));
+    }
 }

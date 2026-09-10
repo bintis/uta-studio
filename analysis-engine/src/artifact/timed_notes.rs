@@ -15,7 +15,7 @@ pub const TIMED_NOTE_EVIDENCE_VERSION: u32 = 1;
 /// scores are never compared across model families as global probabilities.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TimedNoteHypothesisV1 {
+pub struct TimedNoteHypothesis {
     pub source_id: String,
     pub range: TimeRange,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -34,17 +34,17 @@ pub struct TimedNoteHypothesisV1 {
 /// Raw worker contracts remain model-specific and must convert to this type.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TimedNoteExpertEvidenceV1 {
+pub struct TimedNoteExpertEvidence {
     pub contract: String,
     pub version: u32,
     pub expert_id: String,
     pub model_generation: String,
     pub backend: String,
-    pub notes: Vec<TimedNoteHypothesisV1>,
+    pub notes: Vec<TimedNoteHypothesis>,
     pub provenance: EvidenceProvenance,
 }
 
-impl TimedNoteExpertEvidenceV1 {
+impl TimedNoteExpertEvidence {
     pub fn validate(&self, source_start: u64, source_duration: u64) -> EngineResult<()> {
         let source_end = source_start
             .checked_add(source_duration)
@@ -164,15 +164,15 @@ fn invalid(message: impl Into<String>) -> EngineError {
 mod tests {
     use super::*;
 
-    fn evidence() -> TimedNoteExpertEvidenceV1 {
-        TimedNoteExpertEvidenceV1 {
+    fn evidence() -> TimedNoteExpertEvidence {
+        TimedNoteExpertEvidence {
             contract: TIMED_NOTE_EVIDENCE_CONTRACT.to_string(),
             version: TIMED_NOTE_EVIDENCE_VERSION,
             expert_id: "jbm555_cectc_80".to_string(),
             model_generation: "model-generation".to_string(),
             backend: "openvino_cpu".to_string(),
             notes: vec![
-                TimedNoteHypothesisV1 {
+                TimedNoteHypothesis {
                     source_id: "jbm555_cectc_80".to_string(),
                     range: TimeRange::new(100_000, 200_000).unwrap(),
                     midi: Some(69),
@@ -181,7 +181,7 @@ mod tests {
                     calibrated_boundary_confidence: None,
                     calibrated_pitch_confidence: None,
                 },
-                TimedNoteHypothesisV1 {
+                TimedNoteHypothesis {
                     source_id: "jbm555_cectc_80".to_string(),
                     range: TimeRange::new(200_000, 260_000).unwrap(),
                     midi: Some(69),
@@ -240,7 +240,7 @@ mod tests {
         let mut evidence = evidence();
         evidence.notes[0].calibrated_pitch_confidence = Some(0.9);
         assert!(evidence.validate(0, 1_000_000).is_err());
-        evidence.provenance.calibration_version = Some("calibration-v1".to_string());
+        evidence.provenance.calibration_version = Some("calibration".to_string());
         assert!(evidence.validate(0, 1_000_000).is_ok());
         evidence.notes[1].range.end = 1_000_001;
         assert!(evidence.validate(0, 1_000_000).is_err());

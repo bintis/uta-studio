@@ -80,7 +80,7 @@ fn structural_graph(definition: &WorkflowDefinition) -> AnalysisGraphSpec {
             outputs: Vec::new(),
             disable_policy: DisablePolicy::Optional,
             cache_policy: CachePolicy::Generalized,
-            algorithm_version: "workflow-validation-v1".to_string(),
+            algorithm_version: "workflow-validation".to_string(),
             compound_children: Vec::new(),
         })
         .collect();

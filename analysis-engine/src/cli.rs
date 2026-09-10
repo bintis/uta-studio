@@ -4,9 +4,7 @@ use serde::de::DeserializeOwned;
 use uta_runtime_manager::RuntimePolicy;
 
 use crate::AnalysisEngine;
-use crate::contract::{
-    AnalyzeRequestV1, EngineError, EngineErrorCode, EngineResult, ExportRequestV1,
-};
+use crate::contract::{AnalyzeRequest, EngineError, EngineErrorCode, EngineResult, ExportRequest};
 
 const MAX_REQUEST_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -45,7 +43,7 @@ fn run(arguments: Vec<String>) -> EngineResult<()> {
             print_json(&engine.capabilities(policy))
         }
         "validate" => {
-            let request: AnalyzeRequestV1 = read_option_json(&arguments, "--request")?;
+            let request: AnalyzeRequest = read_option_json(&arguments, "--request")?;
             engine.validate(&request)?;
             print_json(&serde_json::json!({
                 "type": "validation_result",
@@ -54,20 +52,20 @@ fn run(arguments: Vec<String>) -> EngineResult<()> {
             }))
         }
         "requirements" => {
-            let request: AnalyzeRequestV1 = read_option_json(&arguments, "--request")?;
+            let request: AnalyzeRequest = read_option_json(&arguments, "--request")?;
             print_json(&engine.requirements(&request)?)
         }
         "plan" => {
-            let request: AnalyzeRequestV1 = read_option_json(&arguments, "--request")?;
+            let request: AnalyzeRequest = read_option_json(&arguments, "--request")?;
             print_json(&engine.plan(&request)?)
         }
         "analyze" => {
-            let request: AnalyzeRequestV1 = read_option_json(&arguments, "--request")?;
+            let request: AnalyzeRequest = read_option_json(&arguments, "--request")?;
             let output = required_option(&arguments, "--output-dir")?;
             print_json(&engine.analyze(&request, PathBuf::from(output))?)
         }
         "export" => {
-            let request: ExportRequestV1 = read_option_json(&arguments, "--request")?;
+            let request: ExportRequest = read_option_json(&arguments, "--request")?;
             engine.export(&request)
         }
         "doctor" => print_json(&engine.runtime_manager().doctor()),
