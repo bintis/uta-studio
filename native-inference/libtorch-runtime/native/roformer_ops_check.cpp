@@ -106,8 +106,10 @@ void projection_gelu(const at::Device& device, int64_t rows, int64_t contraction
     auto reference = at::gelu(at::linear(input.to(at::kCPU).to(at::kDouble),
         weight.to(at::kCPU).to(at::kDouble), bias.to(at::kCPU).to(at::kDouble)), "none");
     std::cout << "projection_gelu_shape=" << rows << ',' << contraction << ',' << columns << " strided=" << strided << std::endl;
+    auto unfused = at::gelu(at::linear(input, weight, bias), "none");
+    compare(unfused, reference, "unfused-projection-gelu-double-oracle");
     compare(actual, reference, "projection-gelu-double-oracle");
-    compare(actual, at::gelu(at::linear(input, weight, bias), "none"), "projection-gelu-unfused");
+    compare(actual, unfused, "projection-gelu-unfused");
     if (actual.scalar_type() != at::kFloat || !at::equal(input, original)
         || !at::equal(weight, original_weight) || !at::equal(bias, original_bias))
         throw std::runtime_error("projection GELU output type or inputs changed");
