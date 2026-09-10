@@ -8,9 +8,20 @@ pub const DEFAULT_MAX_NEW_TOKENS: usize = 256;
 const MAX_ASR_SAMPLES: usize = 4 * 60 * 60 * super::frontend::SAMPLE_RATE;
 const WINDOW_OVERLAP_SAMPLES: usize = super::frontend::SAMPLE_RATE;
 
+/// Coarse audio ownership of a span in the reconciled transcript. Text offsets
+/// count non-whitespace Unicode characters, not bytes or tokenizer IDs. These
+/// are search windows for alignment, never word-level timestamp predictions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TranscriptSegment {
+    pub start_sample: usize,
+    pub end_sample: usize,
+    pub text_start: usize,
+    pub text_end: usize,
+}
 #[derive(Debug)]
 pub struct Transcription {
     pub text: String,
+    pub segments: Vec<TranscriptSegment>,
     /// Publisher language name; the Analysis Engine owns BCP-47 mapping.
     pub language_name: Option<String>,
     pub raw_text: String,
@@ -77,6 +88,8 @@ impl Qwen {
             });
         }
         let mut text = String::new();
+        let mut segments = Vec::new();
+        let mut previous_audio_end = None;
         let mut language_name: Option<String> = None;
         let mut raw_text = Vec::with_capacity(windows.len());
         let mut generated_tokens = Vec::new();
@@ -102,6 +115,7 @@ impl Qwen {
                 // dropped and counted. Failing the whole track here would make
                 // every real song untranscribable.
                 unfinished_windows += 1;
+                previous_audio_end = None;
                 encoder_seconds += window.encoder_seconds;
                 decoder_seconds += window.decoder_seconds;
                 continue;
@@ -109,7 +123,15 @@ impl Qwen {
             if let Some(detected) = window.language_name.as_deref() {
                 language_name.get_or_insert_with(|| detected.to_string());
             }
-            text = merge_transcript_text(&text, &window.text);
+            append_transcript_window(
+                &mut text,
+                &mut segments,
+                &window.text,
+                start,
+                end,
+                previous_audio_end.is_some_and(|previous| start < previous),
+            );
+            previous_audio_end = (!window.text.trim().is_empty()).then_some(end);
             raw_text.push(window.raw_text);
             generated_tokens.extend(window.generated_tokens);
             prompt_tokens = prompt_tokens
@@ -125,6 +147,7 @@ impl Qwen {
         }
         Ok(Transcription {
             text,
+            segments,
             language_name: forced_language.map(str::to_string).or(language_name),
             raw_text: raw_text.join("\n<window>\n"),
             generated_tokens,
@@ -181,6 +204,19 @@ impl Qwen {
         let raw_text = self.tokenizer.decode(&generated_tokens, true)?;
         let (detected_language, text) = parse_answer(&raw_text);
         Ok(Transcription {
+            segments: if finished && !text.trim().is_empty() {
+                vec![TranscriptSegment {
+                    start_sample: 0,
+                    end_sample: samples.len(),
+                    text_start: 0,
+                    text_end: text
+                        .chars()
+                        .filter(|character| !character.is_whitespace())
+                        .count(),
+                }]
+            } else {
+                Vec::new()
+            },
             text,
             language_name: forced_language.map(str::to_string).or(detected_language),
             raw_text,
@@ -271,6 +307,44 @@ fn sample_windows(
     Ok(windows)
 }
 
+fn append_transcript_window(
+    text: &mut String,
+    segments: &mut Vec<TranscriptSegment>,
+    window_text: &str,
+    start_sample: usize,
+    end_sample: usize,
+    audio_overlaps: bool,
+) {
+    let window_text = window_text.trim();
+    if window_text.is_empty() {
+        return;
+    }
+    let text_start = text
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .count();
+    let merged = if audio_overlaps {
+        merge_transcript_text(text, window_text)
+    } else if text.is_empty() {
+        window_text.to_string()
+    } else {
+        // Repeated choruses separated by silence are not duplicate ASR windows.
+        format!("{text} {window_text}")
+    };
+    let text_end = merged
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .count();
+    if text_end > text_start {
+        segments.push(TranscriptSegment {
+            start_sample,
+            end_sample,
+            text_start,
+            text_end,
+        });
+    }
+    *text = merged;
+}
 fn merge_transcript_text(left: &str, right: &str) -> String {
     let left = left.trim();
     let right = right.trim();
@@ -336,6 +410,35 @@ mod tests {
     use super::*;
     use crate::{DeviceKind, GgmlRuntime};
     use std::path::PathBuf;
+
+    #[test]
+    fn audio_anchors_follow_reconciled_unicode_text_and_keep_silent_gaps() {
+        let mut text = String::new();
+        let mut segments = Vec::new();
+        append_transcript_window(&mut text, &mut segments, "君を愛する", 100, 900, false);
+        append_transcript_window(&mut text, &mut segments, "愛する歌", 800, 1600, true);
+        append_transcript_window(&mut text, &mut segments, "君を愛する", 3000, 3800, false);
+        assert_eq!(text, "君を愛する歌 君を愛する");
+        assert_eq!(
+            segments
+                .iter()
+                .map(|segment| (segment.text_start, segment.text_end))
+                .collect::<Vec<_>>(),
+            [(0, 5), (5, 6), (6, 11)]
+        );
+        assert_eq!(segments[2].start_sample, 3000);
+    }
+
+    #[test]
+    fn identical_nonoverlapping_phrases_are_not_deduplicated() {
+        let mut text = String::new();
+        let mut segments = Vec::new();
+        append_transcript_window(&mut text, &mut segments, "sing again", 0, 800, false);
+        append_transcript_window(&mut text, &mut segments, "sing again", 1600, 2400, false);
+        assert_eq!(text, "sing again sing again");
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[1].text_start, 9);
+    }
 
     fn path(name: &str) -> PathBuf {
         std::env::var_os(name)

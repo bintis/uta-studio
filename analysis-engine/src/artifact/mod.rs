@@ -40,6 +40,7 @@ pub use timed_notes::{
     TimedNoteHypothesis,
 };
 pub use transcript::{
-    TranscriptArtifact, TranscriptAuthority, TranscriptToken, parse_transcript_artifact,
+    TranscriptArtifact, TranscriptAudioSegment, TranscriptAuthority, TranscriptToken,
+    parse_transcript_artifact,
 };
 pub use vocal_chart::{CandidateVocalChart, finalize_candidate_vocal_chart};

@@ -32,9 +32,16 @@ pub struct AlignmentItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub confidence: Option<f32>,
     pub authority: BoundaryAuthority,
+    /// Unresolved items keep their text and audition scope. Their start/duration
+    /// MUST NOT be interpreted as measured word boundaries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing_issue: Option<String>,
 }
 
 impl AlignmentArtifact {
+    pub fn measured_items(&self) -> impl Iterator<Item = &AlignmentItem> {
+        self.items.iter().filter(|item| item.timing_issue.is_none())
+    }
     pub fn validate(&self, source_start: u64, source_duration: u64) -> EngineResult<()> {
         let source_end = source_start
             .checked_add(source_duration)
@@ -63,7 +70,11 @@ impl AlignmentArtifact {
                 || item.level != BoundaryLevel::Word
                 || item.authority != BoundaryAuthority::Soft
                 || item.duration == 0
-                || item.start < previous_end
+                || (item.timing_issue.is_none() && item.start < previous_end)
+                || item
+                    .timing_issue
+                    .as_ref()
+                    .is_some_and(|issue| issue.trim().is_empty())
                 || item.start < source_start
                 || end > source_end
                 || item
@@ -72,7 +83,9 @@ impl AlignmentArtifact {
             {
                 return Err(invalid("alignment item is invalid"));
             }
-            previous_end = end;
+            if item.timing_issue.is_none() {
+                previous_end = end;
+            }
         }
         Ok(())
     }

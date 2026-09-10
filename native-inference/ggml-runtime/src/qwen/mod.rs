@@ -1,4 +1,5 @@
 pub mod aligner;
+mod alignment_windows;
 pub mod asr;
 pub mod decoder;
 pub mod encoder;

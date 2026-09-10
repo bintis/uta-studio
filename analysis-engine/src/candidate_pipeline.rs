@@ -285,6 +285,7 @@ pub fn fuse_transcript_stage(
             authority: TranscriptAuthority::Generated,
             language: canonical.language.clone(),
             text: canonical.text.clone(),
+            audio_segments: representative.audio_segments.clone(),
             tokens: canonical
                 .tokens
                 .iter()
@@ -321,6 +322,8 @@ pub fn fuse_transcript_stage(
             // sequence reconciliation. Do not leave tokens claiming identity
             // that belonged to the pre-reconciled text.
             artifact.tokens.clear();
+            // These scopes index the generated text, not a replacement lyric.
+            artifact.audio_segments.clear();
             canonical.tokens.clear();
             if !artifact
                 .source_experts
@@ -382,6 +385,16 @@ pub fn fuse_alignment_stage(
                 "alignment evidence does not correspond to the canonical transcript",
             ));
         }
+        let all_text = artifact
+            .items
+            .iter()
+            .map(|item| item.text.as_str())
+            .collect::<String>();
+        if compact_normalized(&all_text) != compact_normalized(&transcript.text) {
+            return Err(output_error(
+                "alignment units lost canonical transcript text",
+            ));
+        }
         for item in &artifact.items {
             let end = item
                 .start
@@ -395,6 +408,11 @@ pub fn fuse_alignment_stage(
                 return Err(output_error(
                     "alignment boundary is outside the source timeline",
                 ));
+            }
+            // An unresolved item's range is an audition/search scope. Using
+            // it as a word boundary would cut or suppress unrelated notes.
+            if item.timing_issue.is_some() {
+                continue;
             }
             projected.push(WordBoundaryEvidence {
                 word_id: item.id.clone(),
@@ -410,37 +428,60 @@ pub fn fuse_alignment_stage(
             });
         }
     }
-    let words = fuse_word_boundaries(&projected).map_err(output_error)?;
-    let aligned_text = words
+    let words = if projected.is_empty() {
+        Vec::new()
+    } else {
+        fuse_word_boundaries(&projected).map_err(output_error)?
+    };
+    let representative = &evidence[0];
+    let by_id = words
         .iter()
-        .map(|word| word.text.as_str())
-        .collect::<String>();
-    if compact_normalized(&aligned_text) != compact_normalized(&transcript.text) {
+        .map(|word| (word.word_id.as_str(), word))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let items = representative
+        .items
+        .iter()
+        .map(|item| {
+            if let Some(word) = by_id.get(item.id.as_str()) {
+                Ok(AlignmentItem {
+                    id: word.word_id.clone(),
+                    text: word.text.clone(),
+                    level: BoundaryLevel::Word,
+                    start: word.range.start,
+                    duration: word.range.end - word.range.start,
+                    confidence: word.confidence,
+                    authority: BoundaryAuthority::Soft,
+                    timing_issue: None,
+                })
+            } else if item.timing_issue.is_some() {
+                Ok(item.clone())
+            } else {
+                Err(output_error(
+                    "alignment fusion lost a measured word identity",
+                ))
+            }
+        })
+        .collect::<EngineResult<Vec<_>>>()?;
+    if items
+        .iter()
+        .filter(|item| item.timing_issue.is_none())
+        .count()
+        != words.len()
+    {
         return Err(output_error(
-            "canonical alignment words do not correspond to the canonical transcript",
+            "alignment fusion introduced unrelated word identities",
         ));
     }
-    let representative = &evidence[0];
     let artifact = AlignmentArtifact {
         contract: representative.contract.clone(),
         version: representative.version,
         transcript: transcript.text.clone(),
         language: transcript.language.clone(),
-        items: words
-            .iter()
-            .map(|word| AlignmentItem {
-                id: word.word_id.clone(),
-                text: word.text.clone(),
-                level: BoundaryLevel::Word,
-                start: word.range.start,
-                duration: word.range.end - word.range.start,
-                confidence: word.confidence,
-                authority: BoundaryAuthority::Soft,
-            })
-            .collect(),
+        items,
         source_expert: words
             .iter()
             .flat_map(|word| word.source_experts.iter().cloned())
+            .chain(std::iter::once(representative.source_expert.clone()))
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>()

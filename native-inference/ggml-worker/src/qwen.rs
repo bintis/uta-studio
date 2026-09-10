@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use uta_ggml_runtime::qwen::aligner::Alignment;
+use uta_ggml_runtime::qwen::aligner::{Alignment, AlignmentWindowTrace, AudioScope};
 use uta_ggml_runtime::{DeviceDescriptor, GgmlRuntime};
 
 const MODEL_ID: &str = "qwen3_forced_aligner_0_6b";
@@ -23,6 +23,15 @@ struct Request {
 struct WordConfig {
     id: String,
     text: String,
+    #[serde(default)]
+    audio_range: Option<AudioRange>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AudioRange {
+    start: u64,
+    end: u64,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -50,6 +59,8 @@ struct Item {
     duration: u64,
     confidence: Option<f32>,
     authority: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    timing_issue: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -58,6 +69,7 @@ struct Diagnostics {
     raw_classes: Vec<u32>,
     raw_timestamp_ms: Vec<u64>,
     corrected_timestamp_ms: Vec<u64>,
+    windows: Vec<AlignmentWindowTrace>,
     prompt_tokens: usize,
     encoder_seconds: f64,
     decoder_seconds: f64,
@@ -91,7 +103,8 @@ pub fn infer(
         .iter()
         .map(|word| word.text.clone())
         .collect::<Vec<_>>();
-    let aligned = qwen.align_wav(wav, &texts, &mut progress)?;
+    let scopes = alignment_scopes(&request)?;
+    let aligned = qwen.align_wav(wav, &texts, &scopes, &mut progress)?;
     let (retained, reused) = qwen.audio_residency_bytes();
     if retained > 0 {
         crate::audio_cache::diagnostic(&format!(
@@ -154,6 +167,37 @@ fn validate_request(request: &Request) -> Result<(), String> {
     Ok(())
 }
 
+fn alignment_scopes(request: &Request) -> Result<Vec<Option<AudioScope>>, String> {
+    request
+        .words
+        .iter()
+        .map(|word| {
+            word.audio_range
+                .as_ref()
+                .map(|range| {
+                    if range.start < request.source_start_micros || range.end <= range.start {
+                        return Err(
+                            "Qwen alignment anchor is outside the source timeline".to_string()
+                        );
+                    }
+                    let to_sample = |time: u64| {
+                        usize::try_from(
+                            (time - request.source_start_micros) as u128
+                                * uta_ggml_runtime::qwen::frontend::SAMPLE_RATE as u128
+                                / 1_000_000,
+                        )
+                        .map_err(|_| "Qwen alignment sample offset overflows".to_string())
+                    };
+                    Ok(AudioScope {
+                        start_sample: to_sample(range.start)?,
+                        end_sample: to_sample(range.end)?,
+                    })
+                })
+                .transpose()
+        })
+        .collect()
+}
+
 fn evidence(
     request: Request,
     aligned: Alignment,
@@ -179,6 +223,7 @@ fn evidence(
             duration: end.saturating_sub(start),
             confidence: None,
             authority: "soft".to_string(),
+            timing_issue: aligned.timing_issue.clone(),
         });
     }
     Ok(Evidence {
@@ -200,6 +245,7 @@ fn evidence(
             raw_classes: aligned.raw_classes,
             raw_timestamp_ms: aligned.raw_timestamp_ms,
             corrected_timestamp_ms: aligned.corrected_timestamp_ms,
+            windows: aligned.windows,
             prompt_tokens: aligned.prompt_tokens,
             encoder_seconds: aligned.encoder_seconds,
             decoder_seconds: aligned.decoder_seconds,
@@ -225,6 +271,11 @@ fn validate_evidence(evidence: &Evidence) -> Result<(), String> {
                 || item.text.is_empty()
                 || item.level != "word"
                 || item.authority != "soft"
+                || item.duration == 0
+                || item
+                    .timing_issue
+                    .as_ref()
+                    .is_some_and(|issue| issue.is_empty())
                 || item.start.checked_add(item.duration).is_none()
         })
         || evidence.diagnostics.raw_classes.len() != evidence.items.len() * 2
@@ -263,20 +314,34 @@ mod tests {
             words: vec![WordConfig {
                 id: "word-1".to_string(),
                 text: "All".to_string(),
+                audio_range: Some(AudioRange {
+                    start: 500_000,
+                    end: 1_500_000,
+                }),
             }],
             language: Some("en".to_string()),
             source_start_micros: 500_000,
             model_content_digest: "model-provenance".to_string(),
         };
+        let scopes = alignment_scopes(&request).unwrap();
+        assert_eq!(
+            scopes[0],
+            Some(AudioScope {
+                start_sample: 0,
+                end_sample: 16_000
+            })
+        );
         let aligned = Alignment {
             words: vec![uta_ggml_runtime::qwen::aligner::AlignedWord {
                 text: "All".to_string(),
                 start_seconds: 0.08,
                 end_seconds: 0.24,
+                timing_issue: None,
             }],
             raw_classes: vec![1, 3],
             raw_timestamp_ms: vec![80, 240],
             corrected_timestamp_ms: vec![80, 240],
+            windows: Vec::new(),
             prompt_tokens: 4,
             encoder_seconds: 1.0,
             decoder_seconds: 2.0,

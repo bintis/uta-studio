@@ -728,6 +728,7 @@ impl AnalysisEngine {
             let (component, mut config) = model_dispatch(model, request, "transcript_evidence")?;
             config["model_content_digest"] = serde_json::json!(model.model_content_digest);
             config["language"] = serde_json::json!(request.lyrics.language);
+            config["source_start_micros"] = serde_json::json!(source_start);
             let outputs = run_native_task(
                 model,
                 component,
@@ -871,6 +872,10 @@ impl AnalysisEngine {
         }
 
         let alignment_evidence: Option<AlignmentArtifact> = if needs_alignment {
+            let audio_segments = transcript
+                .as_ref()
+                .map(|artifact| artifact.audio_segments.as_slice())
+                .unwrap_or_default();
             let transcript = canonical_lyrics.as_ref().ok_or_else(|| {
                 EngineError::new(
                     EngineErrorCode::MissingRequiredInput,
@@ -888,7 +893,8 @@ impl AnalysisEngine {
             let model = resolved_model(&resolved, "qwen3_forced_aligner_0_6b")?;
             let directory = create_task_dir(&output_root, "worker/qwen-aligner")?;
             let (component, mut config) = model_dispatch(model, request, "alignment_evidence")?;
-            config["words"] = serde_json::Value::Array(qwen_alignment_words(transcript)?);
+            config["words"] =
+                serde_json::Value::Array(qwen_alignment_words(transcript, audio_segments)?);
             config["language"] = serde_json::json!(transcript.language);
             config["source_start_micros"] = serde_json::json!(source_start);
             config["model_content_digest"] = serde_json::json!(model.model_content_digest);
@@ -913,6 +919,19 @@ impl AnalysisEngine {
                     "Qwen forced-alignment output has the wrong expert identity",
                 )
                 .with_capability("speech.align"));
+            }
+            let unresolved = artifact
+                .items
+                .iter()
+                .filter(|item| item.timing_issue.is_some())
+                .count();
+            if unresolved > 0 {
+                let reason = format!("alignment_unresolved_words:{unresolved}");
+                emit_warning(format!(
+                    "{unresolved} lyric units have unresolved timing; their audio scopes are retained for review, not used as note boundaries"
+                ));
+                emit_degraded(reason.clone());
+                degraded_reasons.push(reason);
             }
             Some(artifact)
         } else {
@@ -1279,7 +1298,14 @@ impl AnalysisEngine {
             .collect::<Vec<_>>();
         let mut advanced_note_evidence = Vec::<AdvancedNoteEvidence>::new();
         let mut technique_evidence = Vec::<TechniqueEvidence>::new();
+        if timed_transcript.is_empty() && (run_stars_notes || run_stars_technique || run_rosvot) {
+            let reason = "conditioned_note_experts_skipped:no_measured_word_timing".to_string();
+            emit_warning("Conditioned note experts have no measured word timing; preserving independent melody evidence for review".to_string());
+            emit_degraded(reason.clone());
+            degraded_reasons.push(reason);
+        }
         if (run_stars_notes || run_stars_technique)
+            && !timed_transcript.is_empty()
             && stars_g2p_language_applicable(request.lyrics.language.as_deref())
         {
             let capability = if run_stars_notes {
@@ -1360,7 +1386,7 @@ impl AnalysisEngine {
                 advanced_note_evidence.push(evidence);
             }
         }
-        if run_rosvot {
+        if run_rosvot && !timed_transcript.is_empty() {
             let (input, _) = workflow_bound_audio(
                 plan.workflow_execution.as_ref(),
                 "notes.rosvot",

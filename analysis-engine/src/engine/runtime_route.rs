@@ -36,6 +36,7 @@ pub(super) fn caller_transcript(request: &AnalyzeRequest) -> EngineResult<Transc
         authority: TranscriptAuthority::CallerCanonical,
         language: request.lyrics.language.clone(),
         text,
+        audio_segments: Vec::new(),
         tokens: request
             .lyrics
             .tokens
@@ -59,6 +60,7 @@ pub(super) fn caller_transcript(request: &AnalyzeRequest) -> EngineResult<Transc
 
 pub(super) fn qwen_alignment_words(
     transcript: &CanonicalLyrics,
+    segments: &[crate::artifact::TranscriptAudioSegment],
 ) -> EngineResult<Vec<serde_json::Value>> {
     let units = if !transcript.tokens.is_empty() {
         transcript
@@ -72,6 +74,7 @@ pub(super) fn qwen_alignment_words(
                         .clone()
                         .unwrap_or_else(|| format!("aligned-word-{index}")),
                     token.text.clone(),
+                    token.range,
                 )
             })
             .collect::<Vec<_>>()
@@ -85,37 +88,95 @@ pub(super) fn qwen_alignment_words(
             .unwrap_or("und")
             .to_ascii_lowercase();
         let character_units = matches!(language.as_str(), "zh" | "yue" | "ja" | "ko");
-        let texts = if character_units {
-            transcript
-                .text
-                .chars()
-                .filter(|character| !character.is_whitespace())
-                .map(|character| character.to_string())
-                .collect::<Vec<_>>()
-        } else {
-            transcript
-                .text
-                .split_whitespace()
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        };
-        texts
+        alignment_text_units(&transcript.text, character_units)
             .into_iter()
             .enumerate()
-            .map(|(index, text)| (format!("aligned-word-{index}"), text))
+            .map(|(index, text)| (format!("aligned-word-{index}"), text, None))
             .collect()
     };
-    if units.is_empty() || units.iter().any(|(_, text)| text.trim().is_empty()) {
+    if units.is_empty() || units.iter().any(|(_, text, _)| text.trim().is_empty()) {
         return Err(EngineError::new(
             EngineErrorCode::MissingRequiredInput,
             "Qwen forced alignment requires non-empty canonical transcript units",
         )
         .with_capability("speech.align"));
     }
+    let mut character_offset = 0;
     Ok(units
         .into_iter()
-        .map(|(id, text)| serde_json::json!({"id": id, "text": text}))
+        .map(|(id, text, caller_range)| {
+            let characters = text
+                .chars()
+                .filter(|character| !character.is_whitespace())
+                .collect::<Vec<_>>();
+            let lexical_offset = characters
+                .iter()
+                .position(|character| character.is_alphanumeric())
+                .unwrap_or(0);
+            let position = character_offset + lexical_offset;
+            let anchor = segments
+                .iter()
+                .find(|segment| (segment.text_start..segment.text_end).contains(&position));
+            character_offset += characters.len();
+            let range = caller_range.or_else(|| {
+                anchor.map(|segment| crate::fusion::TimeRange {
+                    start: segment.start,
+                    end: segment.start + segment.duration,
+                })
+            });
+            serde_json::json!({"id": id, "text": text, "audio_range": range})
+        })
         .collect())
+}
+
+fn alignment_text_units(text: &str, character_units: bool) -> Vec<String> {
+    let raw = if character_units {
+        text.chars()
+            .filter(|character| !character.is_whitespace())
+            .map(|character| character.to_string())
+            .collect::<Vec<_>>()
+    } else {
+        text.split_whitespace().map(str::to_string).collect()
+    };
+    let mut units: Vec<String> = Vec::new();
+    let mut prefix = String::new();
+    for unit in raw {
+        // Punctuation is text, not a separate sung onset. Attach it to the
+        // adjacent lexical unit so it cannot manufacture a zero-time word.
+        let modifier = character_units
+            && unit.chars().all(|character| {
+                matches!(
+                    character,
+                    'ゃ' | 'ゅ'
+                        | 'ょ'
+                        | 'ぁ'
+                        | 'ぃ'
+                        | 'ぅ'
+                        | 'ぇ'
+                        | 'ぉ'
+                        | 'ャ'
+                        | 'ュ'
+                        | 'ョ'
+                        | 'ァ'
+                        | 'ィ'
+                        | 'ゥ'
+                        | 'ェ'
+                        | 'ォ'
+                )
+            });
+        if (modifier || !unit.chars().any(char::is_alphanumeric)) && !units.is_empty() {
+            units.last_mut().expect("nonempty units").push_str(&unit);
+        } else if !unit.chars().any(char::is_alphanumeric) {
+            prefix.push_str(&unit);
+        } else {
+            prefix.push_str(&unit);
+            units.push(std::mem::take(&mut prefix));
+        }
+    }
+    if !prefix.is_empty() {
+        units.push(prefix);
+    }
+    units
 }
 
 pub(super) fn firered_language_applicable(
@@ -439,14 +500,51 @@ mod tests {
             source_experts: vec!["caller".to_string()],
             alternatives: Vec::new(),
         };
-        assert_eq!(qwen_alignment_words(&caller).unwrap()[0]["id"], "line-1");
+        assert_eq!(
+            qwen_alignment_words(&caller, &[]).unwrap()[0]["id"],
+            "line-1"
+        );
 
         let mut generated = caller;
         generated.text = "风吹沙".to_string();
         generated.language = Some("zh".to_string());
         generated.tokens.clear();
-        let units = qwen_alignment_words(&generated).unwrap();
+        let units = qwen_alignment_words(&generated, &[]).unwrap();
         assert_eq!(units.len(), 3);
         assert_eq!(units[2]["text"], "沙");
+    }
+
+    #[test]
+    fn alignment_audio_scopes_keep_intro_gaps_and_punctuation_out_of_note_boundaries() {
+        let transcript = CanonicalLyrics {
+            text: "「きゃ！」君。".to_string(),
+            language: Some("ja".to_string()),
+            authority: crate::fusion::LyricsAuthority::Generated,
+            tokens: Vec::new(),
+            confidence: None,
+            source_experts: vec!["qwen3_asr_1_7b".to_string()],
+            alternatives: Vec::new(),
+        };
+        let segments = [
+            crate::artifact::TranscriptAudioSegment {
+                start: 20_000_000,
+                duration: 8_000_000,
+                text_start: 0,
+                text_end: 5,
+            },
+            crate::artifact::TranscriptAudioSegment {
+                start: 60_000_000,
+                duration: 8_000_000,
+                text_start: 5,
+                text_end: 7,
+            },
+        ];
+        let units = qwen_alignment_words(&transcript, &segments).unwrap();
+        assert_eq!(units.len(), 2);
+        assert_eq!(units[0]["text"], "「きゃ！」");
+        assert_eq!(units[1]["text"], "君。");
+        assert_eq!(units[0]["audio_range"]["start"], 20_000_000);
+        assert_eq!(units[1]["audio_range"]["start"], 60_000_000);
+        assert!(qwen_alignment_words(&transcript, &[]).unwrap()[0]["audio_range"].is_null());
     }
 }

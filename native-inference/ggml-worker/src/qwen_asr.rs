@@ -13,6 +13,8 @@ struct Request {
     model_content_digest: String,
     #[serde(default)]
     language: Option<String>,
+    #[serde(default)]
+    source_start_micros: u64,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -24,6 +26,7 @@ struct Evidence {
     language: Option<String>,
     text: String,
     tokens: Vec<TranscriptToken>,
+    audio_segments: Vec<TranscriptAudioSegment>,
     confidence: Option<f32>,
     source_experts: Vec<String>,
     alternatives: Vec<String>,
@@ -39,6 +42,17 @@ struct TranscriptToken {
     id: String,
     text: String,
     confidence: Option<f32>,
+}
+
+/// Absolute audio scopes for spans of the reconciled transcript. Character
+/// offsets exclude whitespace; no word-level timing or confidence is implied.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct TranscriptAudioSegment {
+    start: u64,
+    duration: u64,
+    text_start: usize,
+    text_end: usize,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -148,6 +162,24 @@ fn evidence(
         authority: "generated".to_string(),
         language,
         text: transcription.text,
+        audio_segments: transcription
+            .segments
+            .iter()
+            .map(|segment| {
+                let start = sample_micros(segment.start_sample)?
+                    .checked_add(request.source_start_micros)
+                    .ok_or("Qwen ASR anchor start overflows")?;
+                let end = sample_micros(segment.end_sample)?
+                    .checked_add(request.source_start_micros)
+                    .ok_or("Qwen ASR anchor end overflows")?;
+                Ok(TranscriptAudioSegment {
+                    start,
+                    duration: end.saturating_sub(start),
+                    text_start: segment.text_start,
+                    text_end: segment.text_end,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?,
         tokens: Vec::new(),
         confidence: None,
         source_experts: vec![MODEL_ID.to_string()],
@@ -169,6 +201,12 @@ fn evidence(
     Ok(evidence)
 }
 
+fn sample_micros(samples: usize) -> Result<u64, String> {
+    u64::try_from(
+        samples as u128 * 1_000_000 / uta_ggml_runtime::qwen::frontend::SAMPLE_RATE as u128,
+    )
+    .map_err(|_| "Qwen ASR anchor time overflows".to_string())
+}
 fn validate_evidence(evidence: &Evidence) -> Result<(), String> {
     if evidence.contract != "uta.analysis-engine.transcript"
         || evidence.version != 1
@@ -193,6 +231,26 @@ fn validate_evidence(evidence: &Evidence) -> Result<(), String> {
         || evidence.diagnostics.decoder_seconds < 0.0
     {
         return Err("raw Qwen transcript evidence is structurally invalid".to_string());
+    }
+    let characters = evidence
+        .text
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .count();
+    let mut text_end = 0;
+    for segment in &evidence.audio_segments {
+        if segment.duration == 0
+            || segment.start.checked_add(segment.duration).is_none()
+            || segment.text_start != text_end
+            || segment.text_end <= text_end
+            || segment.text_end > characters
+        {
+            return Err("Qwen ASR audio/text anchor is invalid".to_string());
+        }
+        text_end = segment.text_end;
+    }
+    if text_end != characters {
+        return Err("Qwen ASR audio anchors do not cover the reconciled text".to_string());
     }
     Ok(())
 }
@@ -293,6 +351,12 @@ mod tests {
     fn transcription() -> Transcription {
         Transcription {
             text: "All he just is for us.".to_string(),
+            segments: vec![uta_ggml_runtime::qwen::asr::TranscriptSegment {
+                start_sample: 0,
+                end_sample: 32_000,
+                text_start: 0,
+                text_end: 17,
+            }],
             language_name: Some("English".to_string()),
             raw_text: "language English<asr_text>All he just is for us.".to_string(),
             generated_tokens: vec![11_528, 6_364, 151_645],
@@ -310,6 +374,7 @@ mod tests {
             Request {
                 model_content_digest: "model-provenance".to_string(),
                 language: None,
+                source_start_micros: 500_000,
             },
             transcription(),
             "runtime-provenance",
@@ -351,6 +416,7 @@ mod tests {
             Request {
                 model_content_digest: "model-provenance".to_string(),
                 language: None,
+                source_start_micros: 500_000,
             },
             transcription(),
             "runtime-provenance",

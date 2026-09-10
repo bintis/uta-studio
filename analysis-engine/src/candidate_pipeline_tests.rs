@@ -31,6 +31,7 @@ fn transcript(authority: TranscriptAuthority) -> TranscriptArtifact {
         authority,
         language: Some("en".to_string()),
         text: "sing now".to_string(),
+        audio_segments: Vec::new(),
         tokens: if caller {
             vec![
                 TranscriptToken {
@@ -75,6 +76,7 @@ fn alignment() -> AlignmentArtifact {
                 duration: 300_000,
                 confidence: None,
                 authority: BoundaryAuthority::Soft,
+                timing_issue: None,
             },
             AlignmentItem {
                 id: "word-1".to_string(),
@@ -84,12 +86,55 @@ fn alignment() -> AlignmentArtifact {
                 duration: 400_000,
                 confidence: None,
                 authority: BoundaryAuthority::Soft,
+                timing_issue: None,
             },
         ],
         source_expert: "reference_alignment".to_string(),
         model_sha256: "c".repeat(64),
         runtime_manifest_sha256: "d".repeat(64),
         backend: "vulkan".to_string(),
+    }
+}
+
+#[test]
+fn unresolved_alignment_scopes_preserve_text_but_never_become_word_cuts() {
+    let (_, canonical) =
+        fuse_transcript_stage(&[transcript(TranscriptAuthority::Generated)], None).unwrap();
+    let mut evidence = alignment();
+    evidence.items[0].start = 0;
+    evidence.items[0].duration = 1_000_000;
+    evidence.items[0].timing_issue = Some("collapsed_timestamp".to_string());
+    let (artifact, words) =
+        fuse_alignment_stage(&canonical, &[evidence.clone()], 0, 1_000_000).unwrap();
+    assert_eq!(words.len(), 1);
+    assert_eq!(words[0].text, "now");
+    assert_eq!(artifact.items.len(), 2);
+    assert_eq!(artifact.items[0].text, "sing");
+    assert_eq!(
+        artifact.items[0].timing_issue,
+        evidence.items[0].timing_issue
+    );
+    assert_eq!(artifact.measured_items().count(), 1);
+    evidence.items[1].timing_issue = Some("no_acoustic_anchor".to_string());
+    let (artifact, words) = fuse_alignment_stage(&canonical, &[evidence], 0, 1_000_000).unwrap();
+    assert!(words.is_empty());
+    assert_eq!(artifact.items.len(), 2);
+}
+
+#[test]
+fn selected_transcript_keeps_audio_anchors_but_reference_replacement_drops_stale_offsets() {
+    let mut evidence = transcript(TranscriptAuthority::Generated);
+    evidence.audio_segments = vec![crate::artifact::TranscriptAudioSegment {
+        start: 20_000_000,
+        duration: 8_000_000,
+        text_start: 0,
+        text_end: 7,
+    }];
+    let (fused, _) = fuse_transcript_stage(&[evidence.clone()], None).unwrap();
+    assert_eq!(fused.audio_segments, evidence.audio_segments);
+    let (replaced, _) = fuse_transcript_stage(&[evidence], Some("sing soon")).unwrap();
+    if replaced.text == "sing soon" {
+        assert!(replaced.audio_segments.is_empty());
     }
 }
 

@@ -25,6 +25,10 @@ pub struct TranscriptArtifact {
     pub text: String,
     #[serde(default)]
     pub tokens: Vec<TranscriptToken>,
+    /// Coarse ASR audio scopes, indexed in non-whitespace transcript characters.
+    /// They locate local alignment requests; they are not word boundaries.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub audio_segments: Vec<TranscriptAudioSegment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<f32>,
     pub source_experts: Vec<String>,
@@ -43,6 +47,14 @@ pub struct TranscriptToken {
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<f32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TranscriptAudioSegment {
+    pub start: u64,
+    pub duration: u64,
+    pub text_start: usize,
+    pub text_end: usize,
 }
 
 impl TranscriptArtifact {
@@ -86,6 +98,26 @@ impl TranscriptArtifact {
                     return Err(invalid("generated transcript provenance is incomplete"));
                 }
             }
+        }
+        let characters = self
+            .text
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .count();
+        let mut text_end = 0;
+        for segment in &self.audio_segments {
+            if segment.duration == 0
+                || segment.start.checked_add(segment.duration).is_none()
+                || segment.text_start != text_end
+                || segment.text_end <= text_end
+                || segment.text_end > characters
+            {
+                return Err(invalid("transcript audio/text anchor is invalid"));
+            }
+            text_end = segment.text_end;
+        }
+        if !self.audio_segments.is_empty() && text_end != characters {
+            return Err(invalid("transcript audio anchors do not cover its text"));
         }
         Ok(())
     }

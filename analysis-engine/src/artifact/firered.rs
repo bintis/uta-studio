@@ -109,6 +109,7 @@ pub fn parse_firered_transcript(path: &Path) -> EngineResult<TranscriptArtifact>
         language: None,
         text: raw.text,
         tokens: Vec::new(),
+        audio_segments: Vec::new(),
         confidence: None,
         source_experts: vec![raw.model_id],
         alternatives: Vec::new(),

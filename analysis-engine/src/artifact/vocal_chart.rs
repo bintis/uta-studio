@@ -41,22 +41,39 @@ pub fn finalize_candidate_vocal_chart(
     // Finalization is a projection, not another note decoder. Preserve every
     // selected duration state, including same-pitch reattacks and hard cuts.
     // Place lyric placeholders around those ranges; a real note may cross a word.
-    let mut emitted_notes = Vec::<(String, TimeRange, usize)>::new();
-    for (word_index, word) in track.words.iter().enumerate() {
-        let mut candidates = notes_by_word
-            .get(word.word_id.as_str())
-            .cloned()
-            .unwrap_or_default();
-        candidates.sort_by_key(|note| (note.range.start, note.range.end, note.id.as_str()));
-        emitted_notes.extend(
-            candidates
-                .into_iter()
-                .map(|note| (note.id.clone(), note.range, word_index)),
-        );
-    }
+    let word_order = track
+        .words
+        .iter()
+        .enumerate()
+        .map(|(index, word)| (word.word_id.as_str(), index))
+        .collect::<BTreeMap<_, _>>();
+    let mut emitted_notes = track
+        .notes
+        .iter()
+        .map(|note| {
+            let order = note
+                .word_id
+                .as_deref()
+                .and_then(|id| word_order.get(id))
+                .copied()
+                .unwrap_or(usize::MAX);
+            (note.id.clone(), note.range, order)
+        })
+        .collect::<Vec<_>>();
     emitted_notes.sort_by_key(|(_, range, _)| (range.start, range.end));
 
-    let mut notes = Vec::new();
+    // Missing or unresolved lyrics must not erase measured melody. These
+    // notes remain editable without fabricated text ownership.
+    let mut notes = track
+        .notes
+        .iter()
+        .filter(|note| {
+            note.word_id
+                .as_deref()
+                .is_none_or(|id| !word_order.contains_key(id))
+        })
+        .map(|note| project_note(note, Vec::new()))
+        .collect::<Vec<_>>();
     let mut deferred_lyrics = BTreeMap::<String, Vec<(usize, LyricToken)>>::new();
     for (word_index, word) in track.words.iter().enumerate() {
         let candidates = notes_by_word
@@ -126,7 +143,7 @@ pub fn finalize_candidate_vocal_chart(
     notes.sort_by_key(|note| (note.start, note.id.clone()));
     if notes.is_empty() {
         return Err(invalid(
-            "Candidate VocalChart contains no lyric-owned or aligned spoken notes",
+            "Candidate VocalChart contains no measured notes or aligned lyric placeholders",
         ));
     }
 
@@ -161,15 +178,16 @@ fn append_word_notes(
     if candidates.is_empty() {
         let range = spoken_range.ok_or_else(|| invalid("spoken word has no available range"))?;
         output.push(VocalNote {
-            id: format!("spoken-{word_index}"),
+            id: format!("unpitched-{word_index}"),
             start: range.start,
             duration: range.end - range.start,
             pitch: None,
-            vocal_mode: VocalMode::Spoken,
+            // Missing pitch evidence is not positive evidence of speech.
+            vocal_mode: VocalMode::Freestyle,
             bonus: NoteBonus::Normal,
             scoring: NoteScoring {
-                mode: ScoringMode::Rhythm,
-                weight: 1.0,
+                mode: ScoringMode::None,
+                weight: 0.0,
             },
             lyrics: vec![LyricToken::Text(LyricTextToken {
                 id: lyric_id,
@@ -201,24 +219,28 @@ fn append_word_notes(
                 continuation_of: lyric_id.clone(),
             }]
         };
-        output.push(VocalNote {
-            id: note.id.clone(),
-            start: note.range.start,
-            duration: note.range.end - note.range.start,
-            pitch: Some(NotePitch {
-                midi: note.midi_note,
-                cents: note.center_offset_cents.round().clamp(-99.0, 99.0) as i8,
-            }),
-            vocal_mode: VocalMode::Pitched,
-            bonus: NoteBonus::Normal,
-            scoring: NoteScoring {
-                mode: ScoringMode::Pitch,
-                weight: 1.0,
-            },
-            lyrics,
-        });
+        output.push(project_note(note, lyrics));
     }
     Ok(())
+}
+
+fn project_note(note: &CanonicalNote, lyrics: Vec<LyricToken>) -> VocalNote {
+    VocalNote {
+        id: note.id.clone(),
+        start: note.range.start,
+        duration: note.range.end - note.range.start,
+        pitch: Some(NotePitch {
+            midi: note.midi_note,
+            cents: note.center_offset_cents.round().clamp(-99.0, 99.0) as i8,
+        }),
+        vocal_mode: VocalMode::Pitched,
+        bonus: NoteBonus::Normal,
+        scoring: NoteScoring {
+            mode: ScoringMode::Pitch,
+            weight: 1.0,
+        },
+        lyrics,
+    }
 }
 
 fn range_overlap(left: TimeRange, right: TimeRange) -> u64 {
@@ -424,13 +446,34 @@ mod tests {
     }
 
     #[test]
-    fn unpitched_aligned_words_are_retained_as_spoken_notes() {
+    fn unpitched_aligned_words_are_unscored_not_claimed_as_speech() {
         let mut track = track();
         track.notes.clear();
         let chart = finalize_candidate_vocal_chart(&track, &"c".repeat(64), None).unwrap();
         let note = &chart.tracks[0].phrases[0].notes[0];
-        assert_eq!(note.vocal_mode, VocalMode::Spoken);
+        assert_eq!(note.vocal_mode, VocalMode::Freestyle);
+        assert_eq!(note.scoring.mode, ScoringMode::None);
+        assert_eq!(note.scoring.weight, 0.0);
         assert!(note.pitch.is_none());
+        chart.validate().unwrap();
+    }
+
+    #[test]
+    fn missing_lyric_timing_does_not_drop_selected_melody() {
+        let mut track = track();
+        track.words.clear();
+        track.notes[0].word_id = None;
+        let chart =
+            finalize_candidate_vocal_chart(&track, "melody-without-alignment", None).unwrap();
+        let note = &chart.tracks[0].phrases[0].notes[0];
+        assert_eq!(note.id, track.notes[0].id);
+        assert_eq!(note.start, track.notes[0].range.start);
+        assert_eq!(
+            note.duration,
+            track.notes[0].range.end - track.notes[0].range.start
+        );
+        assert!(note.lyrics.is_empty());
+        assert_eq!(note.pitch.unwrap().midi, track.notes[0].midi_note);
         chart.validate().unwrap();
     }
 
