@@ -1,8 +1,5 @@
-use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
-use std::time::Duration;
 
 use serde::Deserialize;
 
@@ -43,6 +40,7 @@ struct ProbeFormat {
 
 #[derive(Debug)]
 struct SourceFacts {
+    single_stream: bool,
     container: String,
     codec: String,
     sample_rate: u32,
@@ -68,6 +66,17 @@ pub(crate) fn decode_audio_with_cancellation(
     source: &Path,
     cancellation: &CancellationToken,
 ) -> EngineResult<DecodedAudio> {
+    super::reuse::facts(ffmpeg, source, source_id, cancellation, || {
+        decode_uncached(ffmpeg, source_id, source, cancellation)
+    })
+}
+
+fn decode_uncached(
+    ffmpeg: &Path,
+    source_id: &str,
+    source: &Path,
+    cancellation: &CancellationToken,
+) -> EngineResult<DecodedAudio> {
     if !ffmpeg.is_file() {
         return Err(EngineError::new(
             EngineErrorCode::WorkerUnavailable,
@@ -83,94 +92,13 @@ pub(crate) fn decode_audio_with_cancellation(
     }
 
     let source_facts = probe_source(ffmpeg, source).unwrap_or(SourceFacts {
+        single_stream: false,
         container: "raw".to_string(),
         codec: "pcm_f32le".to_string(),
         sample_rate: FALLBACK_SAMPLE_RATE,
         channels: 1,
     });
-    let mut command = Command::new(ffmpeg);
-    command
-        .args(["-v", "error", "-nostdin", "-i"])
-        .arg(source)
-        .args([
-            "-map",
-            "0:a:0",
-            "-map_metadata",
-            "-1",
-            "-vn",
-            "-ac",
-            &source_facts.channels.to_string(),
-            "-ar",
-            &source_facts.sample_rate.to_string(),
-            "-f",
-            "f32le",
-            "pipe:1",
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
-    let mut child = command.spawn().map_err(|error| {
-        EngineError::new(
-            EngineErrorCode::DecodeFailed,
-            format!("could not start packaged ffmpeg: {error}"),
-        )
-    })?;
-
-    let mut stdout = child.stdout.take().ok_or_else(|| {
-        EngineError::new(
-            EngineErrorCode::InternalError,
-            "ffmpeg decode stdout was not captured",
-        )
-    })?;
-    let (stdout_sender, stdout_receiver) = mpsc::sync_channel(2);
-    let stdout_reader = std::thread::spawn(move || {
-        loop {
-            let mut buffer = vec![0_u8; 64 * 1024];
-            match stdout.read(&mut buffer) {
-                Ok(0) => {
-                    let _ = stdout_sender.send(Ok(Vec::new()));
-                    break;
-                }
-                Ok(count) => {
-                    buffer.truncate(count);
-                    if stdout_sender.send(Ok(buffer)).is_err() {
-                        break;
-                    }
-                }
-                Err(error) => {
-                    let _ = stdout_sender.send(Err(error.to_string()));
-                    break;
-                }
-            }
-        }
-    });
-    let mut stderr = child.stderr.take().ok_or_else(|| {
-        EngineError::new(
-            EngineErrorCode::InternalError,
-            "ffmpeg decode stderr was not captured",
-        )
-    })?;
-    let stderr_reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        // Bound diagnostic capture while continuing to drain the pipe.
-        let mut buffer = [0_u8; 8 * 1024];
-        loop {
-            match stderr.read(&mut buffer) {
-                Ok(0) | Err(_) => break,
-                Ok(count) if bytes.len() < 64 * 1024 => {
-                    let remaining = 64 * 1024 - bytes.len();
-                    bytes.extend_from_slice(&buffer[..count.min(remaining)]);
-                }
-                Ok(_) => {}
-            }
-        }
-        bytes
-    });
+    super::reuse::record_streams(ffmpeg, source, source_facts.single_stream);
 
     let mut carry = Vec::with_capacity(3);
     let mut sample_count = 0_u64;
@@ -186,98 +114,73 @@ pub(crate) fn decode_audio_with_cancellation(
     let mut frame_channel_count = 0_usize;
     let channel_count = usize::from(source_facts.channels);
     let mut invalid_sample = false;
-    let mut read_error = None;
-    let mut was_cancelled = false;
-    loop {
-        if cancellation.is_cancelled() {
-            was_cancelled = true;
-            kill_decode_process(&mut child);
-            break;
-        }
-        let bytes = match stdout_receiver.recv_timeout(Duration::from_millis(25)) {
-            Ok(Ok(bytes)) if bytes.is_empty() => break,
-            Ok(Ok(bytes)) => bytes,
-            Ok(Err(error)) => {
-                read_error = Some(error);
-                break;
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
-        };
-        carry.extend_from_slice(&bytes);
-        let complete = carry.len() / 4 * 4;
-        for sample in carry[..complete].as_chunks::<4>().0 {
-            let value = f32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]);
-            if !value.is_finite() {
-                invalid_sample = true;
-                break;
-            }
-            statistics.push(value);
-            frame_channel_sum += f64::from(value);
-            frame_channel_count += 1;
-            sample_count += 1;
-            if frame_channel_count == channel_count {
-                mono_window.push((frame_channel_sum / channel_count as f64) as f32);
-                frame_channel_sum = 0.0;
-                frame_channel_count = 0;
-                if mono_window.len() == profile_window_frames {
-                    if let Some(window) = build_signal_window(
-                        window_start_frame,
-                        source_facts.sample_rate,
-                        &mono_window,
-                    ) {
-                        profile.windows.push(window);
+    uta_audio_reuse::stream(
+        ffmpeg,
+        source,
+        uta_audio_reuse::Representation {
+            rate: source_facts.sample_rate,
+            channels: source_facts.channels,
+            stream: super::reuse::selection(ffmpeg, source),
+        },
+        true,
+        super::reuse::pcm().as_ref(),
+        &|| cancellation.is_cancelled(),
+        &mut |bytes| {
+            carry.extend_from_slice(bytes);
+            let complete = carry.len() / 4 * 4;
+            for sample in carry[..complete].as_chunks::<4>().0 {
+                let value = f32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]);
+                if !value.is_finite() {
+                    invalid_sample = true;
+                    break;
+                }
+                statistics.push(value);
+                frame_channel_sum += f64::from(value);
+                frame_channel_count += 1;
+                sample_count += 1;
+                if frame_channel_count == channel_count {
+                    mono_window.push((frame_channel_sum / channel_count as f64) as f32);
+                    frame_channel_sum = 0.0;
+                    frame_channel_count = 0;
+                    if mono_window.len() == profile_window_frames {
+                        if let Some(window) = build_signal_window(
+                            window_start_frame,
+                            source_facts.sample_rate,
+                            &mono_window,
+                        ) {
+                            profile.windows.push(window);
+                        }
+                        window_start_frame =
+                            window_start_frame.saturating_add(profile_window_frames as u64);
+                        mono_window.clear();
                     }
-                    window_start_frame =
-                        window_start_frame.saturating_add(profile_window_frames as u64);
-                    mono_window.clear();
+                }
+                if sample_count > max_samples {
+                    break;
                 }
             }
-            if sample_count > max_samples {
-                break;
+            if complete > 0 {
+                carry.drain(..complete);
             }
-        }
-        if complete > 0 {
-            carry.drain(..complete);
-        }
-        if invalid_sample || sample_count > max_samples {
-            kill_decode_process(&mut child);
-            break;
-        }
-    }
-
-    drop(stdout_receiver);
-    let status = child.wait().map_err(|error| {
+            if invalid_sample {
+                return Err("decoded audio contains non-finite samples".into());
+            }
+            if sample_count > max_samples {
+                return Err("decoded audio exceeds the four-hour Engine limit".into());
+            }
+            Ok(())
+        },
+    )
+    .map_err(|message| {
         EngineError::new(
-            EngineErrorCode::DecodeFailed,
-            format!("could not wait for ffmpeg decode: {error}"),
+            if cancellation.is_cancelled() {
+                EngineErrorCode::Cancelled
+            } else {
+                EngineErrorCode::DecodeFailed
+            },
+            message,
         )
     })?;
-    let _ = stdout_reader.join();
-    let stderr = stderr_reader.join().unwrap_or_default();
-    if was_cancelled {
-        return Err(EngineError::new(
-            EngineErrorCode::Cancelled,
-            "audio decode was cancelled",
-        ));
-    }
-    if let Some(error) = read_error {
-        return Err(EngineError::new(
-            EngineErrorCode::DecodeFailed,
-            format!("could not read decoded audio: {error}"),
-        ));
-    }
-    if !status.success() {
-        let detail = String::from_utf8_lossy(&stderr).trim().to_string();
-        return Err(EngineError::new(
-            EngineErrorCode::DecodeFailed,
-            if detail.is_empty() {
-                format!("ffmpeg audio decode failed with {status}")
-            } else {
-                format!("ffmpeg audio decode failed: {detail}")
-            },
-        ));
-    }
     if !carry.is_empty()
         || sample_count == 0
         || !sample_count.is_multiple_of(u64::from(source_facts.channels))
@@ -334,14 +237,6 @@ pub(crate) fn decode_audio_with_cancellation(
     })
 }
 
-fn kill_decode_process(child: &mut std::process::Child) {
-    #[cfg(unix)]
-    unsafe {
-        let _ = libc::kill(-(child.id() as i32), libc::SIGKILL);
-    }
-    let _ = child.kill();
-}
-
 fn probe_source(ffmpeg: &Path, source: &Path) -> Option<SourceFacts> {
     let ffprobe = ffmpeg.with_file_name(if cfg!(windows) {
         "ffprobe.exe"
@@ -356,7 +251,7 @@ fn probe_source(ffmpeg: &Path, source: &Path) -> Option<SourceFacts> {
             "-v",
             "error",
             "-select_streams",
-            "a:0",
+            "a",
             "-show_entries",
             "stream=codec_type,codec_name,sample_rate,channels:format=format_name",
             "-of",
@@ -371,6 +266,12 @@ fn probe_source(ffmpeg: &Path, source: &Path) -> Option<SourceFacts> {
         return None;
     }
     let document: ProbeDocument = serde_json::from_slice(&output.stdout).ok()?;
+    let single_stream = document
+        .streams
+        .iter()
+        .filter(|stream| stream.codec_type.as_deref() == Some("audio"))
+        .count()
+        == 1;
     let stream = document
         .streams
         .into_iter()
@@ -382,6 +283,7 @@ fn probe_source(ffmpeg: &Path, source: &Path) -> Option<SourceFacts> {
         return None;
     }
     Some(SourceFacts {
+        single_stream,
         container: document
             .format
             .and_then(|format| format.format_name)
@@ -419,6 +321,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Mutex, MutexGuard, OnceLock};
+    use std::time::Duration;
 
     use super::*;
 
@@ -499,6 +402,108 @@ mod tests {
         ));
         std::fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn super_shares_facts_pcm_and_acoustic_without_changing_source_or_roles() {
+        let root = temp_root();
+        let source = root.join("source.wav");
+        std::fs::write(&source, b"fixture source").unwrap();
+        let cache = root.join("cache");
+        std::fs::create_dir(&cache).unwrap();
+        let ffmpeg = fake_ffmpeg(
+            &root,
+            &format!(
+                "echo decode >> '{}'; dd if=/dev/zero bs=2048 count=1 2>/dev/null",
+                root.join("calls").display()
+            ),
+        );
+        let probe = fake_ffmpeg(
+            &root,
+            r#"printf '%s' '{"streams":[{"codec_type":"audio","codec_name":"pcm_f32le","sample_rate":"16000","channels":1}],"format":{"format_name":"wav"}}'"#,
+        );
+        std::fs::rename(probe, root.join("ffprobe")).unwrap();
+        let scope = super::super::reuse::Scope::enter(true, Some(cache.clone()));
+        let original = decode_audio(&ffmpeg, "original", &source).unwrap();
+        let renamed = root.join("published.wav");
+        std::fs::rename(&source, &renamed).unwrap();
+        let snapshot = super::super::reuse::Snapshot::capture();
+        std::thread::scope(|threads| {
+            let handles = (0..4)
+                .map(|_| {
+                    let (ffmpeg, renamed, snapshot) = (&ffmpeg, &renamed, &snapshot);
+                    threads.spawn(move || {
+                        let _scope = snapshot.enter();
+                        decode_audio(ffmpeg, "reader", renamed).unwrap()
+                    })
+                })
+                .collect::<Vec<_>>();
+            for handle in handles {
+                let facts = handle.join().unwrap();
+                assert_eq!(facts.facts.source_id, "reader");
+                assert_eq!(facts.profile, original.profile);
+                assert_eq!(facts.metrics, original.metrics);
+            }
+        });
+        let acoustic = crate::audio::analyze_acoustic_evidence(
+            &ffmpeg,
+            &renamed,
+            "lead",
+            0,
+            original.facts.duration,
+            &CancellationToken::default(),
+        )
+        .unwrap();
+        assert!(!acoustic.frames.is_empty());
+        let mut bytes = Vec::new();
+        let hit = uta_audio_reuse::stream(
+            &ffmpeg,
+            &renamed,
+            uta_audio_reuse::Representation {
+                rate: 16000,
+                channels: 1,
+                stream: uta_audio_reuse::StreamSelection::Automatic,
+            },
+            true,
+            Some(&uta_audio_reuse::Cache::new(cache)),
+            &|| false,
+            &mut |chunk| {
+                bytes.extend_from_slice(chunk);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(hit);
+        assert_eq!(bytes, vec![0; 2048]);
+        assert_eq!(
+            std::fs::read_to_string(root.join("calls"))
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
+        let cancelled = CancellationToken::default();
+        cancelled.cancel();
+        assert_eq!(
+            decode_audio_with_cancellation(&ffmpeg, "cancelled", &renamed, &cancelled)
+                .unwrap_err()
+                .code,
+            EngineErrorCode::Cancelled
+        );
+        assert_eq!(std::fs::read(&renamed).unwrap(), b"fixture source");
+        drop(scope);
+        let plain = decode_audio(&ffmpeg, "ordinary", &renamed).unwrap();
+        assert_eq!(plain.metrics, original.metrics);
+        assert_eq!(plain.profile, original.profile);
+        assert_eq!(
+            std::fs::read_to_string(root.join("calls"))
+                .unwrap()
+                .lines()
+                .count(),
+            2
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

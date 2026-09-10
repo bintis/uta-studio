@@ -6375,9 +6375,20 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "uta-audio-reuse",
  "uta-runtime-manager",
  "utz",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "uta-audio-reuse"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -6404,9 +6415,11 @@ dependencies = [
 name = "uta-ggml-worker"
 version = "0.8.4"
 dependencies = [
+ "hound",
  "serde",
  "serde_json",
  "sha2",
+ "uta-audio-reuse",
  "uta-ggml-runtime",
  "uta-gpu-probes",
 ]

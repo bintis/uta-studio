@@ -257,6 +257,10 @@ impl AnalysisEngine {
         let _lease = self.runtime_manager.lease_resolved_models(&resolved);
         let _acceleration =
             acceleration::scope(request, &plan, &resolved, &output_root, cancellation);
+        let _audio_reuse = crate::audio::reuse::Scope::enter(
+            request.execution_policy.turbo_acceleration,
+            _acceleration.audio_cache_directory(),
+        );
         let decode_lifecycle = begin_node("decode", "audio.decode", None, "ffmpeg");
         let decoded_sources = self.decode_validated_audio(request, cancellation)?;
         decode_lifecycle.complete();

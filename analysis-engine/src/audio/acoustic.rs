@@ -1,10 +1,6 @@
 use std::collections::VecDeque;
 use std::f32::consts::PI;
-use std::io::Read;
 use std::path::Path;
-use std::process::{Command, Stdio};
-use std::sync::mpsc;
-use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
@@ -38,161 +34,67 @@ pub fn analyze_acoustic_evidence(
     if semantic_audio_role.trim().is_empty() {
         return Err(output_error("acoustic DSP semantic audio role is empty"));
     }
-    let mut command = Command::new(ffmpeg);
-    command
-        .args(["-v", "error", "-nostdin", "-i"])
-        .arg(input)
-        .args([
-            "-map",
-            "0:a:0",
-            "-map_metadata",
-            "-1",
-            "-vn",
-            "-ac",
-            "1",
-            "-ar",
-            "16000",
-            "-f",
-            "f32le",
-            "pipe:1",
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
-    let mut child = command.spawn().map_err(|error| {
-        EngineError::new(
-            EngineErrorCode::DecodeFailed,
-            format!("could not start acoustic DSP decode: {error}"),
-        )
-    })?;
-    let mut stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| output_error("acoustic DSP decode stdout was not captured"))?;
-    let (sender, receiver) = mpsc::sync_channel(2);
-    let stdout_reader = std::thread::spawn(move || {
-        loop {
-            let mut bytes = vec![0_u8; 64 * 1024];
-            match stdout.read(&mut bytes) {
-                Ok(0) => {
-                    let _ = sender.send(Ok(Vec::new()));
-                    break;
-                }
-                Ok(count) => {
-                    bytes.truncate(count);
-                    if sender.send(Ok(bytes)).is_err() {
-                        break;
-                    }
-                }
-                Err(error) => {
-                    let _ = sender.send(Err(error.to_string()));
-                    break;
-                }
-            }
-        }
-    });
-    let mut stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| output_error("acoustic DSP decode stderr was not captured"))?;
-    let stderr_reader = std::thread::spawn(move || {
-        let mut output = Vec::new();
-        let mut chunk = [0_u8; 8 * 1024];
-        loop {
-            match stderr.read(&mut chunk) {
-                Ok(0) | Err(_) => break,
-                Ok(count) if output.len() < 64 * 1024 => {
-                    let remaining = 64 * 1024 - output.len();
-                    output.extend_from_slice(&chunk[..count.min(remaining)]);
-                }
-                Ok(_) => {}
-            }
-        }
-        output
-    });
-
     let mut processor = AcousticProcessor::new(source_start);
     let mut decoded_digest = Sha256::new();
     let mut carry = Vec::with_capacity(3);
     let max_samples = u64::from(SAMPLE_RATE) * MAX_AUDIO_SECONDS;
     let mut sample_count = 0_u64;
     let mut failure = None;
-    let mut was_cancelled = false;
-    loop {
-        if cancellation.is_cancelled() {
-            was_cancelled = true;
-            kill_process(&mut child);
-            break;
-        }
-        let bytes = match receiver.recv_timeout(Duration::from_millis(25)) {
-            Ok(Ok(bytes)) if bytes.is_empty() => break,
-            Ok(Ok(bytes)) => bytes,
-            Ok(Err(error)) => {
-                failure = Some(format!("could not read acoustic DSP decode: {error}"));
-                kill_process(&mut child);
-                break;
+    let mut processor_failure = None;
+    let result = uta_audio_reuse::stream(
+        ffmpeg,
+        input,
+        uta_audio_reuse::Representation {
+            rate: SAMPLE_RATE,
+            channels: 1,
+            stream: super::reuse::selection(ffmpeg, input),
+        },
+        true,
+        super::reuse::pcm().as_ref(),
+        &|| cancellation.is_cancelled(),
+        &mut |bytes| {
+            carry.extend_from_slice(bytes);
+            let complete = carry.len() / 4 * 4;
+            for sample in carry[..complete].as_chunks::<4>().0 {
+                let value = f32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]);
+                if !value.is_finite() {
+                    failure = Some("acoustic DSP decode contains non-finite samples".to_string());
+                    break;
+                }
+                decoded_digest.update(sample);
+                if let Err(error) = processor.push(value) {
+                    let message = error.message.clone();
+                    processor_failure = Some(error);
+                    return Err(message);
+                }
+                sample_count += 1;
+                if sample_count > max_samples {
+                    failure = Some("acoustic DSP input exceeds four hours".to_string());
+                    break;
+                }
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
-        };
-        carry.extend_from_slice(&bytes);
-        let complete = carry.len() / 4 * 4;
-        for sample in carry[..complete].as_chunks::<4>().0 {
-            let value = f32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]);
-            if !value.is_finite() {
-                failure = Some("acoustic DSP decode contains non-finite samples".to_string());
-                break;
+            if complete > 0 {
+                carry.drain(..complete);
             }
-            decoded_digest.update(sample);
-            processor.push(value)?;
-            sample_count += 1;
-            if sample_count > max_samples {
-                failure = Some("acoustic DSP input exceeds four hours".to_string());
-                break;
+            if let Some(message) = &failure {
+                return Err(message.clone());
             }
-        }
-        if complete > 0 {
-            carry.drain(..complete);
-        }
-        if failure.is_some() {
-            kill_process(&mut child);
-            break;
-        }
+            Ok(())
+        },
+    );
+    if let Some(error) = processor_failure {
+        return Err(error);
     }
-    drop(receiver);
-    let status = child.wait().map_err(|error| {
+    result.map_err(|message| {
         EngineError::new(
-            EngineErrorCode::DecodeFailed,
-            format!("could not wait for acoustic DSP decode: {error}"),
+            if cancellation.is_cancelled() {
+                EngineErrorCode::Cancelled
+            } else {
+                EngineErrorCode::DecodeFailed
+            },
+            message,
         )
     })?;
-    let _ = stdout_reader.join();
-    let stderr = stderr_reader.join().unwrap_or_default();
-    if was_cancelled {
-        return Err(EngineError::new(
-            EngineErrorCode::Cancelled,
-            "acoustic DSP was cancelled",
-        ));
-    }
-    if let Some(message) = failure {
-        return Err(EngineError::new(EngineErrorCode::DecodeFailed, message));
-    }
-    if !status.success() {
-        let detail = String::from_utf8_lossy(&stderr).trim().to_string();
-        return Err(EngineError::new(
-            EngineErrorCode::DecodeFailed,
-            if detail.is_empty() {
-                format!("acoustic DSP decode failed with {status}")
-            } else {
-                format!("acoustic DSP decode failed: {detail}")
-            },
-        ));
-    }
     if !carry.is_empty() || sample_count == 0 {
         return Err(EngineError::new(
             EngineErrorCode::DecodeFailed,
@@ -475,14 +377,6 @@ fn vibrato_activation(deltas: &VecDeque<f32>, periodicity: f32) -> f32 {
         .clamp(0.0, 1.0)
 }
 
-fn kill_process(child: &mut std::process::Child) {
-    #[cfg(unix)]
-    unsafe {
-        let _ = libc::kill(-(child.id() as i32), libc::SIGKILL);
-    }
-    let _ = child.kill();
-}
-
 fn output_error(message: impl Into<String>) -> EngineError {
     EngineError::new(EngineErrorCode::OutputValidationFailed, message)
 }
@@ -490,6 +384,7 @@ fn output_error(message: impl Into<String>) -> EngineError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn deterministic_sine_produces_typed_non_placeholder_evidence() {

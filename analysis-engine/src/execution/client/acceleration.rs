@@ -54,6 +54,15 @@ pub(crate) struct AccelerationGuard {
     thread: PhantomData<Rc<()>>,
 }
 impl AccelerationGuard {
+    pub(crate) fn audio_cache_directory(&self) -> Option<PathBuf> {
+        CONTEXT.with(|current| {
+            current
+                .borrow()
+                .as_ref()
+                .and_then(|context| context.cache.as_ref().map(|cache| cache.0.clone()))
+        })
+    }
+
     pub fn enter(
         enabled: bool,
         schedule: Vec<PreloadSpec>,
