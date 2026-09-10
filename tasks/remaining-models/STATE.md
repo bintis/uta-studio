@@ -397,8 +397,23 @@ XPU input after the other shape was not bit-identical (max difference **1.236912
 Evidence: `test-artifacts/libtorch-models/xpu-resume/fcpe-comparison.json`, CPU operation
 `20260910T172609-fe134b3ec34c`, XPU operation `20260910T172724-e05fc4d00416`. Earlier loader and
 request-preparation failures remain preserved. Host/GPU observations included other UI/test work.
-No controlled speedup, full audio/voicing quality, all-model XPU readiness, fused-SDPA availability
-or later host stability is established. See
+
+Qwen ASR strict XPU then completed the real 12-second mono fixture with the installed F16 weights
+read-only: 156 x 2,048 finite encoder output values, 0.803520399-second cold encoder call, and all
+79 synchronization checkpoints through the 24th feed-forward stage. This is not a controlled
+speed measurement. Operation `20260910T180636-d09ab6d785e8`; full oneDNN/checkpoint evidence:
+`test-artifacts/libtorch-models/xpu-resume/qwen-asr-strict-trace-observation/`. `2023966` adds
+trace-only decoder checkpoints. A matching CPU/XPU synthetic-mel encoder, KV-session and two-step
+incremental decoder check compared all **305,920 float values and three positions**. Maximum
+absolute errors were `1.28523e-7` for encoder output, `1.09673e-4` for prefill logits and
+`5.53131e-5` for second-step logits; both complete-logit argmax decisions and every position
+matched. XPU operation `20260910T181634-369af609eb70`; comparison
+`test-artifacts/libtorch-models/xpu-resume/qwen-decoder-comparison.json`. Both XPU observers sampled
+only Intel Level Zero and xe PCI `0000:07:00.0`; no AMD/ROCm/Vulkan target dependency or DRM device
+was observed.
+
+No controlled speedup, real-audio Qwen output parity, real transcription, all-model XPU readiness,
+fused-SDPA availability or later host stability is established. See
 [LibTorch execution](../../docs/design/runtime/LIBTORCH_EXECUTION.md) for details and next checks.
 Super whole-task scheduling remains incomplete and is not qualified by these results.
 

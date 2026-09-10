@@ -38,9 +38,13 @@ not automatic dual-GPU scheduling, GPU qualification or a measured whole-analysi
 
 A later explicit request resumed separate LibTorch XPU testing. The native ABI fixture and bounded
 real-weight FCPE tensor calls completed; 179,640 full CPU/XPU activation pairs were finite, with
-maximum absolute error 6.29370333627e-10. Repeated XPU outputs were not bit-identical. This does not
-qualify real-audio voicing, all models, Super scheduling or speedup; see
-[LibTorch execution](design/runtime/LIBTORCH_EXECUTION.md).
+maximum absolute error 6.29370333627e-10. Repeated XPU outputs were not bit-identical. Qwen ASR
+strict XPU also completed a real 12-second encoder call (156 x 2,048 finite values) with every traced
+stage synchronized. A separate synthetic-mel encoder/KV-cache/two-step decoder check compared all
+305,920 CPU/XPU float values and three positions; complete-logit argmax decisions matched, with
+maximum logit difference 1.09672546387e-4. The XPU observers sampled only Intel Level Zero and xe
+PCI `0000:07:00.0`. This does not qualify real-audio output parity, a real transcription, all models,
+Super scheduling or speedup; see [LibTorch execution](design/runtime/LIBTORCH_EXECUTION.md).
 
 ## Current executable models
 

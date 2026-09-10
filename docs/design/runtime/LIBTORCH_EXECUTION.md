@@ -102,11 +102,38 @@ preparation did not forward undeclared recorder stdin and generated nothing; its
 reference exited before model loading (`20260910T172455-20e45cf6434e`). The corrected generator is
 recorded in argv (`20260910T172546-f9404a29aa2d`); both failed/setup records remain intact.
 
-This verifies bounded native FCPE plans, not real-audio pitch/voicing parity, all eighteen XPU
-resources, fused attention availability, Super scheduling or production readiness. The historical
-OpenCL-dependent fused-SDPA failure was not rerun or repaired here. Next work uses the same native
-runner for model-specific real-audio/conditioning checks and explicit attention dependency diagnosis,
-not automatic stress retries. Successful exit does not establish later host stability.
+A subsequent Qwen ASR check used the installed 4,083,087,904-byte F16 container read-only and the
+real 12-second mono 16 kHz fixture. On explicit **`libtorch_xpu`, device 0, strict**, the complete
+frontend and 24-layer encoder returned 156 x 2,048 finite values in 0.803520399 seconds, excluding
+runtime/model load and frontend preparation. This is one traced cold call, not a controlled speed
+measurement. All 79 synchronization checkpoints completed, through layer 23 feed-forward. The
+observer sampled only Intel Level Zero `libze_intel_gpu.so` and xe PCI `0000:07:00.0`, with peak
+resident VRAM 8,550,948 KiB, no observer errors and an unchanged boot ID. The oneDNN stream and
+checkpoints were continuously persisted in the case directory. Operation:
+`20260910T180636-d09ab6d785e8`; evidence:
+`xpu-resume/qwen-asr-strict-trace-observation/`.
+
+`2023966` adds trace-only Qwen decoder checkpoints for session allocation, positions, each layer's
+QKV/cache/attention/feed-forward and final logits. They do not synchronize unless
+`UTA_STUDIO_LIBTORCH_TRACE_SYNC=1` and do not change the arithmetic path. The matching XPU native
+build and host check passed (`20260910T181248-23771c747dd3`,
+`20260910T181506-e74575688ac6`). One synthetic zero-mel row then exercised encoder output, an
+explicit four-position KV session, audio injection and two incremental strict decoder steps on CPU
+and XPU. All **305,920 F32 values and three positions** were compared, not sampled. Encoder maximum
+absolute error was `1.28522515297e-7` (NMSE `6.96887076282e-13`); prefill logits maximum was
+`1.09672546387e-4` (NMSE `1.18774244385e-10`); second-step logits maximum was
+`5.53131103516e-5` (NMSE `7.97036728004e-13`). Complete-logit argmax matched at 198 and 16,
+respectively, and every position matched exactly. XPU operation:
+`20260910T181634-369af609eb70`; comparison: `20260910T181727-866beb5afff1` and
+`xpu-resume/qwen-decoder-comparison.json`. The XPU observer again sampled only the Intel xe device
+and Level Zero library and reached the second final-logits checkpoint.
+
+This verifies bounded native FCPE plans plus Qwen strict encoder/decoder execution. It does not
+establish real-audio encoder parity, a real transcription/token sequence, all eighteen XPU resources,
+fused attention availability, Super scheduling or production readiness. The historical
+OpenCL-dependent fused-SDPA failure was not rerun or repaired here. Next work uses recorded,
+non-retrying model-specific real-audio/conditioning checks and explicit attention dependency
+diagnosis. Successful exit does not establish later host stability.
 
 ## Source references
 
