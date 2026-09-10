@@ -737,15 +737,25 @@ fn log_mel_window(audio: &[f32]) -> Result<Vec<f32>, String> {
     if (STFT_FRAMES - 1) * HOP_SIZE + FFT_SIZE > audio.len() + REFLECT_PADDING * 2 {
         return Err("FCPE STFT frame calculation exceeded reflected padding".to_string());
     }
-    let window = (0..FFT_SIZE)
-        .map(|index| {
-            0.5 * (1.0 - (2.0 * std::f32::consts::PI * index as f32 / FFT_SIZE as f32).cos())
-        })
-        .collect::<Vec<_>>();
-    let mut planner = FftPlanner::<f32>::new();
-    let fft = planner.plan_fft_forward(FFT_SIZE);
-    let mut scratch = vec![Complex32::default(); fft.get_inplace_scratch_len()];
-    let mut spectrum = vec![Complex32::default(); FFT_SIZE];
+    let prepared = crate::acceleration::prepare("fcpe-frontend".into(), || {
+        let window = (0..FFT_SIZE)
+            .map(|index| {
+                0.5 * (1.0 - (2.0 * std::f32::consts::PI * index as f32 / FFT_SIZE as f32).cos())
+            })
+            .collect::<Vec<_>>();
+        let fft = FftPlanner::<f32>::new().plan_fft_forward(FFT_SIZE);
+        let scratch = std::cell::RefCell::new(crate::acceleration::Scratch::new(
+            FFT_SIZE,
+            fft.get_inplace_scratch_len(),
+        ));
+        (window, fft, scratch)
+    });
+    let (window, fft, storage) = &*prepared;
+    let mut storage = storage.borrow_mut();
+    let crate::acceleration::Scratch {
+        buffer: spectrum,
+        work: scratch,
+    } = &mut *storage;
     let mut output = vec![0.0_f32; WINDOW_FRAMES * MEL_BINS];
     for frame in 0..STFT_FRAMES {
         let start = frame * HOP_SIZE;
@@ -753,7 +763,7 @@ fn log_mel_window(audio: &[f32]) -> Result<Vec<f32>, String> {
             spectrum[index] =
                 Complex32::new(reflected_sample(audio, start + index) * window[index], 0.0);
         }
-        fft.process_with_scratch(&mut spectrum, &mut scratch);
+        fft.process_with_scratch(spectrum, scratch);
         for (band, weights) in mel_bands().iter().enumerate() {
             let energy = weights
                 .0
@@ -825,6 +835,37 @@ fn decode_pitch(activations: &[f32], cents_mapping: &[f32]) -> Result<Vec<Option
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn super_frontend_reuse_preserves_each_window_bitwise() {
+        let first = (0..INPUT_SAMPLES)
+            .map(|index| (index as f32 * 0.2).sin())
+            .collect::<Vec<_>>();
+        let silent = vec![0.0; INPUT_SAMPLES];
+        let expected = [
+            log_mel_window(&first).unwrap(),
+            log_mel_window(&silent).unwrap(),
+        ];
+        let scope = crate::acceleration::Scope::enter(true);
+        for (samples, expected) in [
+            (&first, &expected[0]),
+            (&silent, &expected[1]),
+            (&first, &expected[0]),
+        ] {
+            let actual = log_mel_window(samples).unwrap();
+            assert_eq!(
+                actual
+                    .iter()
+                    .map(|value| value.to_bits())
+                    .collect::<Vec<_>>(),
+                expected
+                    .iter()
+                    .map(|value| value.to_bits())
+                    .collect::<Vec<_>>()
+            );
+        }
+        assert_eq!(scope.preparation_hits(), 2);
+    }
 
     #[test]
     fn silence_frontend_is_finite_and_duplicates_the_final_model_frame() {

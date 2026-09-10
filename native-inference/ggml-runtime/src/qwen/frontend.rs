@@ -22,20 +22,30 @@ pub struct Frontend {
     filters: Vec<f32>,
     window: Vec<f32>,
     fft: Arc<dyn Fft<f32>>,
+    scratch: std::cell::RefCell<crate::acceleration::Scratch>,
 }
 
 impl Frontend {
-    pub fn whisper(bins: usize) -> Self {
-        Self {
-            bins,
-            filters: slaney_filters(bins),
-            window: (0..FFT)
-                .map(|index| {
-                    (0.5 - 0.5 * (std::f64::consts::TAU * index as f64 / FFT as f64).cos()) as f32
-                })
-                .collect(),
-            fft: FftPlanner::new().plan_fft_forward(FFT),
-        }
+    pub fn whisper(bins: usize) -> std::rc::Rc<Self> {
+        crate::acceleration::prepare(format!("qwen-frontend-{bins}"), || {
+            let fft = FftPlanner::new().plan_fft_forward(FFT);
+            let scratch = std::cell::RefCell::new(crate::acceleration::Scratch::new(
+                FFT,
+                fft.get_inplace_scratch_len(),
+            ));
+            Self {
+                bins,
+                filters: slaney_filters(bins),
+                window: (0..FFT)
+                    .map(|index| {
+                        (0.5 - 0.5 * (std::f64::consts::TAU * index as f64 / FFT as f64).cos())
+                            as f32
+                    })
+                    .collect(),
+                fft,
+                scratch,
+            }
+        })
     }
 
     pub fn filters(&self) -> &[f32] {
@@ -55,16 +65,19 @@ impl Frontend {
         }
 
         let mut frame_major = vec![0.0_f32; frames * self.bins];
-        let mut fft_input = vec![Complex32::default(); FFT];
-        let mut scratch = vec![Complex32::default(); self.fft.get_inplace_scratch_len()];
+        let mut storage = self.scratch.borrow_mut();
+        let crate::acceleration::Scratch {
+            buffer: fft_input,
+            work: scratch,
+        } = &mut *storage;
         let mut power = [0.0_f32; FREQUENCIES];
         for (frame, output) in frame_major.chunks_mut(self.bins).enumerate() {
             for (index, value) in fft_input.iter_mut().enumerate() {
                 let at = frame as isize * HOP as isize + index as isize - (FFT / 2) as isize;
                 *value = Complex32::new(reflect_sample(samples, at) * self.window[index], 0.0);
             }
-            self.fft.process_with_scratch(&mut fft_input, &mut scratch);
-            for (value, complex) in power.iter_mut().zip(&fft_input) {
+            self.fft.process_with_scratch(fft_input, scratch);
+            for (value, complex) in power.iter_mut().zip(fft_input.iter()) {
                 *value = complex.re * complex.re + complex.im * complex.im;
             }
             for (bin, value) in output.iter_mut().enumerate() {
@@ -192,6 +205,35 @@ mod tests {
             *value = (value.max(floor) + 4.0) * 0.25;
         }
         result
+    }
+
+    #[test]
+    fn super_reuses_preparation_without_sharing_samples_or_window_normalization() {
+        let first = signal(800);
+        let other = signal(1120);
+        let expected = [
+            Frontend::whisper(128).compute(&first).data,
+            Frontend::whisper(128).compute(&other).data,
+        ];
+        let scope = crate::acceleration::Scope::enter(true);
+        for (samples, expected) in [
+            (&first, &expected[0]),
+            (&other, &expected[1]),
+            (&first, &expected[0]),
+        ] {
+            let actual = Frontend::whisper(128).compute(samples).data;
+            assert_eq!(
+                actual
+                    .iter()
+                    .map(|value| value.to_bits())
+                    .collect::<Vec<_>>(),
+                expected
+                    .iter()
+                    .map(|value| value.to_bits())
+                    .collect::<Vec<_>>()
+            );
+        }
+        assert_eq!(scope.preparation_hits(), 2);
     }
 
     #[test]

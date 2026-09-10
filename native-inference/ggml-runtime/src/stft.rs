@@ -69,6 +69,34 @@ fn reflect_pad(audio: &[f32], amount: usize) -> Vec<f32> {
     padded
 }
 
+struct Transform {
+    window: Vec<f32>,
+    fft: std::sync::Arc<dyn rustfft::Fft<f32>>,
+    scratch: std::cell::RefCell<crate::acceleration::Scratch>,
+}
+
+fn transform(fft_size: usize, window_length: usize, inverse: bool) -> std::rc::Rc<Transform> {
+    crate::acceleration::prepare(format!("stft-{fft_size}-{window_length}-{inverse}"), || {
+        let fft = FftPlanner::new().plan_fft(
+            fft_size,
+            if inverse {
+                rustfft::FftDirection::Inverse
+            } else {
+                rustfft::FftDirection::Forward
+            },
+        );
+        let scratch = std::cell::RefCell::new(crate::acceleration::Scratch::new(
+            fft_size,
+            fft.get_inplace_scratch_len(),
+        ));
+        Transform {
+            window: hann_window(window_length, fft_size),
+            fft,
+            scratch,
+        }
+    })
+}
+
 /// Frequency-major, frame-minor, interleaved-complex STFT.
 pub(crate) fn compute_stft(
     audio: &[f32],
@@ -76,7 +104,8 @@ pub(crate) fn compute_stft(
     hop_length: usize,
     window_length: usize,
 ) -> Spectrogram {
-    let window = hann_window(window_length, fft_size);
+    let prepared = transform(fft_size, window_length, false);
+    let window = &prepared.window;
     let padded = reflect_pad(audio, fft_size / 2);
     let frequency_count = fft_size / 2 + 1;
     let frame_count = if padded.len() >= fft_size {
@@ -84,17 +113,18 @@ pub(crate) fn compute_stft(
     } else {
         0
     };
-    let mut planner = FftPlanner::<f32>::new();
-    let fft = planner.plan_fft_forward(fft_size);
-    let mut scratch = vec![Complex32::default(); fft.get_inplace_scratch_len()];
+    let mut storage = prepared.scratch.borrow_mut();
+    let crate::acceleration::Scratch {
+        buffer,
+        work: scratch,
+    } = &mut *storage;
     let mut result = Spectrogram::zeros(frequency_count, frame_count);
-    let mut buffer = vec![Complex32::default(); fft_size];
     for frame in 0..frame_count {
         let start = frame * hop_length;
         for index in 0..fft_size {
             buffer[index] = Complex32::new(padded[start + index] * window[index], 0.0);
         }
-        fft.process_with_scratch(&mut buffer, &mut scratch);
+        prepared.fft.process_with_scratch(buffer, scratch);
         for (frequency, value) in buffer.iter().take(frequency_count).enumerate() {
             result.set(frequency, frame, value.re, value.im);
         }
@@ -109,17 +139,19 @@ pub(crate) fn compute_istft(
     window_length: usize,
     output_length: usize,
 ) -> Vec<f32> {
-    let window = hann_window(window_length, fft_size);
+    let prepared = transform(fft_size, window_length, true);
+    let window = &prepared.window;
     let frame_count = spectrogram.n_frames;
     let frequency_count = spectrogram.n_freq;
     let buffer_length = fft_size + hop_length * frame_count.saturating_sub(1) + fft_size;
     let mut accumulated = vec![0.0_f32; buffer_length];
     let mut window_sum = vec![0.0_f32; buffer_length];
-    let mut planner = FftPlanner::<f32>::new();
-    let inverse = planner.plan_fft_inverse(fft_size);
-    let mut scratch = vec![Complex32::default(); inverse.get_inplace_scratch_len()];
+    let mut storage = prepared.scratch.borrow_mut();
+    let crate::acceleration::Scratch {
+        buffer,
+        work: scratch,
+    } = &mut *storage;
     let scale = 1.0 / fft_size as f32;
-    let mut buffer = vec![Complex32::default(); fft_size];
     for frame in 0..frame_count {
         for frequency in 0..frequency_count {
             let (real, imaginary) = spectrogram.get(frequency, frame);
@@ -129,7 +161,7 @@ pub(crate) fn compute_istft(
             let mirror = buffer[fft_size - frequency];
             buffer[frequency] = Complex32::new(mirror.re, -mirror.im);
         }
-        inverse.process_with_scratch(&mut buffer, &mut scratch);
+        prepared.fft.process_with_scratch(buffer, scratch);
         let start = frame * hop_length;
         for index in 0..fft_size {
             accumulated[start + index] += buffer[index].re * scale * window[index];
@@ -154,6 +186,30 @@ pub(crate) fn compute_istft(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn super_transform_scratch_does_not_retain_previous_signal() {
+        let signals = [
+            vec![0.25; 1200],
+            (0..1400).map(|index| (index as f32 * 0.4).sin()).collect(),
+            vec![0.0; 900],
+        ];
+        let expected = signals
+            .iter()
+            .map(|signal| {
+                let spectrum = compute_stft(signal, 512, 160, 400);
+                let audio = compute_istft(&spectrum, 512, 160, 400, signal.len());
+                (spectrum.data, audio)
+            })
+            .collect::<Vec<_>>();
+        let scope = crate::acceleration::Scope::enter(true);
+        for (signal, (spectrum, audio)) in signals.iter().zip(expected) {
+            let actual = compute_stft(signal, 512, 160, 400);
+            assert_eq!(actual.data, spectrum);
+            assert_eq!(compute_istft(&actual, 512, 160, 400, signal.len()), audio);
+        }
+        assert_eq!(scope.preparation_hits(), 4);
+    }
 
     #[test]
     fn round_trip_reconstructs_tone() {

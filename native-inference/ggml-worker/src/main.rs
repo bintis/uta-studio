@@ -48,6 +48,12 @@ fn run_task(
         None
     };
     let _audio_cache = audio_cache::Scope::enter(config, task_id);
+    let native_reuse = uta_ggml_runtime::acceleration::Scope::enter(
+        config
+            .get("turbo_acceleration")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true),
+    );
     let outputs = engine::run(
         task_id,
         model_id,
@@ -68,6 +74,12 @@ fn run_task(
             }
         },
     )?;
+    if native_reuse.preparation_hits() > 0 {
+        audio_cache::diagnostic(&format!(
+            "Native frontend preparation reused: {}",
+            native_reuse.preparation_hits()
+        ));
+    }
     for output in outputs {
         emit(WorkerFrame::Output {
             task_id,

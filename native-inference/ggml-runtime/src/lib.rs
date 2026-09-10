@@ -20,6 +20,7 @@ mod attention_model_tests;
 #[cfg(test)]
 mod attention_tests;
 
+pub mod acceleration;
 pub mod basic_pitch;
 pub mod fcpe;
 mod ffi;
