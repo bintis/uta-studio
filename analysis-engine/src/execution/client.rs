@@ -315,17 +315,40 @@ fn validate_task(task: &NativeTask) -> EngineResult<()> {
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
     };
-    if !valid_id(&task.task_id)
-        || !valid_id(&task.node_id)
-        || !valid_id(&task.model_id)
-        || task.input_artifacts.is_empty()
-        || !task.input_artifacts.iter().all(|path| path.is_file())
-        || !task.output_dir.is_dir()
-        || task.timeout.is_zero()
-    {
+    let mut reasons = Vec::new();
+    if !valid_id(&task.task_id) {
+        reasons.push(format!("task identity {}", task.task_id));
+    }
+    if !valid_id(&task.node_id) {
+        reasons.push(format!("node identity {}", task.node_id));
+    }
+    if !valid_id(&task.model_id) {
+        reasons.push(format!("model identity {}", task.model_id));
+    }
+    if task.input_artifacts.is_empty() {
+        reasons.push("no input artifacts".to_string());
+    }
+    for path in &task.input_artifacts {
+        if !path.is_file() {
+            reasons.push(format!("input is not a file: {}", path.display()));
+        }
+    }
+    if !task.output_dir.is_dir() {
+        reasons.push(format!(
+            "output is not a directory: {}",
+            task.output_dir.display()
+        ));
+    }
+    if task.timeout.is_zero() {
+        reasons.push("timeout is zero".to_string());
+    }
+    if !reasons.is_empty() {
         return Err(EngineError::new(
             EngineErrorCode::InvalidContract,
-            "native worker task identity, inputs, output, or timeout is invalid",
+            format!(
+                "native worker task identity, inputs, output, or timeout is invalid: {}",
+                reasons.join("; ")
+            ),
         ));
     }
     Ok(())
@@ -662,6 +685,29 @@ mod tests {
         let clone = token.clone();
         clone.cancel();
         assert!(token.is_cancelled());
+    }
+
+    #[test]
+    fn validate_task_names_the_missing_input() {
+        let directory = temporary_root();
+        let error = validate_task(&NativeTask {
+            task_id: "task".to_string(),
+            node_id: "notes.game".to_string(),
+            presentation_node_id: None,
+            model_id: "game_1_0_3_medium".to_string(),
+            input_artifacts: vec![directory.join("missing.wav")],
+            output_dir: directory.clone(),
+            config: serde_json::json!({}),
+            timeout: Duration::from_secs(1),
+        })
+        .unwrap_err();
+        assert_eq!(error.code, EngineErrorCode::InvalidContract);
+        assert!(
+            error.message.contains("missing.wav"),
+            "{}",
+            error.message
+        );
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
