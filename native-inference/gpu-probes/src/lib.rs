@@ -39,6 +39,28 @@ pub struct MemoryHeapProbe {
     pub index: usize,
     pub bytes: u64,
     pub flags: u32,
+    pub budget_bytes: Option<u64>,
+    pub usage_bytes: Option<u64>,
+}
+
+impl VulkanDeviceProbe {
+    /// Unknown budgets must not be mistaken for all installed VRAM being free.
+    pub fn available_device_local_bytes(&self) -> Option<u64> {
+        device_local_available(&self.memory_heaps)
+    }
+}
+
+fn device_local_available(heaps: &[MemoryHeapProbe]) -> Option<u64> {
+    let mut found = false;
+    let mut available = 0_u64;
+    for heap in heaps
+        .iter()
+        .filter(|heap| heap.flags & vk::MemoryHeapFlags::DEVICE_LOCAL.as_raw() != 0)
+    {
+        found = true;
+        available = available.saturating_add(heap.budget_bytes?.saturating_sub(heap.usage_bytes?));
+    }
+    found.then_some(available)
 }
 
 pub fn probe_vulkan() -> Result<VulkanProbe, String> {
@@ -84,13 +106,16 @@ pub fn probe_vulkan() -> Result<VulkanProbe, String> {
                 .collect();
             // SAFETY: physical handle belongs to this live instance.
             let memory = unsafe { instance.get_physical_device_memory_properties(physical) };
-            let heaps = memory.memory_heaps[..memory.memory_heap_count as usize]
+            let mut heaps: Vec<MemoryHeapProbe> = memory.memory_heaps
+                [..memory.memory_heap_count as usize]
                 .iter()
                 .enumerate()
                 .map(|(heap_index, heap)| MemoryHeapProbe {
                     index: heap_index,
                     bytes: heap.size,
                     flags: heap.flags.as_raw(),
+                    budget_bytes: None,
+                    usage_bytes: None,
                 })
                 .collect();
             // SAFETY: physical handle belongs to this live instance.
@@ -108,6 +133,24 @@ pub fn probe_vulkan() -> Result<VulkanProbe, String> {
                     })
                     .collect::<Vec<_>>();
             extensions.sort();
+            if extensions
+                .iter()
+                .any(|extension| extension == "VK_EXT_memory_budget")
+            {
+                let mut budget = vk::PhysicalDeviceMemoryBudgetPropertiesEXT::default();
+                let mut memory_properties =
+                    vk::PhysicalDeviceMemoryProperties2::default().push_next(&mut budget);
+                // SAFETY: this physical device reports memory-budget support;
+                // both chained output structures remain live during the query.
+                unsafe {
+                    instance
+                        .get_physical_device_memory_properties2(physical, &mut memory_properties)
+                };
+                for heap in &mut heaps {
+                    heap.budget_bytes = Some(budget.heap_budget[heap.index]);
+                    heap.usage_bytes = Some(budget.heap_usage[heap.index]);
+                }
+            }
             devices.push(VulkanDeviceProbe {
                 index,
                 name,
@@ -132,6 +175,43 @@ pub fn probe_vulkan() -> Result<VulkanProbe, String> {
     // SAFETY: all physical-device queries are complete and no child objects exist.
     unsafe { instance.destroy_instance(None) };
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn heap(budget: Option<u64>, usage: Option<u64>) -> MemoryHeapProbe {
+        MemoryHeapProbe {
+            index: 0,
+            bytes: 10_000,
+            flags: vk::MemoryHeapFlags::DEVICE_LOCAL.as_raw(),
+            budget_bytes: budget,
+            usage_bytes: usage,
+        }
+    }
+
+    #[test]
+    fn unknown_budget_does_not_use_heap_capacity() {
+        assert_eq!(device_local_available(&[heap(None, None)]), None);
+        assert_eq!(device_local_available(&[]), None);
+        assert_eq!(
+            device_local_available(&[heap(Some(1_000), Some(200)), heap(None, None)]),
+            None
+        );
+    }
+
+    #[test]
+    fn usage_is_subtracted_from_observed_budget() {
+        assert_eq!(
+            device_local_available(&[heap(Some(1_000), Some(200)), heap(Some(2_000), Some(1_500))]),
+            Some(1_300)
+        );
+        assert_eq!(
+            device_local_available(&[heap(Some(1_000), Some(1_200))]),
+            Some(0)
+        );
+    }
 }
 
 fn format_api_version(version: u32) -> String {
