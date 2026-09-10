@@ -1,13 +1,18 @@
 # B580 XE90 attention: measured defaults and remaining gap
 
-## Scope and accepted change
+Current default and measurements: [query-owned H64 attention](ROFORMER_B580_QUERY_OWNED.md).
+Patch 0007 supersedes the six-patch long-query default below with four query-owning SIMD32
+subgroups. The final same-library model pair measures 5.29 to 8.12 TFLOPS; cross-version
+output is numerically close, not byte-identical. The sections below preserve prior-step evidence.
+
+## Previous six-patch scope and accepted change
 
 Measured on 2026-09-10 JST (operation records use 2026-09-09 UTC), Intel Arc B580,
 Mesa 26.2.2, pinned GGML `8c63e70982c95ceb862e3a1073a2c1beef75d60a`.
 This is targeted kernel/model validation, not whole-song or release qualification.
 No 20-TFLOPS attention result or same-shape XPU comparison is claimed.
 
-The current recipe also includes the separately validated local score/value reuse
+The preceding six-patch recipe includes the separately validated local score/value reuse
 patch from `a9e6b5480c7f27065375197597f371e3f77bf668`. Its measurements and exact
 output comparison are recorded under **Local score and value reuse** below.
 The subgroup comparison in the first sections remains a separate prior step.
@@ -18,7 +23,7 @@ already an in-progress workspace correction; the subgroup correction was measure
 against a matched library with the same query tile. Both belong together in the
 runtime recipe. No installed model or runtime was replaced.
 
-The Intel Xe2/M8/F16-KV/H64/F32-accumulator path now uses:
+That six-patch Intel Xe2/M8/F16-KV/H64/F32-accumulator baseline uses:
 
 - 16 query rows, 32 key columns and four subgroups;
 - the native device subgroup (32 lanes on the measured B580);
