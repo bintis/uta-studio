@@ -1,0 +1,103 @@
+--- a/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -3872,12 +3872,16 @@
+         const char * shared_groups = std::getenv("UTA_STUDIO_GGML_FA_SHARED_GROUPS");
+         uint32_t groups = wide_groups &&
+             (shared_groups == nullptr || std::strcmp(shared_groups, "4") != 0) ? 8u : 4u;
+-        // Explicit intermediate occupancy probe; preserve the measured default.
+-        if (shared_groups != nullptr && std::strcmp(shared_groups, "12") == 0 &&
+-            limits.maxComputeWorkGroupInvocations >= 384 &&
+-            limits.maxComputeWorkGroupSize[0] >= 384 &&
+-            limits.maxComputeSharedMemorySize >= 12u * 2592u + 32u) {
+-            groups = 12;
++        // Explicit intermediate probes; the default remains eight subgroups.
++        const uint32_t requested_groups = shared_groups == nullptr ? 0u :
++            std::strcmp(shared_groups, "12") == 0 ? 12u :
++            std::strcmp(shared_groups, "14") == 0 ? 14u :
++            std::strcmp(shared_groups, "16") == 0 ? 16u : 0u;
++        if (requested_groups != 0 &&
++            limits.maxComputeWorkGroupInvocations >= requested_groups * 32u &&
++            limits.maxComputeWorkGroupSize[0] >= requested_groups * 32u &&
++            limits.maxComputeSharedMemorySize >= 8192u + requested_groups * 1568u + 32u) {
++            groups = requested_groups;
+         }
+         result.query_owned = true;
+         result.block_rows = groups * 8;
+@@ -10874,9 +10878,9 @@
+ static bool ggml_vk_flash_attn_coopmat_shmem_support(const vk_device& device, const vk_fa_tuning_params& params, uint32_t hsk, uint32_t hsv, bool f32acc, ggml_type k_type, ggml_type v_type) {
+     GGML_UNUSED(v_type);
+     if (params.query_owned) {
+-        // Per subgroup: 1024-byte Q/K/V scratch, 1024-byte scores, 512-byte probabilities.
+-        // Eight independent F32 row scales add 32 bytes without aliasing live scores.
+-        return params.row_split * 2592u + 32u <= device->properties.limits.maxComputeSharedMemorySize;
++        // Q is staged in waves of eight subgroups; K and V then use the same slots.
++        const uint32_t operands = std::min(params.row_split, 8u) * 1024u;
++        return operands + params.row_split * 1568u + 32u <= device->properties.limits.maxComputeSharedMemorySize;
+     }
+     // Needs to be kept up to date on shader changes
+     const uint32_t Br = params.block_rows;
+--- a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
++++ b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
+@@ -61,7 +61,7 @@
+ // Four-subgroup workgroups retain the single-tile, phase-ordered path.
+ // Workgroup barriers protect those common operands; score, probability and
+ // output workspaces remain subgroup-owned. Smaller groups use independent tiles.
+-shared f16vec4 operand_workspace[row_split * 128];
++shared f16vec4 operand_workspace[(row_split < 8 ? row_split : 8) * 128];
+ shared vec4 float_workspace[row_split * 64];
+ shared f16vec4 probability_workspace[row_split * 64];
+ // Separate from scores: publish each row once without a score-read/overwrite barrier.
+@@ -98,27 +98,33 @@
+     const float head_slope = p.max_bias > 0.0
+         ? float(perElemOpComputeSlope(0, 0, ACC_TYPE(0), iq2)) : 1.0;
+ 
+-    [[unroll]] for (uint index = lane; index < 128; index += SubGroupSize) {
+-        const uint row = index / 16;
+-        const uint depth = (index % 16) * 4;
+-        vec4 query = vec4(0);
+-        if (first_query + row < N) {
+-            const uint address = query_base + (first_query + row) * q_stride + depth;
+-            query = vec4(query_data[address], query_data[address + 1],
+-                         query_data[address + 2], query_data[address + 3]);
+-        }
+-        operand_workspace[operand_base + index] = f16vec4(query * p.scale);
+-    }
+-    subgroupBarrier();
+     coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseA> queries[4];
+-    [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
+-        coopMatLoad(queries[depth_tile], operand_workspace,
+-                    operand_base + depth_tile * 4, 16, gl_CooperativeMatrixLayoutRowMajor);
+-    }
+-    if (row_split >= 4) {
+-        barrier(); // all subgroup Q fragments must be loaded before shared K overwrites them
+-    } else {
+-        subgroupBarrier();
++    // Reuse eight one-time Q staging slots in subgroup-uniform waves.
++    [[unroll]] for (uint query_wave = 0; query_wave < (row_split + 7) / 8; ++query_wave) {
++        if (group / 8 == query_wave) {
++            const uint query_operand_base = (group % 8) * 128;
++            [[unroll]] for (uint index = lane; index < 128; index += SubGroupSize) {
++                const uint row = index / 16;
++                const uint depth = (index % 16) * 4;
++                vec4 query = vec4(0);
++                if (first_query + row < N) {
++                    const uint address = query_base + (first_query + row) * q_stride + depth;
++                    query = vec4(query_data[address], query_data[address + 1],
++                                 query_data[address + 2], query_data[address + 3]);
++                }
++                operand_workspace[query_operand_base + index] = f16vec4(query * p.scale);
++            }
++            subgroupBarrier();
++            [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
++                coopMatLoad(queries[depth_tile], operand_workspace,
++                            query_operand_base + depth_tile * 4, 16, gl_CooperativeMatrixLayoutRowMajor);
++            }
++        }
++        if (row_split >= 4) {
++            barrier(); // finish Q reads before reusing slots for the next wave or K/V
++        } else {
++            subgroupBarrier();
++        }
+     }
+ 
+     coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator> output_tiles[4];
