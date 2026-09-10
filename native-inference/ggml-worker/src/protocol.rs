@@ -6,6 +6,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WorkerCommand {
+    Prepare {
+        model_id: String,
+        config: serde_json::Value,
+    },
     Run {
         task_id: String,
         node_id: String,
@@ -28,6 +32,17 @@ pub enum WorkerCommand {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WorkerFrame<'a> {
+    Prepared {
+        model_id: &'a str,
+        status: &'a str,
+        message: &'a str,
+        device: &'a str,
+        free_bytes: Option<u64>,
+    },
+    Diagnostic {
+        task_id: &'a str,
+        message: &'a str,
+    },
     Ready {
         component: &'a str,
     },

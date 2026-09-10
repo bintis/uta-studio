@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use serde::Serialize;
 use serde_json::Value;
-use uta_ggml_runtime::game::{Game, GameInferParams};
+use uta_ggml_runtime::game::GameInferParams;
 use uta_ggml_runtime::{DeviceDescriptor, DeviceKind, GgmlRuntime};
 
 const SOURCE_COMMIT: &str = "475a8ee781fe8cca980b3b12fbe6c80c768a813a";
@@ -35,6 +35,7 @@ struct GameNoteEvidence {
 }
 
 pub fn infer(
+    loaded: Option<crate::prepared::Weights>,
     runtime: Arc<GgmlRuntime>,
     device: &DeviceDescriptor,
     model_path: &Path,
@@ -45,7 +46,7 @@ pub fn infer(
     report: &mut dyn FnMut(u64, u64),
 ) -> Result<(), String> {
     validate_artifact_identity(artifact_identity)?;
-    let model = Game::load(runtime, device, model_path)?;
+    let model = crate::prepared::game(loaded, runtime, device, model_path)?;
     let params = infer_params(artifact_identity)?;
     let variant = format!("GAME-1.0.3-{}-onnx", model.config().variant);
     let model_gguf_size_bytes = model_path

@@ -19,7 +19,7 @@ fn cleanup_inputs(primary: &Path, secondary: Option<&Path>) {
     }
 }
 
-fn model_path(config: &serde_json::Value) -> Result<PathBuf, String> {
+pub(crate) fn model_path(config: &serde_json::Value) -> Result<PathBuf, String> {
     config
         .get("model_path")
         .and_then(serde_json::Value::as_str)
@@ -58,7 +58,7 @@ fn resolve_device_class(
         })
 }
 
-fn same_device_name(left: &str, right: &str) -> bool {
+pub(crate) fn same_device_name(left: &str, right: &str) -> bool {
     let tokens = |value: &str| {
         value
             .split(|character: char| !character.is_ascii_alphanumeric())
@@ -106,6 +106,23 @@ fn f32_matmul_may_be_promoted(model_id: &str) -> bool {
     )
 }
 
+pub(crate) fn initialize_runtime(
+    model_id: &str,
+    library_dir: &Path,
+) -> Result<std::sync::Arc<GgmlRuntime>, String> {
+    // Each worker owns only one model/precision policy. Prepare and Run share
+    // this initialization; never change the environment after GGML starts.
+    // SAFETY: this is called before this worker's first GGML initialization.
+    unsafe {
+        if f32_matmul_may_be_promoted(model_id) {
+            std::env::set_var(F32_MATMUL_ENV, "promote");
+        } else {
+            std::env::remove_var(F32_MATMUL_ENV);
+        }
+    }
+    GgmlRuntime::load(library_dir)
+}
+
 /// Enumerates the machine's usable GGML devices through the packaged runtime.
 ///
 /// Enumeration loads the shared libraries and reads backend metadata; it never
@@ -131,7 +148,7 @@ pub fn device_inventory() -> Result<Vec<DeviceReport>, String> {
         .collect())
 }
 
-fn execution_device(
+pub(crate) fn execution_device(
     config: &serde_json::Value,
     runtime: &GgmlRuntime,
 ) -> Result<DeviceDescriptor, String> {
@@ -692,6 +709,7 @@ pub fn run(
     secondary_source: Option<&Path>,
     output_dir: &Path,
     config: &serde_json::Value,
+    prepared: Option<crate::prepared::Prepared>,
     mut progress: impl FnMut(f32, &'static str, Option<(u64, u64)>),
 ) -> Result<Vec<PublishedOutput>, String> {
     validate_semantics(model_id, config)?;
@@ -755,29 +773,20 @@ pub fn run(
         return Err("GGML engine output target already exists".to_string());
     }
     progress(0.1, "Loading GGML shared libraries from Rust", None);
-    // The packaged GGML reads this once, when it builds the device's shader
-    // pipelines, which happens inside the backend creation below. A worker
-    // process runs one model, so the choice is per model.
-    //
-    // SAFETY: this process is single-threaded until the first GGML call, which
-    // is the load immediately below, and nothing else reads the environment
-    // before then.
-    unsafe {
-        if f32_matmul_may_be_promoted(model_id) {
-            std::env::set_var(F32_MATMUL_ENV, "promote");
+    let initialized = (|| {
+        if let Some(prepared) = prepared {
+            if !prepared.matches(model_id, &model, config) {
+                return Err("preloaded weights disagree with requested model/device".to_string());
+            }
+            Ok((prepared.runtime, prepared.device, prepared.weights))
         } else {
-            std::env::remove_var(F32_MATMUL_ENV);
+            let runtime = initialize_runtime(model_id, &validated_runtime.library_dir)?;
+            let device = execution_device(config, &runtime)?;
+            Ok((runtime, device, None))
         }
-    }
-    let ggml_runtime = match GgmlRuntime::load(&validated_runtime.library_dir) {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            cleanup_inputs(&input, secondary_input.as_deref());
-            return Err(error);
-        }
-    };
-    let device = match execution_device(config, &ggml_runtime) {
-        Ok(device) => device,
+    })();
+    let (ggml_runtime, device, loaded) = match initialized {
+        Ok(initialized) => initialized,
         Err(error) => {
             cleanup_inputs(&input, secondary_input.as_deref());
             return Err(error);
@@ -803,26 +812,26 @@ pub fn run(
         );
     };
     let inference_result = if model_id == "rmvpe" {
-        let rmvpe = uta_ggml_runtime::rmvpe::Rmvpe::load(ggml_runtime, &device, &model);
+        let rmvpe = crate::prepared::rmvpe(loaded, ggml_runtime, &device, &model);
         rmvpe.and_then(|rmvpe| {
             let frames = rmvpe.process_wav(&input, &mut report_units)?;
             write_raw_rmvpe_evidence(frames, &engine_output)
         })
     } else if model_id == "fcpe" {
-        let fcpe = uta_ggml_runtime::fcpe::Fcpe::load(ggml_runtime, &device, &model);
+        let fcpe = crate::prepared::fcpe(loaded, ggml_runtime, &device, &model);
         fcpe.and_then(|fcpe| {
             let frames = fcpe.process_wav(&input, &mut report_units)?;
             write_raw_fcpe_evidence(frames, &engine_output)
         })
     } else if model_id == "basic_pitch" {
-        let basic_pitch =
-            uta_ggml_runtime::basic_pitch::BasicPitch::load(ggml_runtime, &device, &model);
+        let basic_pitch = crate::prepared::basic_pitch(loaded, ggml_runtime, &device, &model);
         basic_pitch.and_then(|basic_pitch| {
             let frames = basic_pitch.process_wav(&input, &mut report_units)?;
             write_raw_basic_pitch_evidence(frames, &engine_output)
         })
     } else if game_mode {
         crate::game::infer(
+            loaded,
             ggml_runtime,
             &device,
             &model,
@@ -834,6 +843,7 @@ pub fn run(
         )
     } else if jbm555_mode {
         crate::jbm555::infer(
+            loaded,
             ggml_runtime,
             &device,
             &model,
@@ -847,6 +857,7 @@ pub fn run(
         )
     } else if model_id == "stars" {
         crate::stars::infer(
+            loaded,
             ggml_runtime,
             &device,
             &model,
@@ -860,6 +871,7 @@ pub fn run(
         )
     } else if model_id == "rosvot" {
         crate::rosvot::infer(
+            loaded,
             ggml_runtime,
             &device,
             &model,
@@ -874,6 +886,7 @@ pub fn run(
     } else if model_id == "qwen3_forced_aligner_0_6b" {
         let backend = backend_for_device(&device);
         crate::qwen::infer(
+            loaded,
             ggml_runtime,
             &device,
             &model,
@@ -887,6 +900,7 @@ pub fn run(
     } else if model_id == "qwen3_asr_1_7b" {
         let backend = backend_for_device(&device);
         crate::qwen_asr::infer(
+            loaded,
             ggml_runtime,
             &device,
             &model,
@@ -900,6 +914,7 @@ pub fn run(
     } else if firered_mode {
         let backend = backend_for_device(&device);
         crate::firered::infer(
+            loaded,
             ggml_runtime,
             &device,
             &model,
@@ -911,9 +926,33 @@ pub fn run(
             &mut report_units,
         )
     } else {
-        let roformer = uta_ggml_runtime::roformer::Roformer::load(ggml_runtime, &device, &model);
+        let secondary = crate::prepared::secondary(&ggml_runtime, &device, &model, config);
+        let roformer = crate::prepared::roformer(loaded, ggml_runtime, &device, &model);
         roformer.and_then(|mut roformer| {
-            roformer.process_wav(&input, &engine_output, &mut report_units)
+            if let Some(secondary) = secondary {
+                let stats = roformer.process_wav_with_secondary(
+                    &secondary,
+                    &model,
+                    &input,
+                    &engine_output,
+                    &mut report_units,
+                )?;
+                let message = format!(
+                    "GPU chunks: {} = {}, {} = {}",
+                    device.description,
+                    stats.primary_chunks,
+                    secondary.description,
+                    stats.secondary_chunks
+                );
+                eprintln!("[super acceleration] {message}");
+                crate::protocol::emit(crate::protocol::WorkerFrame::Diagnostic {
+                    task_id,
+                    message: &message,
+                })?;
+                Ok(())
+            } else {
+                roformer.process_wav(&input, &engine_output, &mut report_units)
+            }
         })
     };
     drop(report_units);

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use uta_ggml_runtime::stars::{
-    GlobalStyle, PITCH_CLASSES, RawNote, RawTechnique, Stars, TECHNIQUE_TAXONOMY, TranscriptWord,
+    GlobalStyle, PITCH_CLASSES, RawNote, RawTechnique, TECHNIQUE_TAXONOMY, TranscriptWord,
 };
 use uta_ggml_runtime::{DeviceDescriptor, GgmlRuntime};
 
@@ -115,6 +115,7 @@ struct DependencyIdentity {
 
 #[allow(clippy::too_many_arguments)]
 pub fn infer(
+    loaded: Option<crate::prepared::Weights>,
     runtime: Arc<GgmlRuntime>,
     device: &DeviceDescriptor,
     stars_model: &Path,
@@ -143,7 +144,7 @@ pub fn infer(
     progress(200, 1000);
     let shared = uta_ggml_runtime::stars::prepare_wav_inputs(stars_wav, &raw_f0)?;
     let g2p = ChineseG2pAsset::load_embedded()?;
-    let stars = Stars::load(runtime, device, stars_model)?;
+    let stars = crate::prepared::stars(loaded, runtime, device, stars_model)?;
     progress(250, 1000);
     let result = stars.infer_transcript(
         &shared,

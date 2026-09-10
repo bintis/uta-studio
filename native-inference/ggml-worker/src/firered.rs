@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use uta_ggml_runtime::firered::{
-    ENCODER_FRAMES, FEATURE_FRAMES, FireRed, MAX_GENERATED_TOKENS, MAX_WINDOW_SAMPLES, SAMPLE_RATE,
+    ENCODER_FRAMES, FEATURE_FRAMES, MAX_GENERATED_TOKENS, MAX_WINDOW_SAMPLES, SAMPLE_RATE,
     Transcription, VOCAB_SIZE, WINDOW_OVERLAP_SAMPLES,
 };
 use uta_ggml_runtime::{DeviceDescriptor, GgmlRuntime};
@@ -59,6 +59,7 @@ struct WindowEvidence {
 
 #[allow(clippy::too_many_arguments)]
 pub fn infer(
+    loaded: Option<crate::prepared::Weights>,
     runtime: Arc<GgmlRuntime>,
     device: &DeviceDescriptor,
     model_path: &Path,
@@ -85,7 +86,7 @@ pub fn infer(
         .map_err(|error| format!("FireRed CMVN sidecar is unavailable: {error}"))?;
     let tokens = std::fs::read(named_artifact(&request, "tokens")?)
         .map_err(|error| format!("FireRed token sidecar is unavailable: {error}"))?;
-    let model = FireRed::load(runtime, device, model_path)?;
+    let model = crate::prepared::firered(loaded, runtime, device, model_path)?;
     let transcription = model.transcribe_wav(wav, &cmvn, &tokens, progress)?;
     let evidence = evidence(
         request.model_content_digest,

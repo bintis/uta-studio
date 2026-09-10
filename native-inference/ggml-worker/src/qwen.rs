@@ -3,7 +3,6 @@ use std::path::Path;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use uta_ggml_runtime::qwen::Qwen;
 use uta_ggml_runtime::qwen::aligner::Alignment;
 use uta_ggml_runtime::{DeviceDescriptor, GgmlRuntime};
 
@@ -65,6 +64,7 @@ struct Diagnostics {
 }
 
 pub fn infer(
+    loaded: Option<crate::prepared::Weights>,
     runtime: Arc<GgmlRuntime>,
     device: &DeviceDescriptor,
     model_path: &Path,
@@ -78,7 +78,7 @@ pub fn infer(
     let request: Request = serde_json::from_value(config.clone())
         .map_err(|error| format!("Qwen forced-alignment request is invalid: {error}"))?;
     validate_request(&request)?;
-    let mut qwen = Qwen::load(runtime, device, model_path)?;
+    let mut qwen = crate::prepared::qwen(loaded, runtime, device, model_path)?;
     qwen.retain_audio_intermediates(
         config
             .get("turbo_acceleration")

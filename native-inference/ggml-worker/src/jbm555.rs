@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use serde::Serialize;
 use serde_json::Value;
-use uta_ggml_runtime::jbm555::{Jbm555, OFFSET_THRESHOLD, ONSET_THRESHOLD, SAMPLE_RATE};
+use uta_ggml_runtime::jbm555::{OFFSET_THRESHOLD, ONSET_THRESHOLD, SAMPLE_RATE};
 use uta_ggml_runtime::{DeviceDescriptor, DeviceKind, GgmlRuntime};
 
 #[derive(Serialize)]
@@ -47,6 +47,7 @@ struct RangeEvidence {
 }
 
 pub fn infer(
+    loaded: Option<crate::prepared::Weights>,
     runtime: Arc<GgmlRuntime>,
     device: &DeviceDescriptor,
     model_path: &Path,
@@ -59,7 +60,7 @@ pub fn infer(
     if config.get("semantic_output").and_then(Value::as_str) != Some("note_candidate_evidence") {
         return Err("JBM555 artifact semantic output is invalid".to_string());
     }
-    let model = Jbm555::load(runtime, device, model_path)?;
+    let model = crate::prepared::jbm(loaded, runtime, device, model_path)?;
     let (notes, sample_count) = model.process_wavs(mix_path, vocal_path, report)?;
     let source_start = config
         .get("source_start")

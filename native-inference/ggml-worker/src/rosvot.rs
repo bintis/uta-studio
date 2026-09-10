@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use uta_ggml_runtime::rosvot::{PITCH_CLASSES, RawNote, Rosvot, TranscriptWord};
+use uta_ggml_runtime::rosvot::{PITCH_CLASSES, RawNote, TranscriptWord};
 use uta_ggml_runtime::{DeviceDescriptor, GgmlRuntime};
 
 use crate::pitch_input::read_shared_rmvpe;
@@ -82,6 +82,7 @@ struct DependencyIdentity {
 
 #[allow(clippy::too_many_arguments)]
 pub fn infer(
+    loaded: Option<crate::prepared::Weights>,
     runtime: Arc<GgmlRuntime>,
     device: &DeviceDescriptor,
     rosvot_model: &Path,
@@ -109,7 +110,7 @@ pub fn infer(
     let raw_f0 = read_shared_rmvpe(rmvpe_evidence)?;
     progress(200, 1000);
     let shared = uta_ggml_runtime::rosvot::prepare_wav_inputs(rosvot_wav, &raw_f0)?;
-    let rosvot = Rosvot::load(runtime, device, rosvot_model)?;
+    let rosvot = crate::prepared::rosvot(loaded, runtime, device, rosvot_model)?;
     progress(250, 1000);
     let result =
         rosvot.infer_transcript(&shared, &words, request.source_start_micros, |_, _| {})?;

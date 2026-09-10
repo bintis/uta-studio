@@ -7,6 +7,7 @@ mod firered;
 mod game;
 mod jbm555;
 mod pitch_input;
+mod prepared;
 mod protocol;
 mod qwen;
 mod qwen_asr;
@@ -25,6 +26,7 @@ fn run_task(
     input_artifacts: &[std::path::PathBuf],
     output_dir: &std::path::Path,
     config: &serde_json::Value,
+    prepared: Option<prepared::Prepared>,
 ) -> Result<(), String> {
     if !output_dir.is_dir() {
         return Err("authorized GGML task output directory is unavailable".to_string());
@@ -53,6 +55,7 @@ fn run_task(
         secondary_source,
         output_dir,
         config,
+        prepared,
         |fraction, message, work_units| {
             if let Some((completed, total)) = work_units {
                 let _ = emit(WorkerFrame::Progress {
@@ -91,6 +94,7 @@ fn main() {
     {
         std::process::exit(3);
     }
+    let mut prepared = None;
     for line in std::io::stdin().lock().lines() {
         let line = match line {
             Ok(line) if !line.trim().is_empty() => line,
@@ -115,6 +119,29 @@ fn main() {
         };
         match command {
             WorkerCommand::Quit => break,
+            WorkerCommand::Prepare { model_id, config } => {
+                match prepared::Prepared::preload(&model_id, &config) {
+                    Ok(model) => {
+                        let _ = emit(WorkerFrame::Prepared {
+                            model_id: &model_id,
+                            status: &model.status,
+                            message: &model.message,
+                            device: &model.device.description,
+                            free_bytes: model.free_bytes,
+                        });
+                        prepared = Some(model);
+                    }
+                    Err(message) => {
+                        let _ = emit(WorkerFrame::Error {
+                            task_id: None,
+                            code: "model_preparation_failed",
+                            message: &message,
+                            retryable: false,
+                        });
+                        break;
+                    }
+                }
+            }
             WorkerCommand::Devices => match engine::device_inventory() {
                 Ok(devices) => {
                     let _ = emit(WorkerFrame::Devices { devices: &devices });
@@ -146,9 +173,14 @@ fn main() {
                 ..
             } => {
                 eprintln!("[uta-ggml-worker] node={node_id} model={model_id}");
-                if let Err(message) =
-                    run_task(&task_id, &model_id, &input_artifacts, &output_dir, &config)
-                {
+                if let Err(message) = run_task(
+                    &task_id,
+                    &model_id,
+                    &input_artifacts,
+                    &output_dir,
+                    &config,
+                    prepared.take(),
+                ) {
                     let _ = emit(WorkerFrame::Error {
                         task_id: Some(&task_id),
                         code: "native_inference_failed",
