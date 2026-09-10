@@ -436,7 +436,7 @@ Precision policy, complete context, default chunk/overlap, synchronization,
 cancellation and installed assets are preserved. No Vulkan Super/counter stress
 resumption or production promotion.
 
-CPU primitive/ABI checks and 54 Rust library tests pass. Full-axis XPU primitive
+Earlier CPU primitive/ABI checks and 54 Rust library tests passed. Full-axis XPU primitive
 checks pass for rotation and attention layout; the latter compares every output
 exactly with native packed SDPA. A complete 12-second real-audio rotation+layout
 comparison has maximum sample difference 4.97698783875e-6 and SNR 112.6107 dB.
@@ -488,14 +488,19 @@ experiments. The Rust metadata forwarding check brings the library suite to
 55 passing tests; the suite and CPU ABI/primitive checks passed again after
 retirement (`20260910T202405-573055382379`).
 
-Family 12-second regression completed XE90 vocals and instrumental control /
-current IEEE-projection candidate executions. Original PolarFormer control
-failed inside native SDPA requesting 8.23 GiB; no automatic retry. Its candidate
-and the three mel-band pairs remain unexecuted. This is not family-wide acceptance.
+Family 12-second regression executed XE90 vocals/instrumental and mel-band
+denoise/dereverb, comparing every retained waveform sample. Comparisons against
+the original control include earlier rotary/layout/normalization changes:
+SNR 111.21 / 67.62 / 136.80 / 84.53 dB, respectively; no listening/parity claim.
+Original PolarFormer control failed inside native SDPA requesting 8.23 GiB.
+Original Harmony control emitted nonfinite masks
+(`20260910T215111-9b8cb57be73d`). Neither failed control was retried or used for
+candidate acceptance. Those two geometries remain blocked, not family-wide
+acceptance. Evidence: `selected-family-comparison.json` and the recorded cases.
 
 Current authorization: optimize speed **while preserving the existing precision
 policy**, full context/chunk/overlap, serial execution, cancellation and sync.
-Four further XPU changes are now committed and bounded-tested: `e2674d9` merges
+Four further XPU changes were investigated; only the first two remain active: `e2674d9` merges
 ordinary FP32 rotary with existing half writeback; `d8fa55c` promotes SDPA output
 inside FP32 gating; `6382318`/`45db8e1` fuses FP32 projection + erf GELU; `dafc2a7`
 fuses output projection + FP32 residual. No TF32 allowance or in-place input
@@ -509,10 +514,8 @@ not bit-identical or listening-qualified. Evidence: `precision-fusion-comparison
 `residual-comparison.json`. Small projection oracle bounds are documented in the
 comparison document; failed CPU attempts remain recorded, not erased.
 
-Next is a **fresh full-song pair**, `profile-build` versus `residual-build`, with
-tracing/oneDNN verbose disabled and no warm runs. New whole-song speed remains
-unmeasured; 72.54 seconds is still the last accepted full-song optimization result.
-The subsequent full-song results supersede that pending measurement:
+The subsequent full-song pair and ablations used tracing/oneDNN verbose off
+and no warm runs; these supersede the earlier pending measurement:
 
 - Fresh control: **74.567869923 s** inference / 76.898180361 s process.
 - All four fusions: **71.421349470 s**, SNR 79.33864 dB; max waveform difference
@@ -537,12 +540,27 @@ all half **storage bits** match scalar conversion on both full 79,349,760-elemen
 axes, plus negative zero, halfway values, subnormals, odd widths and shifted
 storage. Local synchronized time is about **1.85 → 1.50 ms**. Native scalar
 conversion on the same device handles nonrepresentable views; no accepted
-shape is restricted and no backend/precision fallback is introduced. CPU checks,
-ABI and the bounded XE90 execution pass; complete waveform/full-song/family
-review remains. Candidate build: `paired-build`; retained selected control:
-`gating-build`. Planned next: operator-only normalization/axis-copy investigation,
-then final relevant regression and handoff; no model routing change without
-numerical and runtime evidence. The 60-second goal remains unmet.
+shape is restricted and no backend/precision fallback is introduced. However,
+its full-song trial measured **65.16225 s** versus 71.93590 s control under
+compiler contention in both runs, with one candidate observer read error.
+Waveform SNR was 126.81178 dB, max difference 2.65240669e-6. This does **not**
+establish an incremental model gain over the cleaner selected 64.52598 s path.
+`71c0ad0` therefore leaves paired copy **diagnostic-only**, not model-routed.
+The axis-view normalization probe also found no material gain; no model axis
+copy was removed. Evidence: `selected-fullsong-comparison.json` and
+`norm-axis-full-check/`.
+
+**Final active source:** `71c0ad0`; fresh private build `selected-build`.
+The active model operations match retained `gating-build`; no GELU/residual
+post-op, TF32 trial or paired value-copy routing remains. Current CPU primitives,
+ABI and **55 Rust tests** pass (`20260910T221000-8f26c62c9a55`). At the final
+source review, a 68.10% CPU/compiler snapshot deferred current-build GPU smoke
+while independent source/docs checks proceeded; it is not yet claimed executed.
+The retained matching active path already has full-song and exact XPU primitive
+evidence. No more performance attempts are planned in this handoff. The
+**60-second goal remains unmet**; no installed runtime/model/source media changed.
+Next technical blockers are the two original model failures and further
+precision-preserving bottleneck work, not TF32 or unqualified post-op promotion.
 
 Kernel journal review is unavailable due to permissions
 (`20260910T205622-b1bff200266f`); do not claim absence of GPU reset from boot IDs.

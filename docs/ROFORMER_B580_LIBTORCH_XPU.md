@@ -468,3 +468,60 @@ about **1.85 → 1.50 ms**, with some slower scalar tail samples. Evidence:
 ABI and two-chunk model execution pass. Full waveform/full-song/family review is
 still pending. The next possible optimization is operator-only examination of
 normalization across axis views before any further model routing change.
+
+### Final selection and verification scope
+
+The paired-copy full-song trial (`selected-fullsong-comparison.json`) measured
+**71.935902365 → 65.162248519 s** inference, with process wall
+74.240350370 / 67.564503399 s. Both sampled separate compiler work (mean CPU
+21.14% / 21.29%); no other CCS clients were sampled, but the candidate observer
+had one read error. Complete waveform SNR is **126.81178 dB**, max difference
+**2.65240669e-6**. This confirms execution and numerical scope, not an incremental
+whole-model advantage over the cleaner **64.52598 s / 144.17758 dB** variant.
+`71c0ad0` therefore restores scalar value conversion in the model; paired copy
+is **diagnostic-only**, not retained merely for a microbenchmark gain.
+
+The normalization-axis probe (`fe16542`, `norm-axis-full-check/`, operation
+`20260910T214740-d181dcaba43b`) matches FP32 storage bits exactly but measures
+essentially equal packed/direct times: about 1.92–2.03 ms on the time axis and
+1.68 ms on the frequency axis, with one slower packed sample. Outputs are
+contiguous. There is no material demonstrated gain, so model axis copies stay.
+No claim about an uninspected internal copy implementation is needed.
+
+**Retained active path:** ordinary rotary FP32-to-half writeback plus FP32
+promotion inside gating, on top of the earlier accepted rotary/layout/RMS norm.
+Its active operations match the measured `gating-build`; current source is
+`71c0ad0`, freshly built into **`selected-build`**. CPU primitive checks, CPU ABI
+fixture and **55 Rust library tests** pass in
+`20260910T221000-8f26c62c9a55`. TF32 and GELU/residual post-op implementations are
+removed. Paired copy and axis-layout probes do not change model execution.
+The selected full-song evidence remains **64.525976343 s** inference /
+**66.647711604 s** process, **not under 60 seconds**.
+
+Family regression executed four complete 12-second model paths using the
+paired candidate; every retained guide waveform sample was compared against
+the original control, including earlier rotary/layout/normalization changes:
+
+| Model | Max absolute difference | SNR |
+| --- | ---: | ---: |
+| XE90 vocals | 8.35955143e-6 | 111.20821 dB |
+| XE90 instrumental | 5.07570803e-5 | 67.62440 dB |
+| Mel-band denoise | 8.51228833e-7 | 136.80460 dB |
+| Mel-band dereverb | 8.76262784e-5 | 84.53302 dB |
+
+`selected-family-comparison.json` records all 1,058,400 finite samples per case.
+These different reference scopes must not be confused with the conversion-only
+full-song 144.18 dB result; none is a listening or family-wide parity claim.
+Original Harmony control produced **nonfinite masks**
+(`20260910T215111-9b8cb57be73d`), so that control was not retried and no Harmony
+candidate was run. The original PolarFormer SDPA OOM also remains unresolved.
+No context shortening, alternate precision or backend fallback was used to make
+either failing model appear to pass.
+
+At final source review, a separate compiler drove a **68.10% CPU** snapshot;
+current-build GPU smoke was deferred while independent source/docs checks
+proceeded, not yet claimed executed. The preceding measured matching active
+path remains the executed GPU evidence. No more performance attempts are planned
+for this handoff. Kernel log access remains unavailable; no GPU-reset absence
+or post-exit host-stability guarantee is made. Installed assets are untouched,
+and this is not production or release acceptance.
