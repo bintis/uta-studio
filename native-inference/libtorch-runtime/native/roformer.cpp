@@ -2,6 +2,7 @@
 #include "projection.hpp"
 #include "attention_partition.hpp"
 #include "roformer_ops.hpp"
+#include "roformer_projection.hpp"
 #include <cmath>
 #include <numeric>
 #include <iostream>
@@ -252,9 +253,12 @@ private:
     }
     at::Tensor feed_forward(const at::Tensor& sequence, const std::string& prefix) const {
         auto current = normalize(sequence, name(prefix, "ff_norm", "norm.weight"));
-        current = project(current, weights->get(name(prefix, "ff1_w", "in.weight")), weights->get(name(prefix, "ff1_b", "in.bias")));
+        const auto weight = weights->get(name(prefix, "ff1_w", "in.weight"));
+        const auto bias = weights->get(name(prefix, "ff1_b", "in.bias"));
+        const bool fused = runtime->backend == "libtorch_xpu";
+        current = fused ? fused_roformer_projection_gelu(current, weight, bias) : project(current, weight, bias);
         runtime->checkpoint(prefix + ".feed_forward_projection");
-        current = at::gelu(current, "none");
+        if (!fused) current = at::gelu(current, "none");
         return sequence + project(current, weights->get(name(prefix, "ff2_w", "out.weight")), weights->get(name(prefix, "ff2_b", "out.bias")));
     }
 };
