@@ -425,7 +425,7 @@ readiness, fused-SDPA availability or later host stability is established. See
 [LibTorch execution](../../docs/design/runtime/LIBTORCH_EXECUTION.md) for details and next checks.
 Super whole-task scheduling remains incomplete and is not qualified by these results.
 
-## LibTorch RoFormer speed optimization — PAUSED by user (2026-09-10 UTC)
+## LibTorch RoFormer speed optimization — tests resumed by user (2026-09-10 UTC)
 
 The user authorized optimizing the native XPU RoFormer family toward 60 seconds
 for the existing 354.88-second song. Historical native XE90 inference completed
@@ -465,6 +465,11 @@ full-song candidate and TF32 experiment have **not** executed; no paired speedup
 or new whole-song parity conclusion exists. **Do not resume automatically.**
 Pause receipt: `test-artifacts/libtorch-roformer-speed/PAUSED.txt`, operation
 `20260910T194410-ffe5f8febca8`. Unrelated working-tree changes remain intact.
+
+The user explicitly resumed testing after that cancellation. Operation
+`20260910T194530-561f36b751e3` records this new authorization and the fresh pair /
+separate TF32 diagnostic plan. The preceding pause is historical, not an active
+blocker; do not overwrite its files or reinterpret missing completion records.
 
 ## Next actions
 
