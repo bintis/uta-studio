@@ -99,3 +99,24 @@ fn query_owned_online_rescale_stress() {
         );
     }
 }
+
+#[test]
+#[ignore = "explicit B580 query-owned workgroup boundary regression"]
+fn query_owned_workgroup_boundaries() {
+    let backend = backend();
+    for queries in [63, 64, 65, 127, 128, 129] {
+        run_shape(
+            &backend,
+            Shape {
+                d: 64,
+                queries,
+                keys: 129,
+                heads: 2,
+                batches: 2,
+                padding: 4,
+                masked: true,
+            },
+            1,
+        );
+    }
+}
