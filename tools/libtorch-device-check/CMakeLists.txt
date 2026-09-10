@@ -20,6 +20,13 @@ foreach(component torch torch_cpu torch_hip c10 c10_hip)
   target_link_libraries(uta-libtorch-device-check PRIVATE "-Wl,--no-as-needed" "${native_${component}}" "-Wl,--as-needed")
 endforeach()
 find_library(native_hip NAMES amdhip64 PATHS "${ROCM_ROOT}/lib" NO_DEFAULT_PATH REQUIRED)
-target_link_libraries(uta-libtorch-device-check PRIVATE "${native_hip}")
+find_library(native_host_blas NAMES rocm-openblas librocm-openblas.so.0
+  PATHS "${ROCM_ROOT}/lib/host-math/lib" NO_DEFAULT_PATH REQUIRED)
+find_library(native_lzma NAMES rocm_sysdeps_liblzma librocm_sysdeps_liblzma.so.5
+  PATHS "${ROCM_ROOT}/lib/rocm_sysdeps/lib" NO_DEFAULT_PATH REQUIRED)
+# Native execution cannot depend on torch's Python preloader. The packaged
+# liblzma filename differs from its SONAME, so explicitly retain its handle.
+target_link_libraries(uta-libtorch-device-check PRIVATE "${native_hip}"
+  "-Wl,--no-as-needed" "${native_host_blas}" "${native_lzma}" "-Wl,--as-needed")
 set_target_properties(uta-libtorch-device-check PROPERTIES
-  BUILD_RPATH "${TORCH_ROOT}/lib;${ROCM_ROOT}/lib;${ROCM_ROOT}/lib/rocm_sysdeps/lib")
+  BUILD_RPATH "${TORCH_ROOT}/lib;${ROCM_ROOT}/lib;${ROCM_ROOT}/lib/host-math/lib;${ROCM_ROOT}/lib/rocm_sysdeps/lib")
