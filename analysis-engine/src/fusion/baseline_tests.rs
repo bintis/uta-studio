@@ -39,6 +39,27 @@ fn acoustic() -> AcousticEvidence {
     }
 }
 
+#[test]
+fn acoustic_flux_spike_requires_independent_attack_corroboration() {
+    let mut evidence = acoustic();
+    evidence.frames[20].spectral_flux = Some(0.3);
+    evidence.frames[19].spectral_flux = Some(0.01);
+
+    let unsupported = acoustic_onset_challengers(&boundaries(69.0), &evidence).unwrap();
+    assert!(unsupported.is_empty());
+    let features = summarize_acoustic(TimeRange::new(200_000, 300_000).unwrap(), &evidence).unwrap();
+    assert_eq!(features.onset_supported, Some(false));
+
+    evidence.frames[19].rms = 0.10;
+    evidence.frames[20].rms = 0.12;
+    let supported = acoustic_onset_challengers(&boundaries(69.0), &evidence).unwrap();
+    assert_eq!(supported.len(), 2);
+    assert_eq!(supported[0].range, TimeRange::new(100_000, 200_000).unwrap());
+    assert_eq!(supported[1].range, TimeRange::new(200_000, 500_000).unwrap());
+    let features = summarize_acoustic(TimeRange::new(200_000, 300_000).unwrap(), &evidence).unwrap();
+    assert_eq!(features.onset_supported, Some(true));
+}
+
 fn game(midi: f32) -> GameEvidence {
     GameEvidence {
         schema_version: 1,

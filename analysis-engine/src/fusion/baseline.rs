@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::artifact::{AcousticEvidence, BasicPitchEvidence, GameEvidence, TechniqueEvidence};
+use crate::artifact::{
+    AcousticEvidence, AcousticEvidenceFrame, BasicPitchEvidence, GameEvidence, TechniqueEvidence,
+};
 
 use super::candidate_states::{
     MAX_EXPANDED_CANDIDATES, expand_pitch_alternative_states, f0_consolidation_challengers,
@@ -340,11 +342,14 @@ fn summarize_acoustic(
     let preceding_flux = onset_index
         .checked_sub(1)
         .and_then(|index| evidence.frames[index].spectral_flux);
-    // A measured DSP onset supports a transition when flux is at least twice
-    // the preceding frame and above the finite floor. This is not probability.
-    let onset_supported = onset_flux
-        .zip(preceding_flux)
-        .map(|(onset, preceding)| onset >= (preceding * 2.0).max(1.0e-6));
+    // Spectral flux alone is too sensitive on vocals: consonants, vibrato and
+    // tiny spectral redraws can double a very small previous value. Require a
+    // second attack cue before this local boundary receives onset support.
+    let onset_supported = onset_index.checked_sub(1).and_then(|previous| {
+        onset_flux
+            .zip(preceding_flux)
+            .map(|_| acoustic_attack_score(&evidence.frames[previous], &evidence.frames[onset_index]).is_some())
+    });
     Ok(AcousticCandidateFeatures {
         frame_count,
         mean_rms,
@@ -650,6 +655,39 @@ fn f0_transition_challengers(
     )
 }
 
+fn acoustic_attack_score(
+    previous: &AcousticEvidenceFrame,
+    current: &AcousticEvidenceFrame,
+) -> Option<f32> {
+    let preceding_flux = previous.spectral_flux?;
+    let onset_flux = current.spectral_flux?;
+    let flux_floor = 1.0e-6;
+    if onset_flux < (preceding_flux * 2.0).max(flux_floor) {
+        return None;
+    }
+
+    let rms_rise = current.rms / previous.rms.max(1.0e-6);
+    let energy_attack = rms_rise >= 1.08;
+    let voiced_reentry = previous.periodicity < 0.55 && current.periodicity >= 0.65;
+    let periodicity_attack = current.periodicity >= 0.6
+        && current.periodicity - previous.periodicity >= 0.08;
+    let transition_attack = current.periodicity >= 0.6
+        && current.voicing_transition_activation >= 0.12;
+    if !(energy_attack || voiced_reentry || periodicity_attack || transition_attack) {
+        return None;
+    }
+
+    let flux_score = onset_flux / (onset_flux + preceding_flux.abs() + flux_floor);
+    let energy_score = ((rms_rise - 1.0) / 0.35).clamp(0.0, 1.0);
+    let periodicity_score = ((current.periodicity - previous.periodicity) / 0.35).clamp(0.0, 1.0);
+    let transition_score = current.voicing_transition_activation.clamp(0.0, 1.0);
+    let corroboration = energy_score
+        .max(periodicity_score)
+        .max(transition_score)
+        .max(if voiced_reentry { 1.0 } else { 0.0 });
+    Some((flux_score * 0.65 + corroboration * 0.35).clamp(0.0, 1.0))
+}
+
 fn acoustic_onset_challengers(
     boundaries: &BoundaryEvidenceSet,
     evidence: &AcousticEvidence,
@@ -657,17 +695,9 @@ fn acoustic_onset_challengers(
     evidence.validate().map_err(|error| error.message)?;
     let mut cuts = Vec::new();
     for pair in evidence.frames.windows(2) {
-        let Some(previous) = pair[0].spectral_flux else {
+        let Some(score) = acoustic_attack_score(&pair[0], &pair[1]) else {
             continue;
         };
-        let Some(onset) = pair[1].spectral_flux else {
-            continue;
-        };
-        let threshold = (previous * 2.0).max(1.0e-6);
-        if onset < threshold {
-            continue;
-        }
-        let score = (onset / (onset + previous.abs() + 1.0e-6)).clamp(0.0, 1.0);
         cuts.push(ContextCut {
             time: pair[1].start,
             score: Some(score),
