@@ -11,7 +11,8 @@ unset UTA_STUDIO_GGML_FA_KEY_COLUMNS UTA_STUDIO_GGML_FA_STAGE_KV
 unset UTA_STUDIO_GGML_FA_SMALL_SUBGROUP UTA_STUDIO_GGML_FA_SG32
 case "$backend" in
   torch)
-    export LD_LIBRARY_PATH="$root/native/torch/lib:$root/venv/lib:/run/opengl-driver/lib:${UTA_PROBE_LEVEL_ZERO_LIB_DIR:-/run/opengl-driver/lib}:${LD_LIBRARY_PATH:-}"
+    export LD_LIBRARY_PATH="$root/native/torch/lib:$root/venv/lib:/run/opengl-driver/lib:${UTA_PROBE_LEVEL_ZERO_LIB_DIR:-/run/opengl-driver/lib}:${UTA_PROBE_OPENCL_LIB_DIR:-/run/opengl-driver/lib}:${LD_LIBRARY_PATH:-}"
+    export OCL_ICD_VENDORS="${UTA_PROBE_OPENCL_VENDORS:-/run/opengl-driver/etc/OpenCL/vendors}"
     export ONEAPI_DEVICE_SELECTOR=level_zero:gpu
     unset SYCL_DEVICE_FILTER TORCH_ALLOW_TF32_CUBLAS_OVERRIDE
     export SYCL_CACHE_PERSISTENT=1 SYCL_CACHE_DIR="$root/sycl-cache"
