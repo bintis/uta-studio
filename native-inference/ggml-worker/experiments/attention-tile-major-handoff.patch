@@ -1,0 +1,48 @@
+--- a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
++++ b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
+@@ -172,8 +172,10 @@
+                     subgroupBarrier();
+                 }
+             }
+-            coopMatStore(scores, float_workspace, float_base + key_tile * 4,
+-                         8, gl_CooperativeMatrixLayoutRowMajor);
++            // Keep each 8x16 score matrix contiguous instead of interleaving
++            // two key tiles in every row. No padding or lane layout assumptions.
++            coopMatStore(scores, float_workspace, float_base + key_tile * 32,
++                         4, gl_CooperativeMatrixLayoutRowMajor);
+         }
+         if (row_split >= 4) {
+             barrier(); // finish every subgroup's K reads before this storage becomes V
+@@ -186,7 +188,9 @@
+         vec4 packed_scores[packs_per_lane];
+         float row_maximum = negative;
+         [[unroll]] for (uint part = 0; part < packs_per_lane; ++part) {
+-            vec4 scores = float_workspace[float_base + local_row * 8 + row_lane * packs_per_lane + part];
++            const uint key_pack = row_lane * packs_per_lane + part;
++            vec4 scores = float_workspace[float_base + (key_pack / 4) * 32
++                + local_row * 4 + key_pack % 4];
+             if (LOGIT_SOFTCAP) {
+                 scores = p.logit_softcap * tanh(scores);
+             }
+@@ -219,7 +223,9 @@
+                 }
+                 normalizer += float(probabilities[component]);
+             }
+-            probability_workspace[probability_base + local_row * 8 + row_lane * packs_per_lane + part] = probabilities;
++            const uint key_pack = row_lane * packs_per_lane + part;
++            probability_workspace[probability_base + (key_pack / 4) * 32
++                + local_row * 4 + key_pack % 4] = probabilities;
+         }
+         subgroupBarrier();
+         // Row-major 8x16 broadcast matrix: no fragment-to-lane assumption.
+@@ -248,8 +254,8 @@
+         // Load each rounded probability operand once for all four output tiles.
+         coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseA> probability_tiles[2];
+         [[unroll]] for (uint key_tile = 0; key_tile < 2; ++key_tile) {
+-            coopMatLoad(probability_tiles[key_tile], probability_workspace, probability_base + key_tile * 4,
+-                        8, gl_CooperativeMatrixLayoutRowMajor);
++            coopMatLoad(probability_tiles[key_tile], probability_workspace, probability_base + key_tile * 32,
++                        4, gl_CooperativeMatrixLayoutRowMajor);
+         }
+         // Keep each block's product separate, preserving the previous algorithm's
+         // blockwise addition instead of silently extending its FMA accumulation chain.
