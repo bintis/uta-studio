@@ -13,10 +13,7 @@ inline at::Tensor fused_roformer_normalization(const at::Tensor& input, const at
 // products, two sums and a stack. Phase and arithmetic remain complex-FP32.
 // PolarFormer is not RoPE and must keep its own softplus/phase transformation.
 inline at::Tensor interleaved_roformer_rotation(const at::Tensor& input, const at::Tensor& phase) {
-    auto shape = input.sizes().vec();
-    shape.back() /= 2;
-    shape.push_back(2);
-    auto paired = at::view_as_complex(input.reshape(shape));
+    auto paired = at::view_as_complex(input.unflatten(-1, {input.size(-1) / 2, 2}));
     return at::view_as_real(paired * phase).flatten(-2);
 }
 // oneDNN SDPA supports dense head-interleaved tensors. Preserve the layout
