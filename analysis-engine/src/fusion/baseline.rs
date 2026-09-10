@@ -1304,9 +1304,9 @@ pub(crate) fn fuse_singing_evidence_with_challengers(
     let indexed_technique_evidence = index_technique_evidence(technique_evidence)?;
     let mut candidates = Vec::with_capacity(candidate_duration_count);
     for (index, segment) in boundaries.segments.iter().enumerate() {
-        if segment.fractional_midi.is_none() {
-            // GAME rest regions stay on the timeline as gaps. They must not be
-            // forced into pitched note states.
+        if boundaries.kind == BoundaryEvidenceKind::Game && segment.fractional_midi.is_none() {
+            // Only GAME's missing MIDI denotes a rest. F0-derived durations
+            // intentionally obtain their pitch from the selected F0 expert.
             continue;
         }
         candidates.push(build_segment_candidate(
