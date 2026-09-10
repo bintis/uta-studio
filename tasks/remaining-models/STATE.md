@@ -342,9 +342,20 @@ Historical verification before the task-granularity correction:
   `test-artifacts/super-acceleration/refined/pipeline-super-observation/` and operation
   `20260910T093505-99361ad5df8d`; read-only review: `20260910T093840-953484ccee48`.
 
-Next: retain real reuse and implement dependency-aware complete-model/device scheduling with
-CPU simulation of loading, queueing, critical paths and
-resource lifetimes. Safety review follows the linked restart/submission/upload records in the
+Global Super audit (source + existing traces only): the recorded ordinary 150.865198 s run contains
+105.521 s from native node-start to worker-spawn across twelve models, including inherited
+quiescence/queue/host delays—not demonstrated removable time. Qwen's first positive work unit
+preceded completion by only 35/29 ms in the historical complete Super trace. Confirmed next
+opportunities include Engine/worker PCM and quality-profile reuse, concurrent single-producer
+publication, real early preload progress, independent CPU/model tasks, immutable FFT preparation,
+RMVPE device-resident handoffs and fixed-shape graph/allocator reuse. Detailed priorities and
+numerical/safety caveats are in the design's **Global optimization audit**; evidence:
+`test-artifacts/super-acceleration/global-audit.json` (`20260910T095859-63caa23dcca2`). No new model
+execution or speedup measurement was performed.
+
+Next: start with shared Engine PCM/facts/profile ownership and CPU single-producer tests, then
+truthful preload progress and dependency-aware complete-model/device scheduling with cost and
+resource-lifetime accounting. Safety review follows the linked restart/submission/upload records in the
 design document: preserve synchronization/cleanup; do not add arbitrary waits, limits or retries.
 GPU experiments stay paused after the user's restart report; no automatic repeat of the incomplete
 run. Whole-pipeline performance/output qualification for the corrected design is incomplete.

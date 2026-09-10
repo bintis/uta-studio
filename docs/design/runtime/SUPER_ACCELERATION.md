@@ -165,6 +165,125 @@ preserved, and no automatic retry is authorized by these records. Evidence:
 `test-artifacts/super-acceleration/refined/pipeline-super-observation/`, launch operation
 `20260910T093505-99361ad5df8d`, and read-only review `20260910T093840-953484ccee48`.
 
+## Global optimization audit (2026-09-10)
+
+This is a source audit and read-only reanalysis of existing observations, **not a new execution
+or measured speedup**. Evidence: `test-artifacts/super-acceleration/global-audit.json`, operation
+`20260910T095859-63caa23dcca2`. Keep the corrected whole-model scheduling objective.
+
+### Highest-impact orchestration opportunities
+
+1. **Account for waiting before optimizing arithmetic.** The recorded ordinary 12-second input
+   took 150.865198 s on `a9741bc`; native node-start to worker-spawn intervals sum to **105.521 s**
+   across twelve models. Eleven intervals are 7.693–10.000 s. These include the existing global
+   GGML lease/quiescence and host scheduling, not model compute. They are not 105.521 s of proven
+   removable cost. `execution/client.rs::acquire_ggml_lease` and its `Done` handler currently
+   serialize and quit each foreground worker. Review task/device ownership and useful work that
+   can overlap permitted waits; do not simply delete the lock, synchronization or exit handling.
+2. **Execute the actual ready branches.** `planner/plan.rs` exposes independent ASR, RMVPE, FCPE,
+   Basic Pitch, GAME and Acoustic DSP inputs after preparation, while `engine.rs` runs them
+   sequentially and completes Acoustic DSP before starting ASR. GAME's hard boundary inputs come
+   from the exact request, not generated alignment. JBM555 additionally needs its original mix.
+   STARS/ROSVOT need shared RMVPE and timed alignment; FireRed's actual applicability may depend
+   on Qwen's detected language. Preserve these data/control dependencies and deterministic fusion
+   order. CPU DSP and whole GPU tasks are separate schedulable work, not intra-model chunk splits.
+   Both acceleration and lifecycle-event contexts are thread-local today; spawning threads without
+   explicit shared request ownership would lose scheduling, cache and event context.
+3. **Make hot loading start during useful work.** Qwen worker wrappers report `progress(1, 1)`
+   only after complete transcription/alignment, whereas `acceleration::start_next` waits for a
+   positive completed work unit. In the historical complete Super trace, the first positive unit
+   preceded Qwen node completion by only **35 / 29 ms**. Report real completed windows, or a
+   truthful allocation/phase event with observed memory, rather than fabricated work units. Keep
+   headroom for later graph phases. Cache hits and successful preparation are not proof of
+   inference/load overlap. The coordinator also has one global pending slot and a linear cursor;
+   future preloads should follow the actually selected device queues and known branch decisions,
+   rather than blindly preparing another entry or loading every model that fits.
+4. **Learn the right task costs.** Raw lifecycle duration includes the above queue wait. Qwen's
+   encoder/decoder timers are host elapsed intervals and omit mel construction and model loading;
+   they are not kernel timestamps or complete-task latency. Account separately for queueing,
+   initialization/weights, frontend, compute/transfers, output validation/publication and teardown.
+   Estimates must use actual device/model/precision/input shape and cold/resident state. The
+   decision minimizes final pipeline completion, not equal task counts or theoretical TFLOPS.
+
+### Confirmed reuse gaps, suitable for CPU-first changes
+
+5. **Unify Engine and worker audio reuse.** The worker cache covers `audio::decode_wav` only.
+   `audio/decode.rs` independently probes, fully decodes and builds `DecodedAudio` metrics/profile
+   on every call; `audio/acoustic.rs` independently decodes 16 kHz mono again. In
+   `engine/workflow_execution.rs`, dual separation validates both FLACs, then `engine.rs` decodes
+   their published paths again. Cleanup validation discards the profile, then cleanup comparison
+   and final quality evaluation decode the same cleaned output again. Carry the validated facts /
+   signal profile through publication and share the exact PCM representation with DSP/workers.
+   A cache key must include source/producer identity, stream selection, range, rate, channels and
+   effective conversion semantics—not just a semantic role. Engine explicitly maps the first
+   audio stream; worker FFmpeg currently uses automatic selection, so those views must not be
+   assumed identical for multi-stream sources. Keep full validation; reuse its result, not skip it.
+6. **One audio producer, many readers.** `audio_cache.rs` currently uses separate lookup/decode/
+   store calls and read-modify-rename of one JSON index. Concurrent task misses would duplicate
+   decoding and can lose each other's index entries. Give the analysis an explicit shared owner
+   and in-flight producer per exact representation before enabling concurrency. Preserve failure
+   wakeup, cancellation/reaping, immutable reader inputs and source-media ownership. A rename of
+   a validated generated artifact should carry its existing descriptor, not lose reuse merely
+   because its path changed.
+7. **Reuse constant frontend preparation.** `stft.rs` rebuilds Hann windows and FFT plans per
+   transform; Qwen constructs its Slaney filters/window/FFT in each transcription/alignment
+   window; FCPE constructs its frontend plan per fixed audio window. Reuse immutable plans and
+   worker-local scratch while retaining exact padding, transform and reduction order. Current
+   scratch is already reused *within* a transform, so do not claim per-frame scratch allocation
+   as a new finding. Cross-model mel reuse additionally requires identical windows, centering,
+   filters and normalization: Qwen ASR/aligner share a frontend implementation but their long-song
+   window boundaries differ, and dynamic-range normalization depends on each window. Their model
+   encoder outputs are not interchangeable.
+
+### Larger native-runtime candidates requiring numerical/device validation
+
+8. **Extend useful residency inside RMVPE.** In `rmvpe.rs::run_window`, CNN output is downloaded,
+   GRU chunks upload slices and prior hidden states, chunk outputs/final states are downloaded,
+   forward/backward arrays are combined on the host, and the output head uploads the combination.
+   This is real device/host/device traffic, not a hypothetical raw-stem cache. Keep those values
+   on the same model's device until their final consumer while preserving the existing GRU chunk
+   boundaries, direction/state resets, compute completion and error propagation. No giant fused
+   submission or changed arithmetic is implied. Benefit remains unmeasured.
+9. **Reuse graph construction and allocation where shapes permit.** FCPE rebuilds `GraphRun` for
+   every fixed-size window. RMVPE rebuilds its CNN/GRU/head runs; Qwen ASR creates and allocates a
+   `DecoderRun` on every decode call despite already retaining KV buffers. Start with stable
+   shapes/allocators; Qwen's growing history and dynamic views need explicit lifetime handling.
+   RoFormer already reuses its graph when frame count matches—do not redo that completed work.
+   Verify sequential different inputs and state reset, not only repeated identical inputs.
+10. **Reduce Qwen result transfer without changing decisions.** Each ASR step downloads the entire
+    vocabulary and then performs host `argmax`. A device-side finite-value check and deterministic
+    first-maximum reduction could return only the token, keeping full logits for explicitly
+    requested diagnostics. Existing rejection of any non-finite logit, first-index tie behavior,
+    token/EOS budgets and synchronization must remain. This is a candidate, not validated parity.
+11. **Retain by future benefit, not indefinitely.** The current PCM cache lasts to analysis exit,
+    and a prepared worker is consumed then shut down. A future scheduler can retain an exact
+    model's weights/compatible fixed graphs for repeated tasks and release audio/intermediates
+    after their final consumers. Account for host RAM, GPU graph/weight residency and transfer
+    costs; precision-isolated workers must never inherit another model's process-wide policy.
+    Do not equate file size plus today's free-memory observation with a guarantee of later fit.
+
+### Output and batch boundaries
+
+- Prefer multiple consumers of one published separation result, not repeated separation or
+  repeated encoding. Native temporary F32 estimates can differ from the decoded integer FLAC
+  consumed by today's pipeline (rounding/clipping). Bypassing that boundary with raw tensors is
+  **not** automatically equivalent. First reuse the decoded published representation; any deeper
+  handoff change needs explicit sample/quality comparison, matching MIME and atomic publication.
+- Already present and worth retaining: one Leap invocation produces vocals plus residual;
+  STARS note/technique share one invocation; STARS/ROSVOT consume shared RMVPE evidence; the
+  historical Super trace contains four actual PCM hits and two consumed Qwen-residency reports.
+  These are not four new optimizations to implement again.
+- Studio's `analyzer/run.rs` processes songs serially, and `analyzer/engine_run.rs` captures and
+  atomically publishes artifacts after Engine completion. The 150.865198 s CLI observation does
+  not measure that Studio publication tail. Include it in eventual user-visible completion
+  measurements. Cross-song hot-model reuse is a later batch optimization, not permission to
+  reorder the user's queue, mutate exact requests or schedule model internals from Studio.
+
+**Recommended implementation order:** shared Engine PCM/facts/profile ownership and concurrent
+single-producer tests; truthful early preparation progress; explicit whole-task/device scheduling
+and cost accounting; then measured frontend/graph/resident-transfer improvements. No model,
+precision, context/overlap, fusion threshold, safety measure or GPU launch changed in this audit.
+
 ## Correction verification
 
 Operation `20260910T095055-5df40fd72c78` on `844c016`: **53 CPU / isolated protocol tests passed**
