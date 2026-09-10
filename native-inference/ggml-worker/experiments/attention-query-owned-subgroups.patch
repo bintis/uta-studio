@@ -78,7 +78,7 @@ index 7bb339b..fa71993 100644
      const uint32_t Bc = params.block_cols;
 diff --git a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
 new file mode 100644
-index 0000000..7204391
+index 0000000..14ba426
 --- /dev/null
 +++ b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
 @@ -0,0 +1,309 @@
@@ -283,15 +283,15 @@ index 0000000..7204391
 +            output_tiles[depth_tile] = output_tiles[depth_tile] * rescale_matrix;
 +        }
 +        if (row_split == 4) {
++            // Store V transposed so each B fragment reads adjacent key values,
++            // rather than issuing scalar half loads for every output column.
 +            [[unroll]] for (uint index = gl_LocalInvocationID.x; index < 512; index += WorkGroupSize) {
-+                const uint row = block * 32 + index / 16;
-+                const uint address = value_base + row * v_stride + (index % 16) * 4;
++                const uint first_key = block * 32 + (index % 8) * 4;
++                const uint depth = index / 8;
 +                f16vec4 values = f16vec4(0);
-+                if (row < KV) {
-+                    if ((address & 3) == 0) {
-+                        values = value_vectors[address / 4];
-+                    } else {
-+                        values = f16vec4(value_data[address], value_data[address + 1], value_data[address + 2], value_data[address + 3]);
++                [[unroll]] for (uint component = 0; component < 4; ++component) {
++                    if (first_key + component < KV) {
++                        values[component] = value_data[value_base + (first_key + component) * v_stride + depth];
 +                    }
 +                }
 +                operand_workspace[index] = values;
@@ -313,8 +313,8 @@ index 0000000..7204391
 +                const uint value_row = block * 32 + key_tile * 16;
 +                coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> values;
 +                if (row_split == 4) {
-+                    coopMatLoad(values, operand_workspace, key_tile * 256 + depth_tile * 4,
-+                                16, gl_CooperativeMatrixLayoutRowMajor);
++                    coopMatLoad(values, operand_workspace, depth_tile * 128 + key_tile * 4,
++                                8, gl_CooperativeMatrixLayoutColumnMajor);
 +                } else if (value_row + 16 <= KV && (v_stride & 7) == 0) {
 +                    coopMatLoad(values, value_vectors, value_base / 4 + value_row * v_stride / 4 + depth_tile * 4,
 +                                v_stride / 4, gl_CooperativeMatrixLayoutRowMajor);
