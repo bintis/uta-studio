@@ -421,3 +421,50 @@ retry or removal of safety. Kernel journal reading was denied by permissions
 (`20260910T205622-b1bff200266f`); boot IDs do not prove absence of GPU resets.
 The prior power-loss cause is unresolved. No 60-second, perceptual qualification
 or production-readiness claim.
+
+### Whole-song ablation and precision-first selection
+
+The fresh control completed in **74.567869923 s** inference / 76.898180361 s
+process. All four fusions completed in **71.421349470 s** / 73.651351894 s:
+only **4.22%** less inference time. Full waveform max difference is
+**0.00114057213**, SNR **79.33864 dB**; observed VRAM peaks are about
+4.51 / 3.03 GiB. Neither run sampled other CCS clients or compiler processes;
+CPU means were 10.07% / 13.12%, with zero observer errors and unchanged boot.
+See `precision-fullsong-comparison.json` and `fusion-stage-and-cpu-review.json`.
+
+A subsequent snapshot found compiler work at **78.68% CPU busy**, so the next
+ablation was deferred while existing source/evidence was reviewed. No process
+was killed, no idle threshold/loop was installed, and no automatic retry ran.
+After that review and a fresh quiet snapshot, the conversion-only variant
+(`gating-build`, without GELU/residual post-ops) completed in **64.525976343 s** /
+**66.647711604 s**. All **31,300,416** samples are finite and compared with the
+fresh control: max difference **3.576278687e-7**, RMSE **1.138084602e-8**, SNR
+**144.17758 dB**. Its CPU mean was 11.86%, no compiler/other CCS clients were
+sampled, observer read errors were zero and boot IDs unchanged. VRAM peak was
+about 3.62 GiB. This is the selected precision-first result, not bitwise or
+listening qualification and still above 60 seconds.
+
+The GELU-only post-op variant completed in **62.112326177 s** / 64.351504229 s,
+but full waveform differences remain **79.33864 dB** / **0.00114057213**. Separate
+CPU compilation was observed (24.45% mean total busy), so this is not an exclusive
+host timing. Even though its arithmetic stayed FP32/erf, the substantially larger
+full-song numerical difference is not adopted for about two seconds of apparent
+gain under the user's precision-first direction. `a87814e` removes both post-op
+implementations, their model routing and dedicated tests. Historical failed and
+successful evidence remains; the experimental test bounds are not active code.
+`fusion-ablation-comparison.json` retains the complete comparisons and CPU scope.
+
+An additional arithmetic-free value-copy candidate (`00d0cc1`, routed by
+`2b45ab2`) reinterprets representable FP32 coordinates as complex pairs only for
+native copy to paired half storage; **no complex multiply or other arithmetic**
+is performed. Nonrepresentable shape/stride/offset/dtype cases use the same
+native scalar half conversion on the same device, not a backend fallback or
+new restriction. Complete half-storage-bit comparisons pass for both full
+79,349,760-element axes and packed/strided/shifted/odd-width fixtures, including
+negative zero, half-way rounding and subnormals. Local synchronized samples are
+about **1.85 → 1.50 ms**, with some slower scalar tail samples. Evidence:
+`paired-small-check/`, `paired-full-axis-check/`, operation
+`20260910T213828-d63726fa9660`. The selected build is `paired-build`; CPU checks,
+ABI and two-chunk model execution pass. Full waveform/full-song/family review is
+still pending. The next possible optimization is operator-only examination of
+normalization across axis views before any further model routing change.

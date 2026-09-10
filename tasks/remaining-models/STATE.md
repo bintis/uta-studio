@@ -425,7 +425,7 @@ readiness, fused-SDPA availability or later host stability is established. See
 [LibTorch execution](../../docs/design/runtime/LIBTORCH_EXECUTION.md) for details and next checks.
 Super whole-task scheduling remains incomplete and is not qualified by these results.
 
-## LibTorch RoFormer speed optimization — 72.54 seconds; precision-preserving work continues (2026-09-10 UTC)
+## LibTorch RoFormer speed optimization — 64.53 seconds; precision-first selection (2026-09-10 UTC)
 
 The user authorized optimizing the native XPU RoFormer family toward 60 seconds
 for the existing 354.88-second song. Historical native XE90 inference completed
@@ -512,6 +512,38 @@ comparison document; failed CPU attempts remain recorded, not erased.
 Next is a **fresh full-song pair**, `profile-build` versus `residual-build`, with
 tracing/oneDNN verbose disabled and no warm runs. New whole-song speed remains
 unmeasured; 72.54 seconds is still the last accepted full-song optimization result.
+The subsequent full-song results supersede that pending measurement:
+
+- Fresh control: **74.567869923 s** inference / 76.898180361 s process.
+- All four fusions: **71.421349470 s**, SNR 79.33864 dB; max waveform difference
+  `0.00114057213`. Memory peak drops, but this is not adequate evidence to retain
+  every fusion under the user's precision-first direction.
+- **Selected conversion-only path:** **64.525976343 s** / 66.647711604 s process;
+  every one of 31,300,416 samples compared, SNR **144.17758 dB**, max difference
+  **3.576278687e-7**. No compiler/other CCS samples or observer read errors;
+  mean CPU busy 11.86%, unchanged boot. Not bit-identical or listening-qualified.
+- GELU without residual post-op: **62.112326177 s**, but still **79.33864 dB** and
+  CPU compiler contention (mean CPU busy 24.45%). It is **not selected** merely
+  to save about two seconds. `a87814e` removes both post-op implementations and
+  their dedicated tests. No test bounds from those experiments remain active.
+
+Evidence: `precision-fullsong-comparison.json`, `fusion-ablation-comparison.json`.
+The brief 78.68% CPU/compiler observation deferred an ablation; no process was
+killed or automatically retried. A later independent source review and quiet
+snapshot preceded the conversion-only run.
+
+`00d0cc1` / `2b45ab2` add an arithmetic-free paired value copy, not a multiply:
+all half **storage bits** match scalar conversion on both full 79,349,760-element
+axes, plus negative zero, halfway values, subnormals, odd widths and shifted
+storage. Local synchronized time is about **1.85 → 1.50 ms**. Native scalar
+conversion on the same device handles nonrepresentable views; no accepted
+shape is restricted and no backend/precision fallback is introduced. CPU checks,
+ABI and the bounded XE90 execution pass; complete waveform/full-song/family
+review remains. Candidate build: `paired-build`; retained selected control:
+`gating-build`. Planned next: operator-only normalization/axis-copy investigation,
+then final relevant regression and handoff; no model routing change without
+numerical and runtime evidence. The 60-second goal remains unmet.
+
 Kernel journal review is unavailable due to permissions
 (`20260910T205622-b1bff200266f`); do not claim absence of GPU reset from boot IDs.
 Do not alter GPU clocks/power settings or resume counter stress tests. Prior
