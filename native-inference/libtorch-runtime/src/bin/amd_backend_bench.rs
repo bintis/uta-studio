@@ -188,15 +188,21 @@ fn load_ggml(resource: &str, model_path: &Path) -> Result<Plan, String> {
         | "melband_roformer_denoise_aufr33"
         | "melband_roformer_dereverb_anvuew" => {
             let mut model = ggml::roformer::Roformer::load(runtime, &device, model_path)?;
+            let retained_output = retained_benchmark_wav()?;
             Box::new(move |input| {
-                let output = temporary_wav();
                 let mut chunks = 0;
-                let result = model.process_wav(input, &output, &mut |completed, _| {
-                    chunks = completed;
-                });
-                let _ = std::fs::remove_file(&output);
-                result?;
-                Ok(format!("complete overlap-add, {chunks} chunks"))
+                let published = execute_benchmark_wav(&retained_output, |output| {
+                    model.process_wav(input, output, &mut |completed, _| {
+                        chunks = completed;
+                    })
+                })?;
+                Ok(format!(
+                    "complete overlap-add, {chunks} chunks{}",
+                    published
+                        .as_ref()
+                        .map(|path| format!(", retained {}", path.display()))
+                        .unwrap_or_default()
+                ))
             })
         }
         "rmvpe" => {
@@ -366,15 +372,21 @@ fn load_libtorch(resource: &str, model_path: &Path) -> Result<Plan, String> {
         | "melband_roformer_denoise_aufr33"
         | "melband_roformer_dereverb_anvuew" => {
             let mut route = torch::roformer::Roformer::from_model(model)?;
+            let retained_output = retained_benchmark_wav()?;
             Box::new(move |input| {
-                let output = temporary_wav();
                 let mut chunks = 0;
-                let result = route.process_wav(input, &output, &mut |completed, _| {
-                    chunks = completed;
-                });
-                let _ = std::fs::remove_file(&output);
-                result?;
-                Ok(format!("complete overlap-add, {chunks} chunks"))
+                let published = execute_benchmark_wav(&retained_output, |output| {
+                    route.process_wav(input, output, &mut |completed, _| {
+                        chunks = completed;
+                    })
+                })?;
+                Ok(format!(
+                    "complete overlap-add, {chunks} chunks{}",
+                    published
+                        .as_ref()
+                        .map(|path| format!(", retained {}", path.display()))
+                        .unwrap_or_default()
+                ))
             })
         }
         "rmvpe" => {
@@ -552,6 +564,106 @@ fn firered_cmvn() -> Result<PathBuf, String> {
             "UTA_STUDIO_BENCH_FIRERED_CMVN must name the installed CMVN artifact".to_string()
         })
 }
+fn retained_benchmark_wav() -> Result<Option<PathBuf>, String> {
+    std::env::var_os("UTA_STUDIO_BENCH_RETAIN_WAV")
+        .map(PathBuf::from)
+        .map(validate_retained_benchmark_wav)
+        .transpose()
+}
+fn validate_retained_benchmark_wav(path: PathBuf) -> Result<PathBuf, String> {
+    if path.extension().and_then(|value| value.to_str()) != Some("wav") {
+        return Err("UTA_STUDIO_BENCH_RETAIN_WAV must use the .wav extension".into());
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| "retained benchmark WAV has no parent directory".to_string())?;
+    if !parent.is_dir() {
+        return Err(format!(
+            "retained benchmark WAV parent does not exist: {}",
+            parent.display()
+        ));
+    }
+    if path.exists() {
+        return Err(format!(
+            "benchmark output already exists; refusing to overwrite: {}",
+            path.display()
+        ));
+    }
+    Ok(path)
+}
+fn execute_benchmark_wav(
+    retained_output: &Option<PathBuf>,
+    execute: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<Option<PathBuf>, String> {
+    let output = match retained_output {
+        Some(path) => {
+            let name = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .ok_or_else(|| "retained benchmark WAV filename is not UTF-8".to_string())?;
+            path.parent()
+                .expect("retained benchmark WAV was already validated")
+                .join(format!(".{name}.{}.temporary.wav", std::process::id()))
+        }
+        None => temporary_wav(),
+    };
+    if output.exists() {
+        return Err(format!(
+            "benchmark temporary output already exists: {}",
+            output.display()
+        ));
+    }
+    if let Err(error) = execute(&output) {
+        let cleanup = std::fs::remove_file(&output);
+        return match cleanup {
+            Ok(()) => Err(error),
+            Err(cleanup_error) if cleanup_error.kind() == std::io::ErrorKind::NotFound => {
+                Err(error)
+            }
+            Err(cleanup_error) => Err(format!(
+                "{error}; failed to clean benchmark output {}: {cleanup_error}",
+                output.display()
+            )),
+        };
+    }
+    let Some(published) = retained_output else {
+        std::fs::remove_file(&output).map_err(|error| {
+            format!(
+                "failed to clean temporary benchmark output {}: {error}",
+                output.display()
+            )
+        })?;
+        return Ok(None);
+    };
+    if published.exists() {
+        let _ = std::fs::remove_file(&output);
+        return Err(format!(
+            "benchmark output appeared during execution; refusing to overwrite: {}",
+            published.display()
+        ));
+    }
+    if let Err(error) = std::fs::File::open(&output).and_then(|file| file.sync_all()) {
+        let _ = std::fs::remove_file(&output);
+        return Err(format!("failed to sync retained benchmark WAV: {error}"));
+    }
+    std::fs::rename(&output, published).map_err(|error| {
+        let _ = std::fs::remove_file(&output);
+        format!("failed to atomically publish retained benchmark WAV: {error}")
+    })?;
+    if let Some(parent) = published.parent()
+        && let Err(error) = std::fs::File::open(parent).and_then(|directory| directory.sync_all())
+    {
+        let cleanup = std::fs::remove_file(published);
+        return match cleanup {
+            Ok(()) => Err(format!("failed to sync retained benchmark directory: {error}")),
+            Err(cleanup_error) => Err(format!(
+                "failed to sync retained benchmark directory: {error}; failed to clean {}: {cleanup_error}",
+                published.display()
+            )),
+        };
+    }
+    Ok(Some(published.clone()))
+}
 fn temporary_wav() -> PathBuf {
     static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
     std::env::temp_dir().join(format!(
@@ -633,5 +745,32 @@ mod tests {
         assert!(check_finite(&[]).is_err());
         assert!(check_finite(&[0.0, 1.0]).is_ok());
         assert!(result_is_failure(&json!({"status":"failed"})));
+    }
+    #[test]
+    fn retained_wav_requires_a_new_matching_path() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "uta-studio-retained-benchmark-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let output = root.join("guide-vocals.wav");
+        assert_eq!(
+            validate_retained_benchmark_wav(output.clone()).unwrap(),
+            output
+        );
+        assert!(validate_retained_benchmark_wav(root.join("guide-vocals.flac")).is_err());
+        let published = execute_benchmark_wav(&Some(output.clone()), |temporary| {
+            std::fs::write(temporary, b"complete").map_err(|error| error.to_string())
+        })
+        .unwrap();
+        assert_eq!(published, Some(output.clone()));
+        assert_eq!(std::fs::read(&output).unwrap(), b"complete");
+        assert!(validate_retained_benchmark_wav(output).is_err());
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
