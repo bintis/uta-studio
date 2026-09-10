@@ -145,3 +145,19 @@ Whole-song testing of this combination, Windows execution, AMD/NVIDIA
 regression and formal Nix release acceptance have not been performed. Installed
 runtime/model replacement and remote pushes have not been performed. Process
 exit zero and unchanged boot IDs do not establish post-exit host stability.
+
+## Final declaration and ordinary regression
+
+The accepted storage extension is committed as `ba0d5ab` and declared as
+`native-inference/ggml-worker/patches/0009-vulkan-attention-floating-storage.patch`.
+`test-artifacts/operations/20260910T044328-a2298832e3a5/` verifies every recipe
+patch digest, applies all nine patches in order to a fresh pinned checkout, and
+compares every changed source byte against the source used to build the measured
+combined library. All match; identities are in `declared-source-identity.json`.
+
+`test-artifacts/operations/20260910T044329-4059fd920d61/` records ordinary
+`cargo test -p uta-ggml-runtime -p uta-ggml-worker`: 110 runtime tests and 30 worker
+tests passed, with 31 opt-in runtime tests ignored by that ordinary invocation.
+The 61 GPU fixtures above were executed separately, not counted as ordinary
+passes. `test-artifacts/operations/20260910T044331-bed31ba25804/` records successful
+Rust formatting, whitespace and canonical product-identity checks.
