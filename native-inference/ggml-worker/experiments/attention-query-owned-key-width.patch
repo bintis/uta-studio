@@ -1,0 +1,178 @@
+--- a/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -3866,15 +3866,18 @@
+         // Share each K/V tile across more independent query owners rather
+         // than increasing the live matrix state of any one subgroup.
+         const auto & limits = device->properties.limits;
++        const char * key_columns = std::getenv("UTA_STUDIO_GGML_FA_KEY_COLUMNS");
++        const uint32_t columns = key_columns != nullptr && std::strcmp(key_columns, "64") == 0 ? 64u :
++            key_columns != nullptr && std::strcmp(key_columns, "16") == 0 ? 16u : 32u;
+         const bool wide_groups = limits.maxComputeWorkGroupInvocations >= 256 &&
+                                  limits.maxComputeWorkGroupSize[0] >= 256 &&
+-                                 limits.maxComputeSharedMemorySize >= 8u * 2560u + 32u;
++                                 limits.maxComputeSharedMemorySize >= 8192u + 8u * columns * 48u + 32u;
+         const char * shared_groups = std::getenv("UTA_STUDIO_GGML_FA_SHARED_GROUPS");
+         const uint32_t groups = wide_groups &&
+             (shared_groups == nullptr || std::strcmp(shared_groups, "4") != 0) ? 8u : 4u;
+         result.query_owned = true;
+         result.block_rows = groups * 8;
+-        result.block_cols = 32;
++        result.block_cols = columns;
+         result.row_split = groups;
+         result.workgroup_size = groups * result.subgroup_size;
+         result.shmem_staging = false;
+@@ -10867,8 +10870,10 @@
+ static bool ggml_vk_flash_attn_coopmat_shmem_support(const vk_device& device, const vk_fa_tuning_params& params, uint32_t hsk, uint32_t hsv, bool f32acc, ggml_type k_type, ggml_type v_type) {
+     GGML_UNUSED(v_type);
+     if (params.query_owned) {
+-        // Per subgroup: 1024-byte Q/K/V scratch, 1024-byte scores, 512-byte probabilities.
+-        return params.row_split * 2560u + 32u <= device->properties.limits.maxComputeSharedMemorySize;
++        // Initial Q or the shared K/V tile, plus per-subgroup scores and probabilities.
++        const uint32_t operands = std::max(params.row_split * 1024u, params.block_cols * 128u);
++        return operands + params.row_split * params.block_cols * 48u + 32u <=
++            device->properties.limits.maxComputeSharedMemorySize;
+     }
+     // Needs to be kept up to date on shader changes
+     const uint32_t Br = params.block_rows;
+--- a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
++++ b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
+@@ -60,16 +60,16 @@
+ // Four or eight subgroups reuse their initial Q storage as one shared K/V tile.
+ // Workgroup barriers protect those common operands; score, probability and
+ // output workspaces remain subgroup-owned. Smaller groups use independent tiles.
+-shared f16vec4 operand_workspace[row_split * 128];
+-shared vec4 float_workspace[row_split * 64];
+-shared f16vec4 probability_workspace[row_split * 64];
++shared f16vec4 operand_workspace[row_split * 128 > Bc * 16 ? row_split * 128 : Bc * 16];
++shared vec4 float_workspace[row_split * Bc * 2];
++shared f16vec4 probability_workspace[row_split * Bc * 2];
+ 
+ void main() {
+     init_indices();
+     const uint lane = gl_SubgroupInvocationID;
+     const uint group = gl_SubgroupID;
+     const uint lanes_per_row = SubGroupSize / 8;
+-    const uint keys_per_lane = 32 / lanes_per_row;
++    const uint keys_per_lane = Bc / lanes_per_row;
+     const uint packs_per_lane = keys_per_lane / 4;
+     const uint local_row = lane / lanes_per_row;
+     const uint row_lane = lane % lanes_per_row;
+@@ -78,8 +78,8 @@
+         return; // the independent one/two-subgroup paths have no workgroup barriers
+     }
+     const uint operand_base = group * 128;
+-    const uint float_base = group * 64;
+-    const uint probability_base = group * 64;
++    const uint float_base = group * Bc * 2;
++    const uint probability_base = group * Bc * 2;
+     const uint query_base = (iq2 * p.nb02 + iq3 * p.nb03) / 4;
+     const uint key_base = (ik2 * p.nb12 + ik3 * p.nb13) / (FaTypeK == FA_TYPE_F32 ? 4 : 2);
+     const uint value_base = (iv2 * p.nb22 + iv3 * p.nb23) / (FaTypeV == FA_TYPE_F32 ? 4 : 2);
+@@ -126,9 +126,9 @@
+ 
+     [[dont_unroll]] for (uint block = start_j; block < end_j; ++block) {
+         if (row_split >= 4) {
+-            // One coalesced 32x64 K tile serves every query owner in the workgroup.
+-            [[unroll]] for (uint index = gl_LocalInvocationID.x; index < 512; index += WorkGroupSize) {
+-                const uint row = block * 32 + index / 16;
++            // One coalesced key tile serves every query owner in the workgroup.
++            [[unroll]] for (uint index = gl_LocalInvocationID.x; index < Bc * 16; index += WorkGroupSize) {
++                const uint row = block * Bc + index / 16;
+                 const uint address = key_base + row * key_row_stride + (index % 16) * 4;
+                 f16vec4 values = f16vec4(0);
+                 if (row < KV) {
+@@ -139,10 +139,10 @@
+             barrier();
+         }
+         // Q * K^T: the M=8 axis is query-owned, rather than key-owned.
+-        [[unroll]] for (uint key_tile = 0; key_tile < 2; ++key_tile) {
++        [[unroll]] for (uint key_tile = 0; key_tile < Bc / 16; ++key_tile) {
+             coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator> scores =
+                 coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator>(0);
+-            const uint key_row = block * 32 + key_tile * 16;
++            const uint key_row = block * Bc + key_tile * 16;
+             [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
+                 coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> keys;
+                 if (row_split >= 4) {
+@@ -173,7 +173,7 @@
+                 }
+             }
+             coopMatStore(scores, float_workspace, float_base + key_tile * 4,
+-                         8, gl_CooperativeMatrixLayoutRowMajor);
++                         Bc / 4, gl_CooperativeMatrixLayoutRowMajor);
+         }
+         if (row_split >= 4) {
+             barrier(); // finish every subgroup's K reads before this storage becomes V
+@@ -181,17 +181,17 @@
+             subgroupBarrier();
+         }
+ 
+-        // Two or four adjacent lanes own one query row, covering all 32 keys.
++        // Two or four adjacent lanes own one query row, covering the complete key block.
+         // max/sum state is scalar instead of replicating eight rows in each lane.
+         vec4 packed_scores[packs_per_lane];
+         float row_maximum = negative;
+         [[unroll]] for (uint part = 0; part < packs_per_lane; ++part) {
+-            vec4 scores = float_workspace[float_base + local_row * 8 + row_lane * packs_per_lane + part];
++            vec4 scores = float_workspace[float_base + local_row * (Bc / 4) + row_lane * packs_per_lane + part];
+             if (LOGIT_SOFTCAP) {
+                 scores = p.logit_softcap * tanh(scores);
+             }
+             [[unroll]] for (uint component = 0; component < 4; ++component) {
+-                const uint key_column = block * 32 + row_lane * keys_per_lane + part * 4 + component;
++                const uint key_column = block * Bc + row_lane * keys_per_lane + part * 4 + component;
+                 const uint query_row = first_query + local_row;
+                 if (key_column >= KV) {
+                     scores[component] = negative;
+@@ -213,13 +213,13 @@
+         [[unroll]] for (uint part = 0; part < packs_per_lane; ++part) {
+             f16vec4 probabilities = f16vec4(exp(packed_scores[part] - vec4(maximum)));
+             [[unroll]] for (uint component = 0; component < 4; ++component) {
+-                const uint key_column = block * 32 + row_lane * keys_per_lane + part * 4 + component;
++                const uint key_column = block * Bc + row_lane * keys_per_lane + part * 4 + component;
+                 if (key_column >= KV) {
+                     probabilities[component] = float16_t(0);
+                 }
+                 normalizer += float(probabilities[component]);
+             }
+-            probability_workspace[probability_base + local_row * 8 + row_lane * packs_per_lane + part] = probabilities;
++            probability_workspace[probability_base + local_row * (Bc / 4) + row_lane * packs_per_lane + part] = probabilities;
+         }
+         subgroupBarrier();
+         // Row-major 8x16 broadcast matrix: no fragment-to-lane assumption.
+@@ -233,8 +233,8 @@
+             output_tiles[depth_tile] = output_tiles[depth_tile] * rescale_matrix;
+         }
+         if (row_split >= 4) {
+-            [[unroll]] for (uint index = gl_LocalInvocationID.x; index < 512; index += WorkGroupSize) {
+-                const uint row = block * 32 + index / 16;
++            [[unroll]] for (uint index = gl_LocalInvocationID.x; index < Bc * 16; index += WorkGroupSize) {
++                const uint row = block * Bc + index / 16;
+                 const uint address = value_base + row * value_row_stride + (index % 16) * 4;
+                 f16vec4 values = f16vec4(0);
+                 if (row < KV) {
+@@ -246,10 +246,10 @@
+         }
+ 
+         // Load each rounded probability operand once for all four output tiles.
+-        coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseA> probability_tiles[2];
+-        [[unroll]] for (uint key_tile = 0; key_tile < 2; ++key_tile) {
++        coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseA> probability_tiles[Bc / 16];
++        [[unroll]] for (uint key_tile = 0; key_tile < Bc / 16; ++key_tile) {
+             coopMatLoad(probability_tiles[key_tile], probability_workspace, probability_base + key_tile * 4,
+-                        8, gl_CooperativeMatrixLayoutRowMajor);
++                        Bc / 4, gl_CooperativeMatrixLayoutRowMajor);
+         }
+         // Keep each block's product separate, preserving the previous algorithm's
+         // blockwise addition instead of silently extending its FMA accumulation chain.
+@@ -258,8 +258,8 @@
+             // alongside Q and O spilled the first prototype beyond 128 GRFs.
+             coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator> product =
+                 coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator>(0);
+-            [[unroll]] for (uint key_tile = 0; key_tile < 2; ++key_tile) {
+-                const uint value_row = block * 32 + key_tile * 16;
++            [[unroll]] for (uint key_tile = 0; key_tile < Bc / 16; ++key_tile) {
++                const uint value_row = block * Bc + key_tile * 16;
+                 coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> values;
+                 if (row_split >= 4) {
+                     coopMatLoad(values, operand_workspace, key_tile * 256 + depth_tile * 4,
