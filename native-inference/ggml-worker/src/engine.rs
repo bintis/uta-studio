@@ -787,7 +787,6 @@ pub fn run(
     let mut work_error = None;
     let mut report_units = |completed: u64, total: u64| {
         if total == 0
-            || completed == 0
             || completed > total
             || last_units.is_some_and(|(previous, previous_total)| {
                 total != previous_total || completed <= previous

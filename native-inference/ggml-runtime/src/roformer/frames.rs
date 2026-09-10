@@ -140,6 +140,10 @@ pub(super) fn process_overlap_add(
     };
     let padded_frames = padded.len() / 2;
     let total_chunks = padded_frames.div_ceil(step) as u64;
+    if total_chunks == 0 {
+        return Err("RoFormer overlap-add produced no chunks".to_string());
+    }
+    progress(0, total_chunks);
     let base_window = crossfade_window(chunk_size, fade);
     let mut counter = vec![0.0_f32; padded.len()];
     let mut outputs: Vec<Vec<f32>> = Vec::new();

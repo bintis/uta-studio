@@ -234,8 +234,8 @@ pub(crate) fn analysis_graph_route_summary(
 
 /// Equal-weight progress across the concrete model executions represented by
 /// one semantic purpose card. Completed models contribute 100%; configured
-/// models that have not started contribute 0%; an active native worker must
-/// have measured work units or the whole card remains indeterminate.
+/// models that have not started contribute 0%; a running worker without
+/// measured units yet contributes 0 rather than hiding the rest of the card.
 /// Profile-skipped and unrequested models are excluded because they are not
 /// part of this exact run.
 pub(crate) fn analysis_graph_node_progress(
@@ -264,7 +264,8 @@ pub(crate) fn analysis_graph_node_progress(
         }
         if member.state == GraphNodeState::Running {
             let measured = find_matching_route(&live.stage_routes, member.id.as_str())
-                .and_then(worker_reported_progress)?;
+                .and_then(worker_reported_progress)
+                .unwrap_or(0);
             return Some(total + measured);
         }
         Some(total)
@@ -770,6 +771,10 @@ mod port_tests {
             measured_work_unit_progress(&route(Some((2, 4)))),
             Some((50, "2/4 work units".to_string()))
         );
+        assert_eq!(
+            measured_work_unit_progress(&route(Some((0, 4)))),
+            Some((0, "0/4 work units".to_string()))
+        );
         // §8: the compact card's runtime line must never carry the raw
         // worker task id -- that belongs only in the detailed Inspect view.
         assert!(
@@ -883,6 +888,65 @@ mod port_tests {
         };
 
         // (100 complete + 50 running + 0 waiting) / 3 participating models.
+        assert_eq!(analysis_graph_node_progress(&task, &node), Some(50));
+    }
+
+    #[test]
+    fn running_without_measured_units_does_not_hide_card_progress() {
+        let mut running = route(None);
+        running.node_id = Some("running-model".to_string());
+        let live = serde_json::from_value(serde_json::json!({
+            "stage": "notes",
+            "overall_progress": 40,
+            "stage_progress": 0,
+            "operation": "loading",
+            "detail": "",
+            "implementation": "native",
+            "model": "running-model",
+            "device": "gpu",
+            "requested_device": "gpu",
+            "fallback_from": null,
+            "fallback_reason": null,
+            "backend_fallback_from": null,
+            "backend_fallback_reason": null,
+            "stage_routes": [running],
+            "node_id": "running-model"
+        }))
+        .unwrap();
+        let task = app_core::AnalysisTask {
+            file_hash: "song".to_string(),
+            title: "Song".to_string(),
+            artist: "Artist".to_string(),
+            status: app_core::QueuedStatus::Analyzing(40),
+            live: Some(live),
+        };
+        let members = vec![
+            RenderNodeMember {
+                id: app_core::AnalysisNodeId::new("complete-model"),
+                model_ids: vec!["complete-model".to_string()],
+                state: GraphNodeState::Complete,
+            },
+            RenderNodeMember {
+                id: app_core::AnalysisNodeId::new("running-model"),
+                model_ids: vec!["running-model".to_string()],
+                state: GraphNodeState::Running,
+            },
+        ];
+        let node = RenderNode {
+            id: app_core::AnalysisNodeId::new("note-boundary"),
+            kind: RenderNodeKind::Compute,
+            label: "Note boundary".to_string(),
+            model_ids: members
+                .iter()
+                .flat_map(|member| member.model_ids.iter().cloned())
+                .collect(),
+            detail: String::new(),
+            state: GraphNodeState::Running,
+            category: GraphNodeCategory::Evidence,
+            capability_id: Some("analysis.note_boundary".to_string()),
+            terminal_outputs: Vec::new(),
+            members,
+        };
         assert_eq!(analysis_graph_node_progress(&task, &node), Some(50));
     }
 }
