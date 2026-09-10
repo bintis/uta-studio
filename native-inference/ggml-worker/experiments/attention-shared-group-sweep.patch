@@ -1,0 +1,161 @@
+--- a/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -3859,8 +3859,13 @@
+         result.query_owned = true;
+         result.block_rows = 32;
+         result.block_cols = 32;
+-        result.row_split = 4;
+-        result.workgroup_size = 128;
++        const char * shared_groups = std::getenv("UTA_STUDIO_GGML_FA_SHARED_GROUPS");
++        const uint32_t requested_groups = shared_groups ? std::atoi(shared_groups) : 4;
++        const uint32_t groups = requested_groups == 1 || requested_groups == 2 || requested_groups == 4 || requested_groups == 8
++            ? requested_groups : 4;
++        result.row_split = groups;
++        result.block_rows = groups * 8;
++        result.workgroup_size = groups * result.subgroup_size;
+         result.shmem_staging = false;
+     }
+ 
+--- a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
++++ b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
+@@ -25,8 +25,8 @@
+ // Four subgroups reuse their initial Q storage as one shared K/V tile.
+ // Workgroup barriers protect those common operands; score, probability and
+ // output workspaces remain subgroup-owned. Smaller groups use independent tiles.
+-shared f16vec4 operand_workspace[row_split * 128];
+-shared vec4 float_workspace[row_split * 128];
++shared f16vec4 operand_workspace[row_split >= 4 ? row_split * 128 : 512];
++shared vec4 float_workspace[row_split * 64];
+ shared f16vec4 probability_workspace[row_split * 64];
+ 
+ void main() {
+@@ -39,11 +39,11 @@
+     const uint local_row = lane / lanes_per_row;
+     const uint row_lane = lane % lanes_per_row;
+     const uint first_query = i * Br + group * 8;
+-    if (first_query >= N && row_split != 4) {
++    if (first_query >= N && row_split < 1) {
+         return; // the independent one/two-subgroup paths have no workgroup barriers
+     }
+     const uint operand_base = group * 128;
+-    const uint float_base = group * 128;
++    const uint float_base = group * 64;
+     const uint probability_base = group * 64;
+     const uint query_base = (iq2 * p.nb02 + iq3 * p.nb03) / 4;
+     const uint key_base = (ik2 * p.nb12 + ik3 * p.nb13) / 2;
+@@ -73,7 +73,7 @@
+         coopMatLoad(queries[depth_tile], operand_workspace,
+                     operand_base + depth_tile * 4, 16, gl_CooperativeMatrixLayoutRowMajor);
+     }
+-    if (row_split == 4) {
++    if (row_split >= 1) {
+         barrier(); // all four Q fragments must be loaded before shared K overwrites them
+     } else {
+         subgroupBarrier();
+@@ -87,7 +87,7 @@
+     float normalizer = 0.0;
+ 
+     [[dont_unroll]] for (uint block = start_j; block < end_j; ++block) {
+-        if (row_split == 4) {
++        if (row_split >= 1) {
+             // One coalesced 32x64 K tile serves all 32 queries in the workgroup.
+             [[unroll]] for (uint index = gl_LocalInvocationID.x; index < 512; index += WorkGroupSize) {
+                 const uint row = block * 32 + index / 16;
+@@ -111,7 +111,7 @@
+             const uint key_row = block * 32 + key_tile * 16;
+             [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
+                 coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> keys;
+-                if (row_split == 4) {
++                if (row_split >= 1) {
+                     coopMatLoad(keys, operand_workspace, key_tile * 256 + depth_tile * 4,
+                                 16, gl_CooperativeMatrixLayoutColumnMajor);
+                 } else if (key_row + 16 <= KV && (k_stride & 7) == 0) {
+@@ -134,14 +134,14 @@
+                 }
+                 scores = coopMatMulAdd(queries[depth_tile], keys, scores);
+                 // Protect the local operand tile before another contraction overwrites it.
+-                if (row_split != 4 && (key_row + 16 > KV || (k_stride & 7) != 0)) {
++                if (row_split < 1 && (key_row + 16 > KV || (k_stride & 7) != 0)) {
+                     subgroupBarrier();
+                 }
+             }
+             coopMatStore(scores, float_workspace, float_base + key_tile * 4,
+                          8, gl_CooperativeMatrixLayoutRowMajor);
+         }
+-        if (row_split == 4) {
++        if (row_split >= 1) {
+             barrier(); // finish every subgroup's K reads before this storage becomes V
+         } else {
+             subgroupBarrier();
+@@ -198,7 +198,7 @@
+         [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
+             output_tiles[depth_tile] = output_tiles[depth_tile] * rescale_matrix;
+         }
+-        if (row_split == 4) {
++        if (row_split >= 1) {
+             [[unroll]] for (uint index = gl_LocalInvocationID.x; index < 512; index += WorkGroupSize) {
+                 const uint row = block * 32 + index / 16;
+                 const uint address = value_base + row * v_stride + (index % 16) * 4;
+@@ -228,7 +228,7 @@
+                             8, gl_CooperativeMatrixLayoutRowMajor);
+                 const uint value_row = block * 32 + key_tile * 16;
+                 coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> values;
+-                if (row_split == 4) {
++                if (row_split >= 1) {
+                     coopMatLoad(values, operand_workspace, key_tile * 256 + depth_tile * 4,
+                                 16, gl_CooperativeMatrixLayoutRowMajor);
+                 } else if (value_row + 16 <= KV && (v_stride & 7) == 0) {
+@@ -250,13 +250,13 @@
+                     coopMatLoad(values, operand_workspace, operand_base, 4, gl_CooperativeMatrixLayoutRowMajor);
+                 }
+                 product = coopMatMulAdd(probabilities, values, product);
+-                if (row_split != 4 && (value_row + 16 > KV || (v_stride & 7) != 0)) {
++                if (row_split < 1 && (value_row + 16 > KV || (v_stride & 7) != 0)) {
+                     subgroupBarrier();
+                 }
+             }
+             output_tiles[depth_tile] = output_tiles[depth_tile] + product;
+         }
+-        if (row_split == 4) {
++        if (row_split >= 1) {
+             barrier(); // protect V and probability reads before the next key block
+         } else {
+             subgroupBarrier();
+@@ -290,20 +290,24 @@
+     coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator> normalization;
+     coopMatLoad(normalization, float_workspace, float_base, 4, gl_CooperativeMatrixLayoutRowMajor);
+     subgroupBarrier();
++    // Stream one output fragment through the existing score scratch. This
++    // preserves implementation-defined matrix layouts without reserving an
++    // entire 8x64 F32 output tile for every subgroup.
+     [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
+         output_tiles[depth_tile] = output_tiles[depth_tile] * normalization;
+-        coopMatStore(output_tiles[depth_tile], float_workspace, float_base + depth_tile * 4,
+-                     16, gl_CooperativeMatrixLayoutRowMajor);
+-    }
+-    subgroupBarrier();
+-    [[unroll]] for (uint index = lane; index < 128; index += SubGroupSize) {
+-        const uint row = first_query + index / 16;
+-        if (row < N) {
+-            const uint depth = index % 16;
+-            const uint address = p.k_num > 1
+-                ? HSV * p.ne1 * (split_k_index + p.k_num * (row + p.ne2 * iq3)) / 4 + iq2 * 16 + depth
+-                : (iq3 * p.ne2 * p.ne1 * HSV + (row * p.ne1 + iq2) * HSV) / 4 + depth;
+-            data_ov4[address] = float_workspace[float_base + index];
+-        }
++        coopMatStore(output_tiles[depth_tile], float_workspace, float_base,
++                     4, gl_CooperativeMatrixLayoutRowMajor);
++        subgroupBarrier();
++        [[unroll]] for (uint index = lane; index < 32; index += SubGroupSize) {
++            const uint row = first_query + index / 4;
++            if (row < N) {
++                const uint depth = depth_tile * 4 + index % 4;
++                const uint address = p.k_num > 1
++                    ? HSV * p.ne1 * (split_k_index + p.k_num * (row + p.ne2 * iq3)) / 4 + iq2 * 16 + depth
++                    : (iq3 * p.ne2 * p.ne1 * HSV + (row * p.ne1 + iq2) * HSV) / 4 + depth;
++                data_ov4[address] = float_workspace[float_base + index];
++            }
++        }
++        subgroupBarrier();
+     }
+ }
