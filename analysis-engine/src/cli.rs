@@ -62,7 +62,19 @@ fn run(arguments: Vec<String>) -> EngineResult<()> {
         "analyze" => {
             let request: AnalyzeRequest = read_option_json(&arguments, "--request")?;
             let output = required_option(&arguments, "--output-dir")?;
-            print_json(&engine.analyze(&request, PathBuf::from(output))?)
+            crate::debug_log::record("analysis_start", &request.request_id);
+            let result = if crate::debug_log::enabled() {
+                engine.analyze_with_events(
+                    &request,
+                    PathBuf::from(output),
+                    &crate::execution::CancellationToken::default(),
+                    std::sync::Arc::new(|event| crate::debug_log::record("lifecycle", &event)),
+                )
+            } else {
+                engine.analyze(&request, PathBuf::from(output))
+            };
+            crate::debug_log::record("analysis_complete", &result);
+            print_json(&result?)
         }
         "export" => {
             let request: ExportRequest = read_option_json(&arguments, "--request")?;

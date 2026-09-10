@@ -8,6 +8,7 @@ pub mod candidate_pipeline;
 pub mod cli;
 pub mod conditional_scheduler;
 pub mod contract;
+mod debug_log;
 pub mod engine;
 pub mod events;
 pub mod execution;

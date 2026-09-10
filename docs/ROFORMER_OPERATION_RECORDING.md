@@ -26,6 +26,14 @@ python3 tools/record-operation.py gpu-before-run -- bash dev.sh -c nvtop --snaps
 
 在2026-09-07候选全曲事故中，启动/进程样本存在，但stdout/stderr为零字节；不能据此说没有启动。观察器现于每个既有采样周期同步目标stdout/stderr，而不只在进程退出后同步；同步失败记为 `live-output-sync`，不重新启动目标。子进程自身缓冲、两个同步点之间的尾部和硬件掉电仍可能丢失。此变化单独提交并用CPU子进程验证，观测I/O开销应纳入后续运行说明，不伪造历史日志。
 
+### 全链路 debug 日志
+
+`UTA_STUDIO_DEBUG=1` 让 `uta-analyze analyze` 将生命周期事件、worker 启动／命令意图、每个协议帧和退出状态即时写入 stderr；worker stderr 同时逐次读取转发，不受错误摘要的 1 MiB 内存上限截断。stdout 仍只承载机器结果。日志写入失败不终止 worker 排空；退出前收集 stderr 尾部。日志会包含本地路径、配置和转录文本，应作为本地诊断数据保管。
+
+GGML 的 `VK_LOG_DEBUG` 是编译期开关，不能用 `RUST_LOG` 打开。需要用相同已声明补丁、独立构建／输出目录，并传 `-DGGML_VULKAN_DEBUG=ON`；无需改模型算法或安装用户运行库。`GGML_VK_MEMORY_LOGGER=1` 输出分配记录，`UTA_STUDIO_STAGE_PROFILE=1` 输出模型阶段计时。不要把 `GGML_VULKAN_CHECK_RESULTS`（额外计算）当作日志开关。本次 debug 回归保持优化构建，只增加日志，不能拿日志开启后的墙钟比较正常吞吐。
+
+使用既有观察器同步目标 stdout/stderr 和主机采样；不宣称逐条 fsync，也不保证掉电尾部完整。缺少完成记录的全曲任务保持未知，新的 debug 执行使用新目录，禁止覆盖旧证据或自动重试。
+
 | 文件 | 实际含义 |
 | --- | --- |
 | `prepared.json` | 启动任何子进程前，已记录 commit、dirty status、完整 argv、cwd、boot ID、时间及声明输入输出，并执行文件／目录 fsync。 |

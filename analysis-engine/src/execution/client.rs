@@ -443,6 +443,7 @@ struct WorkerProcess {
     stdin: ChildStdin,
     frames: mpsc::Receiver<Result<WorkerFrame, String>>,
     stderr: Arc<std::sync::Mutex<Vec<u8>>>,
+    stderr_reader: Option<std::thread::JoinHandle<()>>,
 }
 
 impl WorkerProcess {
@@ -458,12 +459,14 @@ impl WorkerProcess {
             use std::os::unix::process::CommandExt;
             command.process_group(0);
         }
+        crate::debug_log::record("worker_spawn_intent", &executable);
         let mut child = command.spawn().map_err(|error| {
             EngineError::new(
                 EngineErrorCode::WorkerUnavailable,
                 format!("could not start native worker: {error}"),
             )
         })?;
+        crate::debug_log::record("worker_spawned", &child.id());
         let Some(stdin) = child.stdin.take() else {
             let _ = child.kill();
             let _ = child.wait();
@@ -485,6 +488,7 @@ impl WorkerProcess {
             while let Some(line) = read_bounded_line(&mut reader, MAX_FRAME_BYTES) {
                 let terminal = line.is_err();
                 let frame = line.and_then(|line| {
+                    crate::debug_log::record("worker_stdout", &line);
                     serde_json::from_str::<WorkerFrame>(&line).map_err(|error| error.to_string())
                 });
                 if sender.send(frame).is_err() || terminal {
@@ -494,27 +498,25 @@ impl WorkerProcess {
         });
         let stderr = Arc::new(std::sync::Mutex::new(Vec::new()));
         let captured = Arc::clone(&stderr);
-        std::thread::spawn(move || {
-            let mut reader = BufReader::new(stderr_pipe);
-            let mut buffer = [0_u8; 8192];
-            while let Ok(count) = std::io::Read::read(&mut reader, &mut buffer) {
-                if count == 0 {
-                    break;
-                }
-                let mut bytes = captured.lock().unwrap_or_else(|error| error.into_inner());
-                let remaining = MAX_STDERR_BYTES.saturating_sub(bytes.len());
-                bytes.extend_from_slice(&buffer[..count.min(remaining)]);
-            }
+        let stderr_reader = std::thread::spawn(move || {
+            crate::debug_log::capture_stderr(
+                stderr_pipe,
+                &captured,
+                MAX_STDERR_BYTES,
+                crate::debug_log::mirror_stderr,
+            );
         });
         Ok(Self {
             child,
             stdin,
             frames,
             stderr,
+            stderr_reader: Some(stderr_reader),
         })
     }
 
     fn send(&mut self, command: &WorkerCommand<'_>) -> EngineResult<()> {
+        crate::debug_log::record("worker_command_intent", command);
         serde_json::to_writer(&mut self.stdin, command).map_err(|error| {
             protocol_error(&format!("could not encode worker command: {error}"))
         })?;
@@ -592,6 +594,7 @@ impl WorkerProcess {
                     format!("could not inspect worker shutdown: {error}"),
                 )
             })? {
+                crate::debug_log::record("worker_exit", &status.to_string());
                 return if status.success() {
                     Ok(())
                 } else {
@@ -640,6 +643,10 @@ impl Drop for WorkerProcess {
     fn drop(&mut self) {
         if self.child.try_wait().ok().flatten().is_none() {
             self.terminate();
+        }
+        // Preserve the final diagnostic bytes before the CLI can exit.
+        if let Some(reader) = self.stderr_reader.take() {
+            let _ = reader.join();
         }
     }
 }
