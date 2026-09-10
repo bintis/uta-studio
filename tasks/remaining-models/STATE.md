@@ -293,15 +293,59 @@ Verification and limits:
 The authorized full-song debug execution and artifact verification are complete. Broader
 per-model/linguistic/perceptual qualification and the explicit release pass remain unchanged.
 
-## Super acceleration — IN_PROGRESS (2026-09-10)
+## Super acceleration — IN_PROGRESS, GPU validation paused (2026-09-10)
 
-Authorized: one opt-in switch in Settings > Models & runtime, next-model weight preloading when
-VRAM permits, real concurrent AMD integrated/B580 discrete GPU work, retained useful song
-intermediates and decode/resample reuse. The existing `turbo_acceleration` config field is only
-a placeholder at task start; it must not be presented as already implemented acceleration.
-Design and verification scope: [Super acceleration](../../docs/design/runtime/SUPER_ACCELERATION.md).
-Next: wire the setting into exact requests; implement native scheduling/residency and supervision;
-verify isolated behavior and matched real dual-device performance. No production promotion yet.
+**User correction:** multi-GPU means assigning different complete model tasks using dependencies,
+loading order and predicted total device completion time, **not splitting one model across GPUs**.
+Retain the existing opt-in `turbo_acceleration` snapshots, memory-budgeted actual weight hot loading,
+exact-format decoded-audio reuse, shared separation outputs and useful Qwen encoder-to-decoder
+residency. Each model remains on one device with its precision, chunks, synchronization and output
+semantics unchanged. Complete-model task scheduling is not implemented yet; the linear Engine
+orchestrator and global foreground lease require an ownership-aware redesign, not lock removal.
+The old dual-chunk implementation is being removed; its timings do not qualify the corrected goal.
+Design and boundaries: [Super acceleration](../../docs/design/runtime/SUPER_ACCELERATION.md).
+
+Historical verification before the task-granularity correction:
+- Settings/request propagation and save-failure tests passed (`20260910T072710-605f5879a1fc`).
+- Seven RoFormer scheduling tests and two live-budget arithmetic tests passed. The current
+  worker's 34 tests, 23 Qwen tests plus one explicit native CPU copy/lifetime test passed
+  (`20260910T083251-8fd78b561921`); 13 supervisor tests cover worker reuse, cancelled preparation,
+  current-model failure, unused-preload release, source preservation and temporary-cache cleanup
+  (`20260910T083645-c46b3c005334`).
+- Release CLI/worker built on `a8e082f` (`20260910T083955-2bc52482bec6`). A matched 60-second
+  RoFormer pair completed in 32.148910 s ordinary / 28.888136 s super (10.1427% less wall time).
+  B580/AMD chunk counts were eight/one, with sixteen sampled simultaneous target-compute
+  intervals. Both FLACs fully decoded with equal finite sample counts; vocal relative RMS
+  difference was `6.54594e-5`. Evidence: `test-artifacts/super-acceleration/chunk-comparison.json`.
+  This is not an overall pipeline, bitwise or perceptual qualification.
+- On resumption, boot ID had changed and five Git objects were empty. An isolated reconstruction
+  recovered exactly the already recorded `4b007a1` commit/object IDs; repair preserved the branch,
+  working files and damaged reflog bytes. Backup: `test-artifacts/git-recovery/20260910T172940/`;
+  repair record: `20260910T083136-8bfdafba4c29`. No crash cause or missing execution outcome is
+  inferred from this recovery.
+
+- The first instrumented 12-second pipeline pair on `a8e082f` completed in 143.260202 /
+  143.958165 s (ordinary/super), with twelve successful models in both modes. Actual weight
+  consumption, PCM hits and Qwen retention/injection were observed; total speedup was not.
+  Cold-secondary tail and unnecessary-preload refinements are committed as `8069ee4` / `5c0e0a5`;
+  fixture correction `a9741bc` keeps existing audio math unchanged. Eight RoFormer, two prediction
+  and thirteen supervisor tests passed; release build: `20260910T092805-8cb46841f749`.
+- **Restart interruption:** refined ordinary completed in 150.865198 s at 18:32:58 +09:00.
+  Refined super **did launch at 18:35:09 +09:00** on `a9741bc`, correcting the initial conversational
+  assertion that it had not launched. Last saved progress is the first Leap task at 0/2 chunks;
+  no completion exists. New boot began 18:36:16 +09:00. The prior preflight saw saturated CPU
+  and a `rustc` process; its command/session is not established. Previous-boot kernel logs are
+  inaccessible. Cause and exact failure time remain unknown. Preserve
+  `test-artifacts/super-acceleration/refined/pipeline-super-observation/` and operation
+  `20260910T093505-99361ad5df8d`; read-only review: `20260910T093840-953484ccee48`.
+
+Next: remove the rejected within-model split, retain real reuse, and implement dependency-aware
+complete-model/device scheduling with CPU simulation of loading, queueing, critical paths and
+resource lifetimes. Safety review follows the linked restart/submission/upload records in the
+design document: preserve synchronization/cleanup; do not add arbitrary waits, limits or retries.
+GPU experiments stay paused after the user's restart report; no automatic repeat of the incomplete
+run. Whole-pipeline performance/output qualification for the corrected design is incomplete.
+No production promotion.
 
 ## Next actions
 

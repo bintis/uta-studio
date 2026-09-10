@@ -19,6 +19,17 @@
 - `uta-ggml-worker` executes Rust model implementations in-process. Its FFmpeg calls are audio codec operations, not model inference subprocesses.
 - Runtime and model directories are user data. Tests use isolated fixtures and do not delete or replace configured assets.
 
+## Super acceleration scope
+
+The user's clarified goal is **whole-model task scheduling across GPUs**, based on dependencies,
+loading order and predicted total execution time, not splitting one model's chunks across cards.
+Keep actual model hot loading, exact-format audio decode reuse, shared separation outputs and
+useful final-consumer device residency. The earlier chunk-splitting measurements do not qualify
+this corrected design. Task-level orchestration remains incomplete and GPU validation is paused
+after the reported restart. Existing synchronization, resource lifetimes and cleanup remain;
+process success and available VRAM do not establish host safety. See
+[Super acceleration](design/runtime/SUPER_ACCELERATION.md) and the task index.
+
 ## Current executable models
 
 The Runtime Manager catalog contains exactly seventeen models and one shared-library runtime. Every model pins the `ggml` backend and depends on the `ggml_vulkan` runtime.
