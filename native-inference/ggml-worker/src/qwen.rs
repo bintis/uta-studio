@@ -91,14 +91,13 @@ pub fn infer(
         .iter()
         .map(|word| word.text.clone())
         .collect::<Vec<_>>();
-    let aligned = qwen.align_wav(wav, &texts)?;
+    let aligned = qwen.align_wav(wav, &texts, &mut progress)?;
     let (retained, reused) = qwen.audio_residency_bytes();
     if retained > 0 {
         crate::audio_cache::diagnostic(&format!(
             "Qwen device-resident audio bytes: retained={retained}, reused={reused}"
         ));
     }
-    progress(1, 1);
     let evidence = evidence(request, aligned, runtime_manifest_digest, backend)?;
     write_evidence(destination, &evidence)
 }

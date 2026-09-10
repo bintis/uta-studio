@@ -30,9 +30,14 @@ pub struct Alignment {
 }
 
 impl Qwen {
-    pub fn align_wav(&self, wav: &std::path::Path, words: &[String]) -> Result<Alignment, String> {
+    pub fn align_wav(
+        &self,
+        wav: &std::path::Path,
+        words: &[String],
+        report: &mut dyn FnMut(u64, u64),
+    ) -> Result<Alignment, String> {
         let samples = crate::wav::read_f32_wav(wav, super::frontend::SAMPLE_RATE as u32, 1)?;
-        self.align_long_words(&samples, words)
+        self.align_long_words(&samples, words, report)
     }
 
     /// Bounds song-length encoder attention. Word groups are assigned to
@@ -40,7 +45,12 @@ impl Qwen {
     /// audio margins protect boundaries at each split. Caller timing remains
     /// an Analysis Engine concern and can replace this coarse partition in a
     /// later calibrated scheduler without changing the worker contract.
-    pub fn align_long_words(&self, samples: &[f32], words: &[String]) -> Result<Alignment, String> {
+    pub fn align_long_words(
+        &self,
+        samples: &[f32],
+        words: &[String],
+        report: &mut dyn FnMut(u64, u64),
+    ) -> Result<Alignment, String> {
         if samples.len() > MAX_ALIGNMENT_SAMPLES {
             return Err("Qwen alignment input exceeds the four-hour contract limit".to_string());
         }
@@ -50,11 +60,22 @@ impl Qwen {
             .checked_mul(super::frontend::HOP)
             .ok_or("Qwen alignment window size overflow")?;
         if samples.len() <= window_samples {
-            return self.align_words(samples, words);
+            if words.is_empty() {
+                return self.align_words(samples, words);
+            }
+            return super::progress::Progress::new(1, report)
+                .run(|| self.align_words(samples, words));
         }
         let margin = WINDOW_MARGIN_SAMPLES.min(window_samples / 4);
         let cores = alignment_core_windows(samples.len(), window_samples, margin)?;
         let assignments = assign_words_to_windows(words, samples.len(), &cores)?;
+        let mut progress = super::progress::Progress::new(
+            assignments
+                .iter()
+                .filter(|assigned| !assigned.is_empty())
+                .count(),
+            report,
+        );
         let mut aligned_words = Vec::with_capacity(words.len());
         let mut raw_classes = Vec::with_capacity(words.len() * 2);
         let mut raw_timestamp_ms = Vec::with_capacity(words.len() * 2);
@@ -72,7 +93,8 @@ impl Qwen {
                 .iter()
                 .map(|&index| words[index].clone())
                 .collect::<Vec<_>>();
-            let local = self.align_words(&samples[audio_start..audio_end], &text)?;
+            let local =
+                progress.run(|| self.align_words(&samples[audio_start..audio_end], &text))?;
             let offset_ms = u64::try_from(audio_start)
                 .map_err(|_| "Qwen alignment window offset exceeds u64")?
                 .saturating_mul(1_000)

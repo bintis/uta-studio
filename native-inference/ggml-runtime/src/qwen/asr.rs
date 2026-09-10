@@ -31,9 +31,10 @@ impl Qwen {
         wav: &std::path::Path,
         max_new_tokens: usize,
         forced_language: Option<&str>,
+        report: &mut dyn FnMut(u64, u64),
     ) -> Result<Transcription, String> {
         let samples = crate::wav::read_f32_wav(wav, super::frontend::SAMPLE_RATE as u32, 1)?;
-        self.transcribe_long(&samples, max_new_tokens, forced_language)
+        self.transcribe_long(&samples, max_new_tokens, forced_language, report)
     }
 
     /// Runs bounded overlapping windows so a song-length input cannot turn
@@ -47,6 +48,7 @@ impl Qwen {
         samples: &[f32],
         max_new_tokens_per_window: usize,
         forced_language: Option<&str>,
+        report: &mut dyn FnMut(u64, u64),
     ) -> Result<Transcription, String> {
         if samples.len() > MAX_ASR_SAMPLES {
             return Err("Qwen ASR input exceeds the four-hour contract limit".to_string());
@@ -61,7 +63,9 @@ impl Qwen {
             window_samples,
             WINDOW_OVERLAP_SAMPLES.min(window_samples / 4),
         )?;
+        let mut progress = super::progress::Progress::new(windows.len(), report);
         if windows.len() == 1 {
+            return progress.run(|| {
             let single = self.transcribe(samples, max_new_tokens_per_window, forced_language)?;
             if !single.finished {
                 return Err(format!(
@@ -69,7 +73,8 @@ impl Qwen {
                     single.generated_tokens.len()
                 ));
             }
-            return Ok(single);
+            Ok(single)
+            });
         }
         let mut text = String::new();
         let mut language_name: Option<String> = None;
@@ -81,11 +86,13 @@ impl Qwen {
         let window_count = windows.len();
         let mut unfinished_windows = 0usize;
         for (start, end) in windows.into_iter() {
-            let window = self.transcribe(
-                &samples[start..end],
-                max_new_tokens_per_window,
-                forced_language,
-            )?;
+            let window = progress.run(|| {
+                self.transcribe(
+                    &samples[start..end],
+                    max_new_tokens_per_window,
+                    forced_language,
+                )
+            })?;
             if !window.finished {
                 // A song is not speech from end to end. Intros, solos and
                 // outros give the decoder nothing to transcribe, and an
