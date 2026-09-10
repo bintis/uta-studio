@@ -104,8 +104,8 @@ def main():
                         benchmark = [str(root / "test-artifacts/xpu-capacity-study/build/benchmark"),
                                      *map(str, CASES[name])]
                         invocation = [sys.executable, "tools/record-operation.py", "xpu-counter-" + group + "-" + name,
-                                      "--output", str(case), "--", sys.executable, "tools/observe-roformer-run.py",
-                                      str(case), "--", *benchmark]
+                                      "--output", str(case / "workload"), "--", sys.executable, "tools/observe-roformer-run.py",
+                                      str(case / "workload"), "--", *benchmark]
                         record["benchmark_uid"] = os.getuid()
                         record["benchmark_command"] = benchmark
                         record["begin_ns"] = time.time_ns()
@@ -125,7 +125,7 @@ def main():
                         record["completed_epoch_ns"] = time.time_ns()
                         record["boot_after"] = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
                         save(case / "collector-completion.json", record)
-                stdout = case / "stdout.txt"
+                stdout = case / "workload/stdout.txt"
                 if stdout.exists():
                     for line in stdout.read_text().splitlines():
                         if line.startswith("CAPACITY_RESULT "):
