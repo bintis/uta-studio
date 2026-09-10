@@ -2,6 +2,19 @@
 //! link, locate, download or initialize a native runtime. The caller supplies
 //! one explicit library, backend, device and precision for each model session.
 mod ffi;
+#[path = "../../ggml-runtime/src/acceleration.rs"]
+pub mod acceleration;
+#[path = "../../ggml-runtime/src/stft.rs"]
+mod stft;
+#[path = "../../ggml-runtime/src/wav.rs"]
+mod wav;
+#[path = "../../ggml-runtime/src/stage_profile.rs"]
+mod stage_profile;
+pub mod roformer;
+pub mod game;
+pub mod jbm555;
+mod pitch;
+pub use pitch::{basic_pitch, fcpe, rmvpe};
 
 use std::collections::BTreeMap;
 use std::ffi::{CStr, CString};

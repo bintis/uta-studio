@@ -180,56 +180,9 @@ impl Rmvpe {
     pub fn process_wav(
         &self,
         input_path: &Path,
-        mut progress: impl FnMut(u64, u64),
+        progress: impl FnMut(u64, u64),
     ) -> Result<Vec<PitchFrame>, String> {
-        let audio = read_f32_wav(input_path, SAMPLE_RATE, 1)?;
-        let mel = log_mel_spectrogram(&audio)?;
-        let frame_count = mel.len() / MEL_BINS;
-        let window_count = if frame_count <= MAX_INPUT_FRAMES {
-            1
-        } else {
-            (frame_count - MAX_INPUT_FRAMES).div_ceil(STRIDE_FRAMES) + 1
-        };
-        let mut evidence = Vec::with_capacity(frame_count);
-        let mut start = 0_usize;
-        for window in 0..window_count {
-            let remaining = frame_count - start;
-            let final_window = remaining <= MAX_INPUT_FRAMES;
-            let clamped = remaining.clamp(MIN_INPUT_FRAMES, MAX_INPUT_FRAMES);
-            let input_frames = clamped.div_ceil(FRAME_STEP) * FRAME_STEP;
-            let mel_window = to_channel_major_window(&mel, frame_count, start, input_frames);
-            let activations = self.run_window(&mel_window, input_frames)?;
-            progress((window + 1) as u64, window_count as u64);
-            let keep_start = if start == 0 { 0 } else { OVERLAP_FRAMES / 2 };
-            let keep_end = if final_window {
-                remaining
-            } else {
-                MAX_INPUT_FRAMES - OVERLAP_FRAMES / 2
-            };
-            for local_frame in keep_start..keep_end {
-                let begin = local_frame * PITCH_CLASSES;
-                let (hz, confidence) = local_average_hz(
-                    activations
-                        .get(begin..begin + PITCH_CLASSES)
-                        .ok_or_else(|| "RMVPE activation timeline is truncated".to_string())?,
-                )?;
-                let frame = start + local_frame;
-                evidence.push(PitchFrame {
-                    time: frame as f64 * 0.01,
-                    hz,
-                    confidence,
-                    voiced: confidence >= 0.03,
-                });
-            }
-            if final_window {
-                break;
-            }
-            start += STRIDE_FRAMES;
-        }
-        if evidence.len() != frame_count {
-            return Err("RMVPE overlap stitching changed the evidence timeline".to_string());
-        }
-        Ok(evidence)
+        host::process_wav(input_path, progress, |mel, frames| self.run_window(mel, frames))
     }
 
     fn api(&self) -> &ModelApi {
@@ -1046,5 +999,61 @@ mod tests {
         let audio = vec![0.0; SAMPLE_RATE as usize];
         let mel = log_mel_spectrogram(&audio).unwrap();
         assert_eq!(mel.len() / MEL_BINS, 101);
+    }
+}
+
+/// Canonical host-only audio preparation, decoding and timeline stitching.
+/// The callback is the only learned-computation boundary and may be any native backend.
+pub mod host {
+    use super::*;
+    pub fn process_wav(input_path: &Path, mut progress: impl FnMut(u64, u64), mut run_window: impl FnMut(&[f32], usize) -> Result<Vec<f32>, String>) -> Result<Vec<PitchFrame>, String> {
+        let audio = read_f32_wav(input_path, SAMPLE_RATE, 1)?;
+        let mel = log_mel_spectrogram(&audio)?;
+        let frame_count = mel.len() / MEL_BINS;
+        let window_count = if frame_count <= MAX_INPUT_FRAMES {
+            1
+        } else {
+            (frame_count - MAX_INPUT_FRAMES).div_ceil(STRIDE_FRAMES) + 1
+        };
+        let mut evidence = Vec::with_capacity(frame_count);
+        let mut start = 0_usize;
+        for window in 0..window_count {
+            let remaining = frame_count - start;
+            let final_window = remaining <= MAX_INPUT_FRAMES;
+            let clamped = remaining.clamp(MIN_INPUT_FRAMES, MAX_INPUT_FRAMES);
+            let input_frames = clamped.div_ceil(FRAME_STEP) * FRAME_STEP;
+            let mel_window = to_channel_major_window(&mel, frame_count, start, input_frames);
+            let activations = run_window(&mel_window, input_frames)?;
+            progress((window + 1) as u64, window_count as u64);
+            let keep_start = if start == 0 { 0 } else { OVERLAP_FRAMES / 2 };
+            let keep_end = if final_window {
+                remaining
+            } else {
+                MAX_INPUT_FRAMES - OVERLAP_FRAMES / 2
+            };
+            for local_frame in keep_start..keep_end {
+                let begin = local_frame * PITCH_CLASSES;
+                let (hz, confidence) = local_average_hz(
+                    activations
+                        .get(begin..begin + PITCH_CLASSES)
+                        .ok_or_else(|| "RMVPE activation timeline is truncated".to_string())?,
+                )?;
+                let frame = start + local_frame;
+                evidence.push(PitchFrame {
+                    time: frame as f64 * 0.01,
+                    hz,
+                    confidence,
+                    voiced: confidence >= 0.03,
+                });
+            }
+            if final_window {
+                break;
+            }
+            start += STRIDE_FRAMES;
+        }
+        if evidence.len() != frame_count {
+            return Err("RMVPE overlap stitching changed the evidence timeline".to_string());
+        }
+        Ok(evidence)
     }
 }

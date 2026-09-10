@@ -57,10 +57,10 @@ struct CqtWeights {
     batch_norm_shift: f32,
 }
 
-struct WindowActivations {
-    notes: Vec<f32>,
-    onsets: Vec<f32>,
-    contours: Vec<f32>,
+pub struct WindowActivations {
+    pub notes: Vec<f32>,
+    pub onsets: Vec<f32>,
+    pub contours: Vec<f32>,
 }
 
 struct GraphRun {
@@ -184,25 +184,9 @@ impl BasicPitch {
     pub fn process_wav(
         &self,
         input_path: &Path,
-        mut progress: impl FnMut(u64, u64),
+        progress: impl FnMut(u64, u64),
     ) -> Result<Vec<ActivationFrame>, String> {
-        let audio = read_f32_wav(input_path, SAMPLE_RATE, 1)?;
-        if audio.len() < FFT_HOP_SAMPLES {
-            return Err("Basic Pitch requires at least one 256-sample frame".to_string());
-        }
-        let count = window_count(audio.len());
-        let mut frames = Vec::with_capacity(audio.len() / FFT_HOP_SAMPLES);
-        let mut input = vec![0.0_f32; INPUT_SAMPLES];
-        for window_index in 0..count {
-            fill_padded_window(&mut input, &audio, window_index);
-            let activations = self.run_window(&input)?;
-            append_window_frames(&mut frames, &activations, window_index, audio.len());
-            progress((window_index + 1) as u64, count as u64);
-        }
-        if frames.len() != audio.len() / FFT_HOP_SAMPLES {
-            return Err("Basic Pitch window stitching changed the evidence timeline".to_string());
-        }
-        Ok(frames)
+        host::process_wav(input_path, progress, |audio| self.run_window(audio))
     }
 
     fn api(&self) -> &ModelApi {
@@ -849,5 +833,30 @@ mod tests {
         assert_eq!(stacked[136], 1.0);
         assert_eq!(stacked[N_FREQ_BINS_CONTOURS + 100], 1.0);
         assert_eq!(stacked[2 * N_FREQ_BINS_CONTOURS + 64], 1.0);
+    }
+}
+
+/// Canonical host-only audio preparation, decoding and timeline stitching.
+/// The callback is the only learned-computation boundary and may be any native backend.
+pub mod host {
+    use super::*;
+    pub fn process_wav(input_path: &Path, mut progress: impl FnMut(u64, u64), mut run_window: impl FnMut(&[f32]) -> Result<WindowActivations, String>) -> Result<Vec<ActivationFrame>, String> {
+        let audio = read_f32_wav(input_path, SAMPLE_RATE, 1)?;
+        if audio.len() < FFT_HOP_SAMPLES {
+            return Err("Basic Pitch requires at least one 256-sample frame".to_string());
+        }
+        let count = window_count(audio.len());
+        let mut frames = Vec::with_capacity(audio.len() / FFT_HOP_SAMPLES);
+        let mut input = vec![0.0_f32; INPUT_SAMPLES];
+        for window_index in 0..count {
+            fill_padded_window(&mut input, &audio, window_index);
+            let activations = run_window(&input)?;
+            append_window_frames(&mut frames, &activations, window_index, audio.len());
+            progress((window_index + 1) as u64, count as u64);
+        }
+        if frames.len() != audio.len() / FFT_HOP_SAMPLES {
+            return Err("Basic Pitch window stitching changed the evidence timeline".to_string());
+        }
+        Ok(frames)
     }
 }

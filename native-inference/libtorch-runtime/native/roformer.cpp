@@ -70,6 +70,7 @@ public:
 
     TensorMap forward(const std::string& operation, const Inputs& inputs) override {
         check_cancel();
+        if (operation == "constants") return {{"frequency_indices", frequency_indices}, {"bands_per_frequency", frequency_counts.to(at::kLong)}};
         const bool prepared = operation == "mask";
         if (!prepared && operation != "forward") throw std::invalid_argument("RoFormer operation must be forward or mask");
         auto spectrum = prepared ? at::Tensor() : inputs.get("spectrum");
