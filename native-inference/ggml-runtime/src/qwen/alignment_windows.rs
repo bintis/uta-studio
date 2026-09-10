@@ -9,7 +9,7 @@ pub struct AudioScope {
     pub end_sample: usize,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug)]
 pub struct AlignmentWindowTrace {
     pub start_micros: u64,
     pub end_micros: u64,

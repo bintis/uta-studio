@@ -6,6 +6,33 @@ use serde::{Deserialize, Serialize};
 use uta_ggml_runtime::qwen::aligner::{Alignment, AlignmentWindowTrace, AudioScope};
 use uta_ggml_runtime::{DeviceDescriptor, GgmlRuntime};
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct WindowTrace {
+    start_micros: u64,
+    end_micros: u64,
+    first_word: usize,
+    word_count: usize,
+    anchored: bool,
+    raw_timestamp_ms: Vec<u64>,
+    corrected_timestamp_ms: Vec<u64>,
+    timing_issues: Vec<Option<String>>,
+}
+
+impl From<AlignmentWindowTrace> for WindowTrace {
+    fn from(trace: AlignmentWindowTrace) -> Self {
+        Self {
+            start_micros: trace.start_micros,
+            end_micros: trace.end_micros,
+            first_word: trace.first_word,
+            word_count: trace.word_count,
+            anchored: trace.anchored,
+            raw_timestamp_ms: trace.raw_timestamp_ms,
+            corrected_timestamp_ms: trace.corrected_timestamp_ms,
+            timing_issues: trace.timing_issues,
+        }
+    }
+}
 const MODEL_ID: &str = "qwen3_forced_aligner_0_6b";
 
 #[derive(Debug, Deserialize)]
@@ -69,7 +96,7 @@ struct Diagnostics {
     raw_classes: Vec<u32>,
     raw_timestamp_ms: Vec<u64>,
     corrected_timestamp_ms: Vec<u64>,
-    windows: Vec<AlignmentWindowTrace>,
+    windows: Vec<WindowTrace>,
     prompt_tokens: usize,
     encoder_seconds: f64,
     decoder_seconds: f64,
@@ -245,7 +272,7 @@ fn evidence(
             raw_classes: aligned.raw_classes,
             raw_timestamp_ms: aligned.raw_timestamp_ms,
             corrected_timestamp_ms: aligned.corrected_timestamp_ms,
-            windows: aligned.windows,
+            windows: aligned.windows.into_iter().map(WindowTrace::from).collect(),
             prompt_tokens: aligned.prompt_tokens,
             encoder_seconds: aligned.encoder_seconds,
             decoder_seconds: aligned.decoder_seconds,
