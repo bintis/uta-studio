@@ -1,0 +1,303 @@
+--- a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
++++ b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
+@@ -28,285 +28,6 @@
+ shared f16vec4 operand_workspace[row_split * 128];
+ shared vec4 float_workspace[row_split * 128];
+ shared f16vec4 probability_workspace[row_split * 64];
+-
+-void shared_attention() {
+-    init_indices();
+-    const uint lane = gl_SubgroupInvocationID;
+-    const uint group = gl_SubgroupID;
+-    const uint lanes_per_row = SubGroupSize / 8;
+-    const uint keys_per_lane = 32 / lanes_per_row;
+-    const uint packs_per_lane = keys_per_lane / 4;
+-    const uint local_row = lane / lanes_per_row;
+-    const uint row_lane = lane % lanes_per_row;
+-    const uint first_query = i * Br + group * 8;
+-    if (first_query >= N && row_split != 4) {
+-        return; // the independent one/two-subgroup paths have no workgroup barriers
+-    }
+-    const uint operand_base = group * 128;
+-    const uint float_base = group * 128;
+-    const uint probability_base = group * 64;
+-    const uint query_base = (iq2 * p.nb02 + iq3 * p.nb03) / 4;
+-    const uint key_base = (ik2 * p.nb12 + ik3 * p.nb13) / 2;
+-    const uint value_base = (iv2 * p.nb22 + iv3 * p.nb23) / 2;
+-    uint mask_base = 0;
+-    if (p.nem2 != 1 || p.nem3 != 1) {
+-        mask_base = ((iq3 % p.nem3) * p.nem2 + (iq2 % p.nem2)) * p.nem1 * KV;
+-    }
+-    const float negative = uintBitsToFloat(0xFEFFFFFF);
+-    const float head_slope = p.max_bias > 0.0
+-        ? float(perElemOpComputeSlope(0, 0, ACC_TYPE(0), iq2)) : 1.0;
+-
+-    [[unroll]] for (uint index = lane; index < 128; index += SubGroupSize) {
+-        const uint row = index / 16;
+-        const uint depth = (index % 16) * 4;
+-        vec4 query = vec4(0);
+-        if (first_query + row < N) {
+-            const uint address = query_base + (first_query + row) * q_stride + depth;
+-            query = vec4(query_data[address], query_data[address + 1],
+-                         query_data[address + 2], query_data[address + 3]);
+-        }
+-        operand_workspace[operand_base + index] = f16vec4(query * p.scale);
+-    }
+-    subgroupBarrier();
+-    coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseA> queries[4];
+-    [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
+-        coopMatLoad(queries[depth_tile], operand_workspace,
+-                    operand_base + depth_tile * 4, 16, gl_CooperativeMatrixLayoutRowMajor);
+-    }
+-    if (row_split == 4) {
+-        barrier(); // all four Q fragments must be loaded before shared K overwrites them
+-    } else {
+-        subgroupBarrier();
+-    }
+-
+-    coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator> output_tiles[4];
+-    [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
+-        output_tiles[depth_tile] = coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator>(0);
+-    }
+-    float running_maximum = negative;
+-    float normalizer = 0.0;
+-
+-    [[dont_unroll]] for (uint block = start_j; block < end_j; ++block) {
+-        if (row_split == 4) {
+-            // One coalesced 32x64 K tile serves all 32 queries in the workgroup.
+-            [[unroll]] for (uint index = gl_LocalInvocationID.x; index < 512; index += WorkGroupSize) {
+-                const uint row = block * 32 + index / 16;
+-                const uint address = key_base + row * k_stride + (index % 16) * 4;
+-                f16vec4 values = f16vec4(0);
+-                if (row < KV) {
+-                    if ((address & 3) == 0) {
+-                        values = key_vectors[address / 4];
+-                    } else {
+-                        values = f16vec4(key_data[address], key_data[address + 1], key_data[address + 2], key_data[address + 3]);
+-                    }
+-                }
+-                operand_workspace[index] = values;
+-            }
+-            barrier();
+-        }
+-        // Q * K^T: the M=8 axis is query-owned, rather than key-owned.
+-        [[unroll]] for (uint key_tile = 0; key_tile < 2; ++key_tile) {
+-            coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator> scores =
+-                coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator>(0);
+-            const uint key_row = block * 32 + key_tile * 16;
+-            [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
+-                coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> keys;
+-                if (row_split == 4) {
+-                    coopMatLoad(keys, operand_workspace, key_tile * 256 + depth_tile * 4,
+-                                16, gl_CooperativeMatrixLayoutColumnMajor);
+-                } else if (key_row + 16 <= KV && (k_stride & 7) == 0) {
+-                    coopMatLoad(keys, key_vectors, key_base / 4 + key_row * k_stride / 4 + depth_tile * 4,
+-                                k_stride / 4, gl_CooperativeMatrixLayoutColumnMajor);
+-                } else {
+-                    [[unroll]] for (uint index = lane; index < 64; index += SubGroupSize) {
+-                        const uint row = key_row + index / 4;
+-                        const uint depth = depth_tile * 16 + (index % 4) * 4;
+-                        f16vec4 value = f16vec4(0);
+-                        if (row < KV) {
+-                            const uint address = key_base + row * k_stride + depth;
+-                            value = f16vec4(key_data[address], key_data[address + 1],
+-                                            key_data[address + 2], key_data[address + 3]);
+-                        }
+-                        operand_workspace[operand_base + index] = value;
+-                    }
+-                    subgroupBarrier();
+-                    coopMatLoad(keys, operand_workspace, operand_base, 4, gl_CooperativeMatrixLayoutColumnMajor);
+-                }
+-                scores = coopMatMulAdd(queries[depth_tile], keys, scores);
+-                // Protect the local operand tile before another contraction overwrites it.
+-                if (row_split != 4 && (key_row + 16 > KV || (k_stride & 7) != 0)) {
+-                    subgroupBarrier();
+-                }
+-            }
+-            coopMatStore(scores, float_workspace, float_base + key_tile * 4,
+-                         8, gl_CooperativeMatrixLayoutRowMajor);
+-        }
+-        if (row_split == 4) {
+-            barrier(); // finish every subgroup's K reads before this storage becomes V
+-        } else {
+-            subgroupBarrier();
+-        }
+-
+-        // Two or four adjacent lanes own one query row, covering all 32 keys.
+-        // max/sum state is scalar instead of replicating eight rows in each lane.
+-        vec4 packed_scores[packs_per_lane];
+-        float row_maximum = negative;
+-        [[unroll]] for (uint part = 0; part < packs_per_lane; ++part) {
+-            vec4 scores = float_workspace[float_base + local_row * 8 + row_lane * packs_per_lane + part];
+-            if (LOGIT_SOFTCAP) {
+-                scores = p.logit_softcap * tanh(scores);
+-            }
+-            [[unroll]] for (uint component = 0; component < 4; ++component) {
+-                const uint key_column = block * 32 + row_lane * keys_per_lane + part * 4 + component;
+-                const uint query_row = first_query + local_row;
+-                if (key_column >= KV) {
+-                    scores[component] = negative;
+-                } else if (MASK_ENABLE && query_row < N && query_row < p.nem1) {
+-                    scores[component] += head_slope * float(mask_data[mask_base + query_row * m_stride + key_column]);
+-                }
+-            }
+-            packed_scores[part] = scores;
+-            row_maximum = max(row_maximum, max(max(scores.x, scores.y), max(scores.z, scores.w)));
+-        }
+-        row_maximum = max(row_maximum, subgroupShuffleXor(row_maximum, 1));
+-        if (lanes_per_row == 4) {
+-            row_maximum = max(row_maximum, subgroupShuffleXor(row_maximum, 2));
+-        }
+-        const float maximum = max(running_maximum, row_maximum + FATTN_KQ_MAX_OFFSET);
+-        const float rescale = exp(running_maximum - maximum);
+-        running_maximum = maximum;
+-        normalizer *= rescale;
+-        [[unroll]] for (uint part = 0; part < packs_per_lane; ++part) {
+-            f16vec4 probabilities = f16vec4(exp(packed_scores[part] - vec4(maximum)));
+-            [[unroll]] for (uint component = 0; component < 4; ++component) {
+-                const uint key_column = block * 32 + row_lane * keys_per_lane + part * 4 + component;
+-                if (key_column >= KV) {
+-                    probabilities[component] = float16_t(0);
+-                }
+-                normalizer += float(probabilities[component]);
+-            }
+-            probability_workspace[probability_base + local_row * 8 + row_lane * packs_per_lane + part] = probabilities;
+-        }
+-        subgroupBarrier();
+-        // Row-major 8x16 broadcast matrix: no fragment-to-lane assumption.
+-        [[unroll]] for (uint column = row_lane; column < 4; column += lanes_per_row) {
+-            float_workspace[float_base + local_row * 4 + column] = vec4(rescale);
+-        }
+-        subgroupBarrier();
+-        coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator> rescale_matrix;
+-        coopMatLoad(rescale_matrix, float_workspace, float_base, 4, gl_CooperativeMatrixLayoutRowMajor);
+-        [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
+-            output_tiles[depth_tile] = output_tiles[depth_tile] * rescale_matrix;
+-        }
+-        if (row_split == 4) {
+-            [[unroll]] for (uint index = gl_LocalInvocationID.x; index < 512; index += WorkGroupSize) {
+-                const uint row = block * 32 + index / 16;
+-                const uint address = value_base + row * v_stride + (index % 16) * 4;
+-                f16vec4 values = f16vec4(0);
+-                if (row < KV) {
+-                    if ((address & 3) == 0) {
+-                        values = value_vectors[address / 4];
+-                    } else {
+-                        values = f16vec4(value_data[address], value_data[address + 1], value_data[address + 2], value_data[address + 3]);
+-                    }
+-                }
+-                operand_workspace[index] = values;
+-            }
+-            barrier();
+-        }
+-
+-        // Keep each block's product separate, preserving the previous algorithm's
+-        // blockwise addition instead of silently extending its FMA accumulation chain.
+-        [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
+-            // Only one temporary product survives at a time. Holding four here
+-            // alongside Q and O spilled the first prototype beyond 128 GRFs.
+-            coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator> product =
+-                coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator>(0);
+-            [[unroll]] for (uint key_tile = 0; key_tile < 2; ++key_tile) {
+-                coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseA> probabilities;
+-                coopMatLoad(probabilities, probability_workspace, probability_base + key_tile * 4,
+-                            8, gl_CooperativeMatrixLayoutRowMajor);
+-                const uint value_row = block * 32 + key_tile * 16;
+-                coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> values;
+-                if (row_split == 4) {
+-                    coopMatLoad(values, operand_workspace, key_tile * 256 + depth_tile * 4,
+-                                16, gl_CooperativeMatrixLayoutRowMajor);
+-                } else if (value_row + 16 <= KV && (v_stride & 7) == 0) {
+-                    coopMatLoad(values, value_vectors, value_base / 4 + value_row * v_stride / 4 + depth_tile * 4,
+-                                v_stride / 4, gl_CooperativeMatrixLayoutRowMajor);
+-                } else {
+-                    [[unroll]] for (uint index = lane; index < 64; index += SubGroupSize) {
+-                        const uint row = value_row + index / 4;
+-                        const uint depth = depth_tile * 16 + (index % 4) * 4;
+-                        f16vec4 value = f16vec4(0);
+-                        if (row < KV) {
+-                            const uint address = value_base + row * v_stride + depth;
+-                            value = f16vec4(value_data[address], value_data[address + 1],
+-                                            value_data[address + 2], value_data[address + 3]);
+-                        }
+-                        operand_workspace[operand_base + index] = value;
+-                    }
+-                    subgroupBarrier();
+-                    coopMatLoad(values, operand_workspace, operand_base, 4, gl_CooperativeMatrixLayoutRowMajor);
+-                }
+-                product = coopMatMulAdd(probabilities, values, product);
+-                if (row_split != 4 && (value_row + 16 > KV || (v_stride & 7) != 0)) {
+-                    subgroupBarrier();
+-                }
+-            }
+-            output_tiles[depth_tile] = output_tiles[depth_tile] + product;
+-        }
+-        if (row_split == 4) {
+-            barrier(); // protect V and probability reads before the next key block
+-        } else {
+-            subgroupBarrier();
+-        }
+-    }
+-
+-    normalizer += subgroupShuffleXor(normalizer, 1);
+-    if (lanes_per_row == 4) {
+-        normalizer += subgroupShuffleXor(normalizer, 2);
+-    }
+-    float final_scale = 1.0;
+-    if (p.k_num == 1) {
+-        if ((p.mask_n_head_log2 & SINK_ENABLE_BIT) != 0) {
+-            const float sink = float(perElemOpGetSink(local_row, 0, ACC_TYPE(0), iq2));
+-            const float maximum = max(running_maximum, sink);
+-            final_scale = exp(running_maximum - maximum);
+-            normalizer = normalizer * final_scale + exp(sink - maximum);
+-        }
+-        final_scale = normalizer == 0.0 ? 0.0 : final_scale / normalizer;
+-    }
+-    [[unroll]] for (uint column = row_lane; column < 4; column += lanes_per_row) {
+-        float_workspace[float_base + local_row * 4 + column] = vec4(final_scale);
+-    }
+-    if (p.k_num > 1 && row_lane == 0 && first_query + local_row < N) {
+-        const uint address = HSV * p.ne1 * p.k_num * p.ne2 * p.ne3
+-            + p.ne1 * 2 * (split_k_index + p.k_num * (first_query + local_row + p.ne2 * iq3));
+-        data_o[address + iq2] = normalizer;
+-        data_o[address + p.ne1 + iq2] = running_maximum;
+-    }
+-    subgroupBarrier();
+-    coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator> normalization;
+-    coopMatLoad(normalization, float_workspace, float_base, 4, gl_CooperativeMatrixLayoutRowMajor);
+-    subgroupBarrier();
+-    [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
+-        output_tiles[depth_tile] = output_tiles[depth_tile] * normalization;
+-        coopMatStore(output_tiles[depth_tile], float_workspace, float_base + depth_tile * 4,
+-                     16, gl_CooperativeMatrixLayoutRowMajor);
+-    }
+-    subgroupBarrier();
+-    [[unroll]] for (uint index = lane; index < 128; index += SubGroupSize) {
+-        const uint row = first_query + index / 16;
+-        if (row < N) {
+-            const uint depth = index % 16;
+-            const uint address = p.k_num > 1
+-                ? HSV * p.ne1 * (split_k_index + p.k_num * (row + p.ne2 * iq3)) / 4 + iq2 * 16 + depth
+-                : (iq3 * p.ne2 * p.ne1 * HSV + (row * p.ne1 + iq2) * HSV) / 4 + depth;
+-            data_ov4[address] = float_workspace[float_base + index];
+-        }
+-    }
+-}
+ 
+ // Guard the optimized register bridge with actual cooperative-matrix loads.
+ // Vulkan does not guarantee a lane/component mapping, even on a named GPU.
+@@ -556,6 +277,11 @@
+     if (fragment_layout_matches()) {
+         fragment_attention();
+     } else {
+-        shared_attention();
+-    }
+-}
++        init_indices();
++        const uint row = i * Br + gl_SubgroupID * 8;
++        if (row < N && gl_SubgroupInvocationID == 0) {
++            const uint address = (iq3 * p.ne2 * p.ne1 * HSV + (row * p.ne1 + iq2) * HSV) / 4;
++            data_ov4[address] = vec4(uintBitsToFloat(0x7FC00000u));
++        }
++    }
++}
