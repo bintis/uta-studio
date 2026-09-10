@@ -1,0 +1,34 @@
+diff --git a/src/ggml-vulkan/ggml-vulkan.cpp b/src/ggml-vulkan/ggml-vulkan.cpp
+--- a/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -10851,2 +10851,2 @@
+-        // 3584 bytes per subgroup plus the 32-byte IQ table from types.glsl.
+-        return params.row_split * 3584u + 32u <= device->properties.limits.maxComputeSharedMemorySize;
++        // Include the invariant shared Q tile; no Q fragments survive the key loop.
++        return params.row_split * 4608u + 32u <= device->properties.limits.maxComputeSharedMemorySize;
+diff --git a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
+--- a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
++++ b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
+@@ -28,1 +28,2 @@
+ shared f16vec4 operand_workspace[row_split * 128];
++shared f16vec4 query_workspace[row_split * 128];
+@@ -68,8 +69,3 @@
+-        operand_workspace[operand_base + index] = f16vec4(query * p.scale);
++        query_workspace[operand_base + index] = f16vec4(query * p.scale);
+     }
+     subgroupBarrier();
+-    coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseA> queries[4];
+-    [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
+-        coopMatLoad(queries[depth_tile], operand_workspace,
+-                    operand_base + depth_tile * 4, 16, gl_CooperativeMatrixLayoutRowMajor);
+-    }
+@@ -113,1 +110,6 @@
+                 coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> keys;
++                // Retain only the Q fragment consumed by this contraction.
++                // Q and O no longer compete for registers over the complete key loop.
++                coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseA> queries;
++                coopMatLoad(queries, query_workspace, operand_base + depth_tile * 4,
++                            16, gl_CooperativeMatrixLayoutRowMajor);
+@@ -135,1 +137,1 @@
+-                scores = coopMatMulAdd(queries[depth_tile], keys, scores);
++                scores = coopMatMulAdd(queries, keys, scores);
