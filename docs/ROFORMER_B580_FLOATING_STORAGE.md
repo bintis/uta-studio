@@ -27,6 +27,16 @@ Full key context, existing F16 operand/probability rounding, F32 accumulators,
 masks, tail guards and production model chunking/reconstruction are preserved.
 The score/probability matrix is never materialized in global memory.
 
+## Follow-up non-XE verification
+
+`ROFORMER_B580_MULTIMODEL_VERIFICATION.md` records final same-library pairs for
+Harmony, Denoise and Dereverb, including exact repeat checks, full-waveform
+differences and sampled external GPU load. The three final time-attention
+latencies are approximately 8.2 ms versus 20.7 ms controls, with 4.76%-5.01%
+complete-processing reductions. Dereverb's 48.74 dB cross-kernel SNR remains
+an explicit quality-acceptance limitation. These later pairs supersede the
+independent study's externally contended exploratory timings, not its evidence.
+
 ## Evidence and baseline identity
 
 All paths below are relative to the repository unless otherwise stated.
