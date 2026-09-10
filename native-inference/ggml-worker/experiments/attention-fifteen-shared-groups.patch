@@ -1,0 +1,10 @@
+--- a/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -3876,6 +3876,7 @@
+         const uint32_t requested_groups = shared_groups == nullptr ? 0u :
+             std::strcmp(shared_groups, "12") == 0 ? 12u :
+             std::strcmp(shared_groups, "14") == 0 ? 14u :
++            std::strcmp(shared_groups, "15") == 0 ? 15u :
+             std::strcmp(shared_groups, "16") == 0 ? 16u : 0u;
+         if (requested_groups != 0 &&
+             limits.maxComputeWorkGroupInvocations >= requested_groups * 32u &&
