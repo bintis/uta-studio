@@ -1305,7 +1305,7 @@ impl AnalysisEngine {
                 model,
                 component,
                 &format!("{}-stars", request.request_id),
-                "notes.stars+technique.analyze",
+                "stars",
                 &[input, pitch_path.to_path_buf()],
                 &directory,
                 config,
