@@ -24,7 +24,8 @@ at::Tensor decomposed(const at::Tensor& input, const at::Tensor& cosine, const a
     auto even = paired.select(-1, 0), odd = paired.select(-1, 1);
     return at::stack({even * cosine - odd * sine, even * sine + odd * cosine}, -1).flatten(-2);
 }
-void compare(const at::Tensor& actual, const at::Tensor& expected, const char* name) {
+void compare(const at::Tensor& actual, const at::Tensor& expected, const char* name,
+             double absolute_tolerance = 2e-6, double nmse_tolerance = 1e-12) {
     auto value = actual.to(at::kCPU).to(at::kDouble);
     auto reference = expected.to(at::kCPU).to(at::kDouble);
     if (value.sizes() != reference.sizes() || !at::isfinite(value).all().item<bool>())
@@ -34,7 +35,7 @@ void compare(const at::Tensor& actual, const at::Tensor& expected, const char* n
     const auto nmse = difference.square().sum().item<double>() / std::max(reference.square().sum().item<double>(), 1e-30);
     std::cout << "comparison=" << name << " elements=" << value.numel()
               << " max_abs=" << maximum << " nmse=" << nmse << std::endl;
-    if (maximum > 2e-6 || nmse > 1e-12) throw std::runtime_error(std::string(name) + " numerical mismatch");
+    if (maximum > absolute_tolerance || nmse > nmse_tolerance) throw std::runtime_error(std::string(name) + " numerical mismatch");
 }
 void run(const at::Device& device, int64_t batch, int64_t length, int64_t width, bool packed, bool timing) {
     const int64_t heads = 8;
@@ -73,6 +74,43 @@ void run(const at::Device& device, int64_t batch, int64_t length, int64_t width,
         }
     }
 }
+void attention(const at::Device& device, int64_t batch, int64_t length, bool timing) {
+    const int64_t heads = 8, width = 64;
+    auto options = at::TensorOptions().device(device).dtype(at::kFloat);
+    auto storage = (at::arange(batch * length * heads * width * 3, options) * 0.017).sin()
+        .reshape({batch, length, heads * width * 3});
+    auto pieces = storage.chunk(3, -1);
+    auto query = pieces[0].reshape({batch, length, heads, width}).transpose(1, 2);
+    auto key = pieces[1].reshape({batch, length, heads, width}).transpose(1, 2);
+    auto value = pieces[2].reshape({batch, length, heads, width}).transpose(1, 2);
+    const double scale = 0.125;
+    auto packed = [&] {
+        return at::scaled_dot_product_attention(query.to(at::kHalf).contiguous(), key.to(at::kHalf).contiguous(),
+            value.to(at::kHalf).contiguous(), {}, 0.0, false, scale).to(at::kFloat);
+    };
+    auto interleaved = [&] { return uta::torch_native::layout_preserving_roformer_attention(query, key, value, scale); };
+    auto actual = interleaved();
+    std::cout << "attention_shape=" << batch << ',' << heads << ',' << length << ',' << width << std::endl;
+    compare(actual, packed(), "attention-packed", 2e-3, 2e-6);
+    if (!timing) {
+        auto rounded = [](const at::Tensor& input) { return input.to(at::kHalf).to(at::kCPU).to(at::kDouble); };
+        auto reference = at::matmul(at::softmax(at::matmul(rounded(query), rounded(key).transpose(-1, -2)) * scale, -1), rounded(value));
+        compare(actual, reference, "attention-double-oracle", 2e-3, 2e-6);
+    }
+    if (!timing) return;
+    for (const auto& kind : {std::string("packed"), std::string("interleaved"), std::string("interleaved"), std::string("packed")}) {
+        auto invoke = [&] { return kind == "packed" ? packed() : interleaved(); };
+        for (int warm = 0; warm < 2; ++warm) { actual = invoke(); synchronize(device); }
+        for (int sample = 0; sample < 4; ++sample) {
+            synchronize(device);
+            const auto started = Clock::now();
+            actual = invoke();
+            synchronize(device);
+            std::cout << "attention=" << kind << " sample=" << sample << " synchronized_ms="
+                      << std::chrono::duration<double, std::milli>(Clock::now() - started).count() << std::endl;
+        }
+    }
+}
 }
 int main(int argc, char** argv) {
     try {
@@ -89,6 +127,12 @@ int main(int argc, char** argv) {
             run(device, 2, 65, 128, packed, false);
         }
         if (full) { run(device, 90, 1722, 64, false, true); run(device, 1722, 90, 64, false, true); }
+        if (device.is_xpu()) {
+            at::globalContext().setSDPUseMath(false);
+            attention(device, 3, 17, false);
+            attention(device, 1, 1, false);
+            if (full) { attention(device, 90, 1722, true); attention(device, 1722, 90, true); }
+        }
         synchronize(device);
         std::cout << "RoFormer primitive checks passed on " << device << std::endl;
         return 0;

@@ -226,7 +226,9 @@ private:
         auto attended = runtime->precision == "mixed_attention"
             ? (runtime->backend == "libtorch_rocm"
                 ? partitioned_fused_attention(query, key, value, scale, [this] { check_cancel(); })
-                : fused_attention(query, key, value, {}, false, false, scale))
+                : runtime->backend == "libtorch_xpu"
+                    ? layout_preserving_roformer_attention(query, key, value, scale)
+                    : fused_attention(query, key, value, {}, false, false, scale))
             : dense_attention(query, key, value, {}, false, scale);
         runtime->checkpoint(prefix + ".attention");
         auto gates = at::sigmoid(project(normalized, weights->get(name(prefix, "gates_w", "gate.weight")),
