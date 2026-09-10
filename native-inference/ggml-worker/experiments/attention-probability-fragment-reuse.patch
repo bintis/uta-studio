@@ -1,0 +1,34 @@
+--- a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
++++ b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
+@@ -215,6 +215,12 @@
+             barrier();
+         }
+ 
++        // Load each rounded probability operand once for all four output tiles.
++        coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseA> probability_tiles[2];
++        [[unroll]] for (uint key_tile = 0; key_tile < 2; ++key_tile) {
++            coopMatLoad(probability_tiles[key_tile], probability_workspace, probability_base + key_tile * 4,
++                        8, gl_CooperativeMatrixLayoutRowMajor);
++        }
+         // Keep each block's product separate, preserving the previous algorithm's
+         // blockwise addition instead of silently extending its FMA accumulation chain.
+         [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
+@@ -223,9 +229,6 @@
+             coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator> product =
+                 coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator>(0);
+             [[unroll]] for (uint key_tile = 0; key_tile < 2; ++key_tile) {
+-                coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseA> probabilities;
+-                coopMatLoad(probabilities, probability_workspace, probability_base + key_tile * 4,
+-                            8, gl_CooperativeMatrixLayoutRowMajor);
+                 const uint value_row = block * 32 + key_tile * 16;
+                 coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> values;
+                 if (row_split >= 1) {
+@@ -249,7 +252,7 @@
+                     subgroupBarrier();
+                     coopMatLoad(values, operand_workspace, operand_base, 4, gl_CooperativeMatrixLayoutRowMajor);
+                 }
+-                product = coopMatMulAdd(probabilities, values, product);
++                product = coopMatMulAdd(probability_tiles[key_tile], values, product);
+                 if (row_split < 1 && (value_row + 16 > KV || (v_stride & 7) != 0)) {
+                     subgroupBarrier();
+                 }
