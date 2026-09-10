@@ -11,7 +11,7 @@ use crate::contract::{EngineError, EngineErrorCode, EngineResult};
 use crate::events::begin_node_for_presentation;
 
 mod acceleration;
-pub(crate) use acceleration::{AccelerationGuard, PreloadSpec};
+pub(crate) use acceleration::{AccelerationGuard, AccelerationSnapshot, PreloadSpec};
 
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
 const MAX_STDERR_BYTES: usize = 1024 * 1024;

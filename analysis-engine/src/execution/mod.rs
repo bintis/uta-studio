@@ -6,7 +6,7 @@ pub use agent_client::{
     FusionAgentDecision, run_fusion_agent, run_fusion_agent_for_pool,
     run_fusion_agent_for_pool_with_lyrics,
 };
-pub(crate) use client::{AccelerationGuard, PreloadSpec};
+pub(crate) use client::{AccelerationGuard, AccelerationSnapshot, PreloadSpec};
 pub use client::{
     CancellationToken, NativeTask, NativeTaskOutput, ProgressEvent, SupervisedWorker,
     WorkerExpectation,

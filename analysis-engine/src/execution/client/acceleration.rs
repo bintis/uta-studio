@@ -47,19 +47,39 @@ struct Context {
     cancellation: CancellationToken,
     cache: Option<CacheDirectory>,
 }
-thread_local! { static CONTEXT: RefCell<Option<Context>> = const { RefCell::new(None) }; }
+type SharedContext = Arc<Mutex<Context>>;
+thread_local! { static CONTEXT: RefCell<Option<SharedContext>> = const { RefCell::new(None) }; }
+
+#[derive(Clone)]
+pub(crate) struct AccelerationSnapshot(Option<SharedContext>);
+impl AccelerationSnapshot {
+    pub fn capture() -> Self {
+        Self(CONTEXT.with(|current| current.borrow().clone()))
+    }
+    pub fn enter(self) -> AccelerationGuard {
+        AccelerationGuard {
+            previous: CONTEXT.with(|current| current.replace(self.0)),
+            thread: PhantomData,
+        }
+    }
+}
+
+fn with_context<T>(operation: impl FnOnce(Option<&mut Context>) -> T) -> T {
+    let context = CONTEXT.with(|current| current.borrow().clone());
+    let mut context = context
+        .as_ref()
+        .map(|context| context.lock().unwrap_or_else(|error| error.into_inner()));
+    operation(context.as_deref_mut())
+}
 
 pub(crate) struct AccelerationGuard {
-    previous: Option<Context>,
+    previous: Option<SharedContext>,
     thread: PhantomData<Rc<()>>,
 }
 impl AccelerationGuard {
     pub(crate) fn audio_cache_directory(&self) -> Option<PathBuf> {
-        CONTEXT.with(|current| {
-            current
-                .borrow()
-                .as_ref()
-                .and_then(|context| context.cache.as_ref().map(|cache| cache.0.clone()))
+        with_context(|context| {
+            context.and_then(|context| context.cache.as_ref().map(|cache| cache.0.clone()))
         })
     }
 
@@ -85,14 +105,14 @@ impl AccelerationGuard {
                     None
                 }
             };
-            Context {
+            Arc::new(Mutex::new(Context {
                 pending: None,
                 schedule,
                 cursor: 0,
                 attempted_tasks: BTreeSet::new(),
                 cancellation: cancellation.clone(),
                 cache,
-            }
+            }))
         });
         Self {
             previous: CONTEXT.with(|current| current.replace(context)),
@@ -109,8 +129,8 @@ impl Drop for AccelerationGuard {
 
 pub(super) fn task_config(config: &serde_json::Value) -> serde_json::Value {
     let mut config = config.clone();
-    CONTEXT.with(|current| {
-        if let Some(context) = current.borrow().as_ref() {
+    with_context(|context| {
+        if let Some(context) = context {
             config["turbo_acceleration"] = serde_json::Value::Bool(true);
             if let Some(cache) = &context.cache {
                 config["audio_cache_directory"] = serde_json::json!(cache.0);
@@ -121,9 +141,8 @@ pub(super) fn task_config(config: &serde_json::Value) -> serde_json::Value {
 }
 
 pub(super) fn take_for(executable: &Path, task: &NativeTask) -> Option<WorkerProcess> {
-    CONTEXT.with(|current| {
-        let mut current = current.borrow_mut();
-        let context = current.as_mut()?;
+    with_context(|context| {
+        let context = context?;
         if let Some(relative) = context.schedule[context.cursor..]
             .iter()
             .position(|spec| spec.model_id == task.model_id)
@@ -144,9 +163,8 @@ pub(super) fn take_for(executable: &Path, task: &NativeTask) -> Option<WorkerPro
 }
 
 pub(super) fn start_next(task: &NativeTask) -> Option<String> {
-    CONTEXT.with(|current| {
-        let mut current = current.borrow_mut();
-        let context = current.as_mut()?;
+    with_context(|context| {
+        let context = context?;
         if context.cancellation.is_cancelled()
             || context.pending.is_some()
             || !context.attempted_tasks.insert(task.task_id.clone())
@@ -185,6 +203,8 @@ pub(super) fn start_next(task: &NativeTask) -> Option<String> {
 
 #[cfg(all(test, unix))]
 mod cleanup_tests;
+#[cfg(test)]
+mod ownership_tests;
 
 #[cfg(all(test, unix))]
 mod tests {

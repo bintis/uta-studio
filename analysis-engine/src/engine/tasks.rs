@@ -53,6 +53,7 @@ impl Owner {
         }
         let audio = crate::audio::reuse::Snapshot::capture();
         let events = crate::events::EventSnapshot::capture();
+        let acceleration = crate::execution::AccelerationSnapshot::capture();
         let work = Arc::new(Mutex::new(Some(execute)));
         let child_work = Arc::clone(&work);
         let owner = self.clone();
@@ -61,6 +62,7 @@ impl Owner {
             .spawn(move || {
                 let _audio = audio.enter();
                 let _events = events.enter();
+                let _acceleration = acceleration.enter();
                 let execute = child_work
                     .lock()
                     .unwrap_or_else(|error| error.into_inner())

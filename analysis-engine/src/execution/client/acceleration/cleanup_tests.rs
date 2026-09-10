@@ -105,10 +105,8 @@ impl Drop for Fixture {
 }
 
 fn pending_pid() -> u32 {
-    CONTEXT.with(|context| {
+    with_context(|context| {
         context
-            .borrow()
-            .as_ref()
             .unwrap()
             .pending
             .as_ref()
