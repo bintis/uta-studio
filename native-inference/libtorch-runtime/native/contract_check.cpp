@@ -1,4 +1,5 @@
-// Explicit CPU-only ABI/container fixture checks. No accelerator initialization.
+// ABI/container fixture checks. CPU is the default; an explicit backend/device
+// may be supplied to exercise the same synthetic whole-plan fixture on an accelerator.
 #include "api.h"
 #include <algorithm>
 #include <cmath>
@@ -89,7 +90,10 @@ void make_fixture(const std::filesystem::path& path) {
 
 int main(int argc, char** argv) {
     try {
-        if (argc != 2) throw std::invalid_argument("usage: uta-libtorch-contract-check NEW_FIXTURE_DIRECTORY");
+        if (argc < 2 || argc > 5) throw std::invalid_argument("usage: uta-libtorch-contract-check NEW_FIXTURE_DIRECTORY [backend [device [precision]]]");
+        const std::string backend = argc >= 3 ? argv[2] : "libtorch_cpu";
+        const int device = argc >= 4 ? std::stoi(argv[3]) : 0;
+        const std::string precision = argc >= 5 ? argv[4] : "strict";
         const std::filesystem::path root(argv[1]);
         require(std::filesystem::create_directories(root), "fixture directory must be newly created, not user input");
         const auto fixture = root / "fcpe-native-contract.gguf";
@@ -99,8 +103,8 @@ int main(int argc, char** argv) {
         require(info && std::strstr(info, "fcpe"), "read-only native capability description");
         require(!uta_libtorch_runtime_create("unknown", 0, "strict"), "unknown backend rejection");
         require(!uta_libtorch_runtime_create("libtorch_cpu", 0, "unknown"), "unknown precision rejection");
-        auto* runtime = uta_libtorch_runtime_create("libtorch_cpu", 0, "strict");
-        require(runtime != nullptr, "explicit CPU-only runtime creation");
+        auto* runtime = uta_libtorch_runtime_create(backend.c_str(), device, precision.c_str());
+        require(runtime != nullptr, "explicit selected runtime creation");
         auto* model = uta_libtorch_model_open(runtime, "fcpe", fixture.c_str());
         require(model != nullptr, "bounded GGUF F32/F16 tensor loading");
         require(std::strstr(uta_libtorch_model_metadata(model), "general.architecture"), "immutable metadata ownership");
@@ -136,7 +140,9 @@ int main(int argc, char** argv) {
         const UtaLibtorchTensor duplicate[]{input, input};
         require(!uta_libtorch_model_forward(model, "forward", duplicate, 2), "duplicate named inputs are not overwritten");
         uta_libtorch_model_free(model);
-        std::cout << "{\"scope\":\"cpu_native_abi_and_synthetic_fcpe_only\",\"status\":\"passed\",\"compared_elements\":15,\"gpu_initialized\":false}\n";
+        std::cout << "{\"scope\":\"native_abi_and_synthetic_fcpe_whole_plan\",\"status\":\"passed\",\"backend\":\""
+                  << backend << "\",\"device\":" << device << ",\"precision\":\"" << precision
+                  << "\",\"compared_elements\":15,\"gpu_initialized\":" << (backend == "libtorch_cpu" ? "false" : "true") << "}\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "native contract check failed: " << error.what() << '\n';
