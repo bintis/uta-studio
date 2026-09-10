@@ -926,33 +926,10 @@ pub fn run(
             &mut report_units,
         )
     } else {
-        let secondary = crate::prepared::secondary(&ggml_runtime, &device, &model, config);
-        let roformer = crate::prepared::roformer(loaded, ggml_runtime, &device, &model);
-        roformer.and_then(|mut roformer| {
-            if let Some(secondary) = secondary {
-                let stats = roformer.process_wav_with_secondary(
-                    &secondary,
-                    &model,
-                    &input,
-                    &engine_output,
-                    &mut report_units,
-                )?;
-                let message = format!(
-                    "GPU chunks: {} = {}, {} = {}",
-                    device.description,
-                    stats.primary_chunks,
-                    secondary.description,
-                    stats.secondary_chunks
-                );
-                eprintln!("[super acceleration] {message}");
-                crate::protocol::emit(crate::protocol::WorkerFrame::Diagnostic {
-                    task_id,
-                    message: &message,
-                })?;
-                Ok(())
-            } else {
-                roformer.process_wav(&input, &engine_output, &mut report_units)
-            }
+        // Super acceleration reuses prepared weights, but a complete model
+        // invocation stays on its assigned device, including every chunk.
+        crate::prepared::roformer(loaded, ggml_runtime, &device, &model).and_then(|mut roformer| {
+            roformer.process_wav(&input, &engine_output, &mut report_units)
         })
     };
     drop(report_units);

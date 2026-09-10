@@ -50,7 +50,7 @@ pub struct AppConfig {
     /// experimental lane; GPU selections never authorize CPU fallback.
     #[serde(default)]
     pub default_device_class: Option<String>,
-    /// Super acceleration: opt-in multi-GPU chunk scheduling, next-model
+    /// Super acceleration: opt-in whole-model task placement, next-model
     /// preloading within the available device-memory budget, and per-analysis
     /// reuse of decoded audio and useful intermediates. Each exact request
     /// snapshots this value; changing it never changes a queued/running job.

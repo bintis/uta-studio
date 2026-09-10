@@ -30,7 +30,7 @@ pub(crate) fn spawn_model_settings(
                 font.clone(),
                 theme,
                 "Super acceleration",
-                "Use available GPUs together, preload the next model when memory permits, and reuse audio/intermediates within an analysis. Applies to future requests only; existing charts and running jobs are unchanged. Extra residency uses more memory, and device numerics may differ.",
+                "Preload upcoming model weights when memory permits and reuse decoded audio, separation results and useful intermediates. Applies to future requests only; existing charts and running jobs are unchanged. Extra residency uses more memory. Whole-model scheduling across GPUs is still in development.",
                 session.config.turbo_acceleration.unwrap_or(false),
                 UiAction::from(SettingsCommand::ToggleTurboAcceleration),
             );

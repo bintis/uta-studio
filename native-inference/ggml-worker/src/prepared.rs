@@ -168,37 +168,6 @@ impl Prepared {
     }
 }
 
-pub fn secondary(
-    runtime: &GgmlRuntime,
-    primary: &DeviceDescriptor,
-    path: &Path,
-    config: &Value,
-) -> Option<DeviceDescriptor> {
-    if config.get("turbo_acceleration").and_then(Value::as_bool) != Some(true)
-        || primary.kind == DeviceKind::Cpu
-    {
-        return None;
-    }
-    let weight_bytes = path.metadata().ok()?.len();
-    let devices = runtime.devices().ok()?;
-    // Prefer the other GPU class. CPU is never a secondary or a fallback.
-    let secondary = devices
-        .iter()
-        .find(|device| device.kind != DeviceKind::Cpu && device.kind != primary.kind)
-        .or_else(|| {
-            devices.iter().find(|device| {
-                device.kind != DeviceKind::Cpu && device.ggml_index != primary.ggml_index
-            })
-        })?;
-    if !admission(available(secondary), weight_bytes) {
-        eprintln!(
-            "[super acceleration] secondary GPU skipped: observed memory budget unavailable or insufficient"
-        );
-        return None;
-    }
-    Some(secondary.clone())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
