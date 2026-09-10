@@ -167,7 +167,10 @@ where
     Processor: FnMut(&[f32]) -> Result<Vec<Vec<f32>>, String>,
 {
     let chunks = Chunks::new(input, size, overlap)?;
-    if chunks.count < 2 {
+    // A final lone chunk cannot amortize constructing a cold second model.
+    // Keep it on the owned primary; longer passes can measure both processors
+    // and decide subsequent assignments from their actual chunk durations.
+    if chunks.count <= 2 {
         return process(input, size, overlap, primary, progress).map(|output| {
             (
                 output,
@@ -393,6 +396,25 @@ mod tests {
         )
         .unwrap();
         assert_eq!(output, [input]);
+        assert_eq!(stats.secondary_chunks, 0);
+    }
+
+    #[test]
+    fn a_lone_remaining_chunk_does_not_construct_a_cold_secondary() {
+        let input = vec![0.25; 1024];
+        let (output, stats) = process_dual(
+            &input,
+            256,
+            1,
+            |chunk| Ok(vec![chunk.to_vec()]),
+            || -> Result<fn(&[f32]) -> Result<Vec<Vec<f32>>, String>, String> {
+                panic!("a cold secondary cannot amortize its setup on the final chunk")
+            },
+            &mut |_, _| {},
+        )
+        .unwrap();
+        assert_eq!(output, [input]);
+        assert_eq!(stats.primary_chunks, 2);
         assert_eq!(stats.secondary_chunks, 0);
     }
 
