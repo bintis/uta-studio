@@ -1,5 +1,6 @@
 // Explicit diagnostic device; no model, fallback, timing gate or installation.
 #include "roformer_ops.hpp"
+#include "roformer_projection.hpp"
 #include <ATen/Context.h>
 #include <ATen/Parallel.h>
 #include <c10/core/InferenceMode.h>
@@ -88,6 +89,32 @@ void normalization(const at::Device& device, int64_t rows, int64_t width, bool s
     compare(actual, reference, "normalization-double-oracle");
     if (!at::equal(input, original)) throw std::runtime_error("normalization modified its input");
 }
+void projection(const at::Device& device, int64_t contraction, int64_t columns, bool strided) {
+    auto options = at::TensorOptions().device(device).dtype(at::kFloat);
+    auto storage = (at::arange(34 * contraction * 2, options) * 0.017).sin().reshape({2, 17, contraction * 2}) * 0.2;
+    auto input = storage.narrow(-1, contraction, contraction);
+    if (!strided) input = input.contiguous();
+    auto original = input.clone();
+    auto weight = (at::arange(columns * contraction, options) * 0.013).cos().reshape({columns, contraction}) * 0.1;
+    auto bias = (at::arange(columns, options) * 0.11).sin() * 0.01;
+    auto reference = at::linear(input.to(at::kCPU).to(at::kDouble), weight.to(at::kCPU).to(at::kDouble), bias.to(at::kCPU).to(at::kDouble));
+    auto& context = at::globalContext();
+    for (const auto initial : {false, true}) {
+        context.setAllowTF32OneDNN(initial);
+        auto actual = uta::torch_native::diagnostic_roformer_projection(input, weight, bias);
+        synchronize(device);
+        std::cout << "projection_shape=34," << contraction << ',' << columns << " strided=" << strided
+                  << " initial_reduced=" << initial << std::endl;
+        compare(actual, reference, "reduced-projection-double-oracle", 2e-3, 1e-5);
+        if (context.allowTF32OneDNN() != initial) throw std::runtime_error("projection did not restore its math flag");
+        bool caught = false;
+        try { uta::torch_native::diagnostic_roformer_projection(input, weight.narrow(-1, 0, contraction - 1), bias); }
+        catch (const c10::Error&) { caught = true; }
+        if (!caught || context.allowTF32OneDNN() != initial) throw std::runtime_error("projection exception did not restore its math flag");
+    }
+    context.setAllowTF32OneDNN(false);
+    if (!at::equal(input, original)) throw std::runtime_error("projection modified its input");
+}
 void attention(const at::Device& device, int64_t batch, int64_t length, bool timing) {
     const int64_t heads = 8, width = 64;
     auto options = at::TensorOptions().device(device).dtype(at::kFloat);
@@ -133,6 +160,15 @@ int main(int argc, char** argv) {
         const at::Device device(argc > 1 ? argv[1] : "cpu");
         c10::DeviceGuard guard(device);
         at::globalContext().setFloat32Precision(at::Float32Backend::GENERIC, at::Float32Op::ALL, at::Float32Precision::IEEE);
+        if (device.is_xpu() && argc > 2 && std::string(argv[2]) == "projection") {
+            for (const auto strided : {false, true}) {
+                projection(device, 256, 1536, strided);
+                projection(device, 256, 1024, strided);
+                projection(device, 1024, 256, strided);
+            }
+            std::cout << "Diagnostic RoFormer projection checks passed on " << device << std::endl;
+            return 0;
+        }
         const bool full = argc > 2 && std::string(argv[2]) == "full";
         for (const auto packed : {false, true}) {
             run(device, 3, 17, 64, packed, false);

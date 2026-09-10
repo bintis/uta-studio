@@ -9,6 +9,7 @@ set(XPU_DEPENDENCY_LIB "" CACHE PATH "Explicit private XPU wheel dependency libr
 set(UTA_LIBTORCH_BACKEND "cpu" CACHE STRING "Native build backend: cpu, rocm or xpu")
 set_property(CACHE UTA_LIBTORCH_BACKEND PROPERTY STRINGS cpu rocm xpu)
 set(TORCH_CXX_ABI "1" CACHE STRING "LibTorch libstdc++ ABI selection")
+option(UTA_LIBTORCH_ROFORMER_REDUCED_MATMUL "Single-model XPU diagnostic: TF32 QKV/FFN; not a production precision mode" OFF)
 if(NOT EXISTS "${TORCH_ROOT}/include/ATen/ATen.h")
   message(FATAL_ERROR "TORCH_ROOT must identify the selected native runtime; dependencies are not downloaded by this build")
 endif()
@@ -19,6 +20,9 @@ add_library(uta_libtorch SHARED
 target_compile_features(uta_libtorch PUBLIC cxx_std_20)
 target_compile_options(uta_libtorch PRIVATE -Wall -Wextra)
 target_compile_definitions(uta_libtorch PRIVATE _GLIBCXX_USE_CXX11_ABI=${TORCH_CXX_ABI})
+if(UTA_LIBTORCH_ROFORMER_REDUCED_MATMUL AND UTA_LIBTORCH_BACKEND STREQUAL "xpu")
+  target_compile_definitions(uta_libtorch PRIVATE UTA_LIBTORCH_ROFORMER_REDUCED_MATMUL=1)
+endif()
 target_include_directories(uta_libtorch SYSTEM PRIVATE
   "${TORCH_ROOT}/include" "${TORCH_ROOT}/include/torch/csrc/api/include")
 target_include_directories(uta_libtorch PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>")
