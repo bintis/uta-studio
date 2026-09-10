@@ -10,6 +10,7 @@ use std::rc::Rc;
 struct Context {
     prepared: HashMap<(TypeId, String), Rc<dyn Any>>,
     hits: usize,
+    graph_hits: usize,
 }
 thread_local! { static CURRENT: RefCell<Option<Context>> = const { RefCell::new(None) }; }
 pub struct Scope {
@@ -23,6 +24,14 @@ impl Scope {
             thread: PhantomData,
         }
     }
+    pub fn graph_hits(&self) -> usize {
+        CURRENT.with(|current| {
+            current
+                .borrow()
+                .as_ref()
+                .map_or(0, |context| context.graph_hits)
+        })
+    }
     pub fn preparation_hits(&self) -> usize {
         CURRENT.with(|current| current.borrow().as_ref().map_or(0, |context| context.hits))
     }
@@ -32,6 +41,14 @@ impl Drop for Scope {
         CURRENT.with(|current| current.replace(self.previous.take()));
     }
 }
+pub(crate) fn record_graph_reuse() {
+    CURRENT.with(|current| {
+        if let Some(context) = current.borrow_mut().as_mut() {
+            context.graph_hits += 1;
+        }
+    });
+}
+
 pub(crate) fn enabled() -> bool {
     CURRENT.with(|current| current.borrow().is_some())
 }

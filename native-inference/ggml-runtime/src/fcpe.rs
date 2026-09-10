@@ -115,6 +115,14 @@ impl Drop for GraphRun {
     }
 }
 
+// Owned by process_wav, never by the generic CPU preparation cache. Drops
+// before the model/weights/backend and after synchronous final readback.
+struct WindowGraph {
+    run: GraphRun,
+    input: TensorPtr,
+    output: TensorPtr,
+}
+
 /// Rust-owned FCPE execution over the pinned upstream GGML ABI.
 pub struct Fcpe {
     backend: GgmlBackendHandle,
@@ -163,41 +171,12 @@ impl Fcpe {
     pub fn process_wav(
         &self,
         input_path: &Path,
-        mut progress: impl FnMut(u64, u64),
+        progress: impl FnMut(u64, u64),
     ) -> Result<Vec<PitchFrame>, String> {
-        let audio = read_f32_wav(input_path, SAMPLE_RATE, 1)?;
-        let expected_frames = audio.len() / HOP_SIZE + 1;
-        let window_count = audio.len().div_ceil(INPUT_SAMPLES);
-        let mut frames = Vec::with_capacity(expected_frames);
-        for window in 0..window_count {
-            let source_sample_start = window * INPUT_SAMPLES;
-            let source_sample_end = (source_sample_start + INPUT_SAMPLES).min(audio.len());
-            let mut audio_window = vec![0.0_f32; INPUT_SAMPLES];
-            audio_window[..source_sample_end - source_sample_start]
-                .copy_from_slice(&audio[source_sample_start..source_sample_end]);
-            let mel = log_mel_window(&audio_window)?;
-            let input = channel_major_window(&mel, WINDOW_FRAMES, 0, WINDOW_FRAMES);
-            let activations = self.run_window(&input)?;
-            let decoded = decode_pitch(&activations, &self.cents_mapping)?;
-            for (local_frame, hz) in decoded.into_iter().enumerate() {
-                if window > 0 && local_frame == 0 {
-                    continue;
-                }
-                let sample = source_sample_start + local_frame * HOP_SIZE;
-                if sample > audio.len() {
-                    break;
-                }
-                frames.push(PitchFrame {
-                    time: sample as f64 / SAMPLE_RATE as f64,
-                    hz,
-                });
-            }
-            progress((window + 1) as u64, window_count as u64);
-        }
-        if frames.is_empty() || frames.len() != expected_frames {
-            return Err("FCPE window stitching changed the evidence timeline".to_string());
-        }
-        Ok(frames)
+        let mut graph = None;
+        host::process_wav(input_path, progress, &self.cents_mapping, |mel| {
+            self.run_window(mel, &mut graph)
+        })
     }
 
     fn api(&self) -> &ModelApi {
@@ -587,10 +566,7 @@ impl Fcpe {
         Ok(output)
     }
 
-    fn run_window(&self, mel: &[f32]) -> Result<Vec<f32>, String> {
-        if mel.len() != WINDOW_FRAMES * MEL_BINS {
-            return Err("FCPE mel window shape is invalid".to_string());
-        }
+    fn window_graph(&self) -> Result<WindowGraph, String> {
         let mut run = GraphRun::new(Arc::clone(&self.backend.runtime))?;
         let api = self.api();
         let input = ggml!(
@@ -606,9 +582,31 @@ impl Fcpe {
         ggml!(api, ggml_set_input(input));
         let output = self.build_graph(run.context, run.graph, input)?;
         run.allocate(&self.backend)?;
-        set_f32(api, input, mel)?;
-        run.compute(&self.backend)?;
-        get_f32(api, output)
+        Ok(WindowGraph { run, input, output })
+    }
+
+    fn run_window(
+        &self,
+        mel: &[f32],
+        cached: &mut Option<WindowGraph>,
+    ) -> Result<Vec<f32>, String> {
+        if mel.len() != WINDOW_FRAMES * MEL_BINS {
+            return Err("FCPE mel window shape is invalid".to_string());
+        }
+        let graph = match cached.take() {
+            Some(graph) => {
+                crate::acceleration::record_graph_reuse();
+                graph
+            }
+            None => self.window_graph()?,
+        };
+        set_f32(self.api(), graph.input, mel)?;
+        graph.run.compute(&self.backend)?;
+        let output = get_f32(self.api(), graph.output)?;
+        if crate::acceleration::enabled() {
+            *cached = Some(graph);
+        }
+        Ok(output)
     }
 }
 
@@ -837,6 +835,56 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "requires an explicit packaged GGML library directory; uses only native CPU tensors"]
+    fn native_fixed_graph_refreshes_inputs_and_keeps_synchronous_readback() {
+        let directory = std::env::var("UTA_STUDIO_GGML_TEST_LIBRARY_DIR").unwrap();
+        let runtime = GgmlRuntime::load(Path::new(&directory)).unwrap();
+        let device = runtime
+            .devices()
+            .unwrap()
+            .into_iter()
+            .find(|device| device.kind == crate::DeviceKind::Cpu)
+            .unwrap();
+        let backend = runtime.create_backend(&device).unwrap();
+        let api = &runtime.model_api;
+        let mut run = GraphRun::new(Arc::clone(&runtime)).unwrap();
+        let input = ggml!(
+            api,
+            ggml_new_tensor_2d(
+                run.context,
+                GGML_TYPE_F32,
+                WINDOW_FRAMES as i64,
+                MEL_BINS as i64
+            )
+        );
+        ggml!(api, ggml_set_input(input));
+        let output = ggml!(api, ggml_scale(run.context, input, 0.5));
+        ggml!(api, ggml_set_output(output));
+        ggml!(api, ggml_build_forward_expand(run.graph, output));
+        run.allocate(&backend).unwrap();
+        let graph = WindowGraph { run, input, output };
+        for amplitude in [0.25, -0.75, 0.0, 0.25] {
+            let values = (0..WINDOW_FRAMES * MEL_BINS)
+                .map(|index| (index as f32 % 11.0) * amplitude)
+                .collect::<Vec<_>>();
+            set_f32(api, graph.input, &values).unwrap();
+            graph.run.compute(&backend).unwrap();
+            let actual = get_f32(api, graph.output).unwrap();
+            assert_eq!(
+                actual
+                    .iter()
+                    .map(|value| value.to_bits())
+                    .collect::<Vec<_>>(),
+                values
+                    .iter()
+                    .map(|value| (value * 0.5).to_bits())
+                    .collect::<Vec<_>>()
+            );
+        }
+        drop(graph); // Graph/allocator before backend, matching process_wav.
+    }
+
+    #[test]
     fn super_frontend_reuse_preserves_each_window_bitwise() {
         let first = (0..INPUT_SAMPLES)
             .map(|index| (index as f32 * 0.2).sin())
@@ -918,5 +966,51 @@ mod tests {
         assert_eq!(window[1], (2 * MEL_BINS) as f32);
         assert_eq!(window[2], 0.0);
         assert_eq!(window[4], (MEL_BINS + 1) as f32);
+    }
+}
+
+/// Canonical host-only audio preparation, decoding and timeline stitching.
+/// The callback is the only learned-computation boundary and may be any native backend.
+pub mod host {
+    use super::*;
+    pub fn process_wav(
+        input_path: &Path,
+        mut progress: impl FnMut(u64, u64),
+        cents_mapping: &[f32],
+        mut run_window: impl FnMut(&[f32]) -> Result<Vec<f32>, String>,
+    ) -> Result<Vec<PitchFrame>, String> {
+        let audio = read_f32_wav(input_path, SAMPLE_RATE, 1)?;
+        let expected_frames = audio.len() / HOP_SIZE + 1;
+        let window_count = audio.len().div_ceil(INPUT_SAMPLES);
+        let mut frames = Vec::with_capacity(expected_frames);
+        for window in 0..window_count {
+            let source_sample_start = window * INPUT_SAMPLES;
+            let source_sample_end = (source_sample_start + INPUT_SAMPLES).min(audio.len());
+            let mut audio_window = vec![0.0_f32; INPUT_SAMPLES];
+            audio_window[..source_sample_end - source_sample_start]
+                .copy_from_slice(&audio[source_sample_start..source_sample_end]);
+            let mel = log_mel_window(&audio_window)?;
+            let input = channel_major_window(&mel, WINDOW_FRAMES, 0, WINDOW_FRAMES);
+            let activations = run_window(&input)?;
+            let decoded = decode_pitch(&activations, cents_mapping)?;
+            for (local_frame, hz) in decoded.into_iter().enumerate() {
+                if window > 0 && local_frame == 0 {
+                    continue;
+                }
+                let sample = source_sample_start + local_frame * HOP_SIZE;
+                if sample > audio.len() {
+                    break;
+                }
+                frames.push(PitchFrame {
+                    time: sample as f64 / SAMPLE_RATE as f64,
+                    hz,
+                });
+            }
+            progress((window + 1) as u64, window_count as u64);
+        }
+        if frames.is_empty() || frames.len() != expected_frames {
+            return Err("FCPE window stitching changed the evidence timeline".to_string());
+        }
+        Ok(frames)
     }
 }

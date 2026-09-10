@@ -80,6 +80,12 @@ fn run_task(
             native_reuse.preparation_hits()
         ));
     }
+    if native_reuse.graph_hits() > 0 {
+        audio_cache::diagnostic(&format!(
+            "Native model graph reused: {}",
+            native_reuse.graph_hits()
+        ));
+    }
     for output in outputs {
         emit(WorkerFrame::Output {
             task_id,
