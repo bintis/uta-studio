@@ -28,7 +28,7 @@
 +// Separate from scores: publish each row once without a score-read/overwrite barrier.
 +// A zero-stride column-major load broadcasts these eight rows across all columns.
 +shared float row_scale_workspace[row_split * 8];
- 
+
  void main() {
      init_indices();
 @@ -221,14 +224,14 @@

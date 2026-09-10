@@ -68,7 +68,7 @@
       },
       {
         "file": "native-inference/ggml-worker/patches/0010-vulkan-attention-compact-row-scales.patch",
-        "sha256": "c3a7b4ad6736902a73d9d5a97226c096fb61c5ad06f2b3c8e8748fbcd9204140",
+        "sha256": "02183c89a28b69a59e0af78e9b3467cb006831f6907eb53b7fc33c5dae22dedc",
         "scope": "Existing Intel Xe2 native-SIMD32 M8 H64 F32-accumulator query-owned attention with independent F16/F32 K/V storage",
         "reason": "Publish eight independent F32 row scales per subgroup and use a zero-stride column-major cooperative load, replacing 128 scalar scale writes and one hot-loop score-overwrite barrier. Account for the extra 32 shared bytes per subgroup. Full context, F16 probability rounding, F32 state, accumulation order and device/type selection are unchanged. Recorded XE90-shape controls measure 43.916/43.010 ms versus 42.688/42.474 ms; three real model pairs retain byte-identical complete output, but do not establish a consistent whole-model speedup. All 61 default and 61 four-subgroup numerical fixtures pass. The padded score/probability experiment is rejected. See docs/ROFORMER_B580_COMPACT_RESCALE.md."
       }
