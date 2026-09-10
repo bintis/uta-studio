@@ -709,11 +709,7 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(error.code, EngineErrorCode::InvalidContract);
-        assert!(
-            error.message.contains("missing.wav"),
-            "{}",
-            error.message
-        );
+        assert!(error.message.contains("missing.wav"), "{}", error.message);
         std::fs::remove_dir_all(directory).unwrap();
     }
 
