@@ -27,8 +27,9 @@ inline at::Tensor interleaved_roformer_rotation_half(const at::Tensor& input, co
     at::mul_out(complex_output, paired, phase);
     return output;
 }
-// Copy two FP32 coordinates at a time, without complex arithmetic. Use the
-// same scalar conversion when a complex view cannot represent this tensor.
+// Diagnostic-only copy candidate: exact bits and a local gain did not establish
+// an incremental whole-model win. No complex arithmetic; use scalar conversion
+// when a complex view cannot represent the tensor. Not routed by the model.
 inline at::Tensor paired_roformer_half(const at::Tensor& input) {
     if (input.scalar_type() != at::kFloat || input.dim() == 0 || input.numel() == 0
         || input.size(-1) % 2 != 0 || input.stride(-1) != 1 || input.storage_offset() % 2 != 0)
@@ -48,7 +49,7 @@ inline at::Tensor layout_preserving_roformer_attention(const at::Tensor& query, 
     checkpoint("query_conversion");
     auto key_half = key.to(at::kHalf);
     checkpoint("key_conversion");
-    auto value_half = paired_roformer_half(value);
+    auto value_half = value.to(at::kHalf);
     checkpoint("value_conversion");
     auto attended = at::scaled_dot_product_attention(query_half, key_half, value_half, {}, 0.0, false, scale);
     checkpoint("sdpa");
