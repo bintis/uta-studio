@@ -1,0 +1,75 @@
+--- a/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -3868,7 +3868,7 @@
+         const auto & limits = device->properties.limits;
+         const bool wide_groups = limits.maxComputeWorkGroupInvocations >= 256 &&
+                                  limits.maxComputeWorkGroupSize[0] >= 256 &&
+-                                 limits.maxComputeSharedMemorySize >= 8u * 2560u + 32u;
++                                 limits.maxComputeSharedMemorySize >= 8u * 2592u + 32u;
+         const char * shared_groups = std::getenv("UTA_STUDIO_GGML_FA_SHARED_GROUPS");
+         const uint32_t groups = wide_groups &&
+             (shared_groups == nullptr || std::strcmp(shared_groups, "4") != 0) ? 8u : 4u;
+@@ -10868,7 +10868,8 @@
+     GGML_UNUSED(v_type);
+     if (params.query_owned) {
+         // Per subgroup: 1024-byte Q/K/V scratch, 1024-byte scores, 512-byte probabilities.
+-        return params.row_split * 2560u + 32u <= device->properties.limits.maxComputeSharedMemorySize;
++        // Eight independent F32 row scales add 32 bytes without aliasing live scores.
++        return params.row_split * 2592u + 32u <= device->properties.limits.maxComputeSharedMemorySize;
+     }
+     // Needs to be kept up to date on shader changes
+     const uint32_t Br = params.block_rows;
+--- a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
++++ b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
+@@ -63,6 +63,9 @@
+ shared f16vec4 operand_workspace[row_split * 128];
+ shared vec4 float_workspace[row_split * 64];
+ shared f16vec4 probability_workspace[row_split * 64];
++// Separate from scores: publish each row once without a score-read/overwrite barrier.
++// A zero-stride column-major load broadcasts these eight rows across all columns.
++shared float row_scale_workspace[row_split * 8];
+ 
+ void main() {
+     init_indices();
+@@ -221,14 +224,14 @@
+             }
+             probability_workspace[probability_base + local_row * 8 + row_lane * packs_per_lane + part] = probabilities;
+         }
+-        subgroupBarrier();
+-        // Row-major 8x16 broadcast matrix: no fragment-to-lane assumption.
+-        [[unroll]] for (uint column = row_lane; column < 4; column += lanes_per_row) {
+-            float_workspace[float_base + local_row * 4 + column] = vec4(rescale);
++        if (row_lane == 0) {
++            row_scale_workspace[group * 8 + local_row] = rescale;
+         }
++        // Publish probabilities and independent scales together. Scores remain untouched.
+         subgroupBarrier();
+         coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator> rescale_matrix;
+-        coopMatLoad(rescale_matrix, float_workspace, float_base, 4, gl_CooperativeMatrixLayoutRowMajor);
++        coopMatLoad(rescale_matrix, row_scale_workspace, group * 8, 0,
++                    gl_CooperativeMatrixLayoutColumnMajor);
+         [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
+             output_tiles[depth_tile] = output_tiles[depth_tile] * rescale_matrix;
+         }
+@@ -310,8 +313,8 @@
+         }
+         final_scale = normalizer == 0.0 ? 0.0 : final_scale / normalizer;
+     }
+-    [[unroll]] for (uint column = row_lane; column < 4; column += lanes_per_row) {
+-        float_workspace[float_base + local_row * 4 + column] = vec4(final_scale);
++    if (row_lane == 0) {
++        row_scale_workspace[group * 8 + local_row] = final_scale;
+     }
+     if (p.k_num > 1 && row_lane == 0 && first_query + local_row < N) {
+         const uint address = HSV * p.ne1 * p.k_num * p.ne2 * p.ne3
+@@ -321,8 +324,8 @@
+     }
+     subgroupBarrier();
+     coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator> normalization;
+-    coopMatLoad(normalization, float_workspace, float_base, 4, gl_CooperativeMatrixLayoutRowMajor);
+-    subgroupBarrier();
++    coopMatLoad(normalization, row_scale_workspace, group * 8, 0,
++                gl_CooperativeMatrixLayoutColumnMajor);
+     // Stream one output fragment through the existing score scratch. This
+     // preserves implementation-defined matrix layouts without reserving an
+     // entire 8x64 F32 output tile for every subgroup.
