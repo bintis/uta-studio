@@ -94,7 +94,6 @@ pub fn parse_game_evidence(
         || raw.d3pm_steps != 8
         || !valid_threshold(raw.boundary_decision_threshold)
         || !valid_threshold(raw.presence_decision_threshold)
-        || raw.notes.is_empty()
         || raw.notes.len() > MAX_NOTES
     {
         return Err(invalid("GAME evidence identity or shape is invalid"));
@@ -106,8 +105,13 @@ pub fn parse_game_evidence(
     let mut previous_end = source_start;
     let mut notes = Vec::with_capacity(raw.notes.len());
     for note in raw.notes {
-        if !note.voiced
-            || !note.start.is_finite()
+        // GAME regions include rests. Those are not candidate notes; failing
+        // the whole song after a successful worker run was the production
+        // failure on a real Japanese track.
+        if !note.voiced {
+            continue;
+        }
+        if !note.start.is_finite()
             || !note.duration.is_finite()
             || note.start < 0.0
             || note.duration <= 0.0
@@ -136,6 +140,9 @@ pub fn parse_game_evidence(
             boundary_decision_threshold: raw.boundary_decision_threshold,
             presence_decision_threshold: raw.presence_decision_threshold,
         });
+    }
+    if notes.is_empty() {
+        return Err(invalid("GAME produced no voiced notes"));
     }
 
     Ok(GameEvidenceV1 {
@@ -239,6 +246,66 @@ mod tests {
         assert_eq!(evidence.backend, "ggml_cpu");
         assert_eq!(evidence.notes.len(), 1);
         assert_eq!(evidence.notes[0].midi, 60.0);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    fn write_game_notes(notes: serde_json::Value) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "uta-game-notes-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "model_id": "game",
+                "variant": "GAME-1.0.3-medium-onnx",
+                "source_commit": GAME_SOURCE_COMMIT,
+                "model_gguf_size_bytes": 123_456,
+                "runtime_manifest_sha256": "d".repeat(64),
+                "backend": "ggml_vulkan",
+                "semantic_output": "note_candidate_evidence",
+                "sample_rate": 44100,
+                "timestep_ms": 10,
+                "d3pm_steps": 8,
+                "boundary_decision_threshold": 0.2,
+                "presence_decision_threshold": 0.2,
+                "notes": notes
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        path
+    }
+
+    #[test]
+    fn skips_unvoiced_rest_regions_instead_of_failing_the_song() {
+        let path = write_game_notes(serde_json::json!([
+            {"start":0.0,"duration":0.2,"midi":60.0,"voiced":true},
+            {"start":0.2,"duration":0.3,"midi":0.0,"voiced":false},
+            {"start":0.5,"duration":0.2,"midi":62.5,"voiced":true}
+        ]));
+        let evidence = parse_game_evidence(&path, 0, 1_000_000).unwrap();
+        assert_eq!(evidence.notes.len(), 2);
+        assert_eq!(evidence.notes[0].midi, 60.0);
+        assert_eq!(evidence.notes[0].range.end, 200_000);
+        assert_eq!(evidence.notes[1].midi, 62.5);
+        assert_eq!(evidence.notes[1].range.start, 500_000);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn still_rejects_out_of_range_voiced_midi() {
+        let path = write_game_notes(serde_json::json!([
+            {"start":0.0,"duration":0.2,"midi":200.0,"voiced":true}
+        ]));
+        let error = parse_game_evidence(&path, 0, 1_000_000).unwrap_err();
+        assert_eq!(error.code, EngineErrorCode::OutputValidationFailed);
+        assert!(error.message.contains("invalid values"));
         std::fs::remove_file(path).unwrap();
     }
 }
