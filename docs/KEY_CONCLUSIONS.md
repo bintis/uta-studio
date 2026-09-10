@@ -30,6 +30,12 @@ after the reported restart. Existing synchronization, resource lifetimes and cle
 process success and available VRAM do not establish host safety. See
 [Super acceleration](design/runtime/SUPER_ACCELERATION.md) and the task index.
 
+The authorized implementation now shares validated audio/PCM ownership, CPU frontend preparation,
+real Qwen window progress and joined task context; it also reuses FCPE/GRU graphs, RMVPE resident
+handoffs and Qwen incremental arenas. Read-only weighted CPU fixtures compared 470,520 finite
+RMVPE/FCPE values bit-for-bit across differing windows. This is bounded CPU numerical evidence,
+not automatic dual-GPU scheduling, GPU qualification or a measured whole-analysis speedup.
+
 ## Current executable models
 
 The Runtime Manager catalog contains exactly seventeen models and one shared-library runtime. Every model pins the `ggml` backend and depends on the `ggml_vulkan` runtime.

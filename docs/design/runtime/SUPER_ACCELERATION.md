@@ -300,6 +300,10 @@ connected to Super mode; they do **not** establish whole-model GPU scheduling or
   early completed window; allocation-phase preparation remains future work.
 - `2fb6d01`: owned Acoustic DSP overlap, inherited audio/event context, parent-linked cancellation,
   failure-cause preservation and join-before-cleanup. This is CPU/model overlap, not dual-GPU work.
+- `9ce129e`: acceleration snapshots share one request-owned context across joined tasks. Pending
+  preparation is reaped before the last owner removes PCM storage; nested disabled scopes suppress
+  inheritance. Sixteen supervisor/context tests, four task-owner tests and two prediction tests
+  passed at `20260910T121202-985dcc11e7d1`. The preload cursor and foreground lease remain serial.
 - `4d8db66`, fixture correction `e1d5eac`: FCPE reuses its fixed-shape graph within the model/backend
   lifetime, overwriting every input before synchronous compute/readback.
 - `c04f079`: optional RMVPE CNN → chunked GRU → head resident handoffs on the existing assigned
@@ -315,7 +319,18 @@ Executed CPU evidence includes shared-cache concurrency/failure/cancellation tes
 frontend comparisons, worker/progress tests and ownership/supervisor tests. Native CPU primitive
 checks at `20260910T113607-45fdcc9232e3` passed the FCPE input-refresh and resident-copy/lifetime
 fixtures; `20260910T115838-e7354a6bc379` passed Qwen/worker tests and a changing-shape native CPU
-arena-reset fixture. These tiny primitives are **not** complete-model numerical qualification.
+arena-reset fixture. These tiny primitives alone are **not** complete-model numerical qualification.
+
+Subsequent weighted CPU fixtures (`dd0074b`, operation `20260910T123226-4407a8977033`, observations
+`test-artifacts/super-acceleration/weighted-cpu-observation/`) compared **470,520 finite values
+bit-for-bit** against fresh ordinary execution using read-only installed GGUF files: RMVPE 253,440
+values over 256/192/256-frame inputs, including a real short GRU tail and different successive mel
+inputs; FCPE 217,080 values over three different windows with the same cached graph. Tests assert
+actual residency and graph reuse, not successful fallback. Vulkan adapters were enumerated by the
+loader, but both tests explicitly created the **CPU** backend. These are bounded weighted-window
+numerical checks, not GPU, full-song/perceptual, performance or host-stability qualification.
+Native pointer metadata borrows were also scoped to their copy in `39984f0`. Targeted CLI tests and
+changed Rust formatting passed at `20260910T123921-8f13ed9beb0b`.
 
 Preserved failed records: `20260910T111830-19e0273fea8e` stopped at Cargo lock resolution during
 concurrent LibTorch manifest edits; `20260910T113503-63b8228d7ca3` stopped at a test-only unbound
@@ -323,8 +338,8 @@ concurrent LibTorch manifest edits; `20260910T113503-63b8228d7ca3` stopped at a 
 An earlier supervisor fixture encountered `ETXTBSY`; subsequent explicitly recorded serial checks
 passed. No automatic retry or GPU inference is implied by these follow-up operations.
 
-Remaining implementation: explicit shared acceleration ownership, complete-model dependency and
-device queues, observed whole-task cost/phase accounting, queue-aware hot-weight retention and
+Remaining implementation: complete-model dependency/device queues, observed whole-task cost/phase
+accounting, queue-aware hot-weight retention and
 preparation, and reduced Qwen readback with exact first-maximum/non-finite semantics. Source review
 found that pinned Vulkan `argmax.comp` resolves equal maxima by reduction lane, not always original
 index (equal maxima at indices 1 and one subgroup-width can select the latter). Direct substitution

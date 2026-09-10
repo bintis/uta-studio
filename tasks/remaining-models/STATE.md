@@ -357,12 +357,20 @@ The user subsequently authorized implementation. Landed: shared Engine/worker PC
 facts/profile ownership (`6a5ce26`); task-owned FFT/frontend preparation (`f6275f2`); truthful Qwen
 window progress (`5c39192`); owned Acoustic DSP overlap and cancellation (`2fb6d01`); FCPE graph
 reuse (`4d8db66`, fixture fix `e1d5eac`); same-device RMVPE handoffs/GRU graph reuse (`c04f079`);
-Qwen incremental arena reuse without pinning prefill (`6df2a5e`). Focused CPU/protocol checks passed,
+Qwen incremental arena reuse without pinning prefill (`6df2a5e`); shared acceleration ownership
+across joined tasks (`9ce129e`). Focused CPU/protocol checks passed,
 including explicit native CPU primitive fixtures in `20260910T113607-45fdcc9232e3` and
 `20260910T115838-e7354a6bc379`. Preserve the preceding lock-resolution and fixture compile failures;
 these did not execute native tests. See the design's **Implemented after the global audit** section.
 
-Next: shared acceleration ownership, dependency-aware complete-model/device queues, observed task
+Weighted reference checks (`dd0074b`, `20260910T123226-4407a8977033`) additionally compared **470,520
+finite CPU outputs bit-for-bit**: RMVPE 253,440 values across differing inputs/short GRU tails;
+FCPE 217,080 values over differing graph-reuse windows. Model files were read-only. These bounded
+weighted CPU windows are not GPU or full-pipeline qualification. Sixteen supervisor/context, four
+owner and two prediction tests passed at `20260910T121202-985dcc11e7d1`; targeted CLI/format checks
+passed at `20260910T123921-8f13ed9beb0b`.
+
+Next: dependency-aware complete-model/device queues, observed task
 phase/cost accounting and queue-aware hot-weight retention/preparation. Qwen reduced readback must
 preserve first-maximum and all-logit finite checks: the pinned Vulkan argmax lane tie rule cannot be
 substituted directly. Full-model numerical checks, cross-song reuse and Studio publication timing
