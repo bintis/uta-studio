@@ -1,6 +1,5 @@
 // Explicit diagnostic device; no model, fallback, timing gate or installation.
 #include "roformer_ops.hpp"
-#include "roformer_projection.hpp"
 #include <ATen/Context.h>
 #include <ATen/Parallel.h>
 #include <c10/core/InferenceMode.h>
@@ -9,7 +8,6 @@
 #include <chrono>
 #include <cmath>
 #include <iostream>
-#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -95,77 +93,6 @@ void normalization(const at::Device& device, int64_t rows, int64_t width, bool s
     compare(actual, reference, "normalization-double-oracle");
     if (!at::equal(input, original)) throw std::runtime_error("normalization modified its input");
 }
-void projection_gelu(const at::Device& device, int64_t rows, int64_t contraction, int64_t columns, bool strided) {
-    auto options = at::TensorOptions().device(device).dtype(at::kFloat);
-    auto storage = (at::arange(rows * contraction * 2, options) * 0.017).sin().reshape({1, rows, contraction * 2}) * 0.2;
-    auto input = storage.narrow(-1, contraction, contraction);
-    if (!strided) input = input.contiguous();
-    auto weight = (at::arange(columns * contraction, options) * 0.013).cos().reshape({columns, contraction}) * 0.1;
-    auto bias = (at::arange(columns, options) * 0.11).sin() * 0.01;
-    auto original = input.clone(), original_weight = weight.clone(), original_bias = bias.clone();
-    auto actual = uta::torch_native::fused_roformer_projection_gelu(input, weight, bias);
-    auto reference = at::gelu(at::linear(input.to(at::kCPU).to(at::kDouble),
-        weight.to(at::kCPU).to(at::kDouble), bias.to(at::kCPU).to(at::kDouble)), "none");
-    std::cout << "projection_gelu_shape=" << rows << ',' << contraction << ',' << columns << " strided=" << strided << std::endl;
-    auto unfused = at::gelu(at::linear(input, weight, bias), "none");
-    // GEMM outputs are not unit-bounded like the rotation fixtures. Apply the
-    // same magnitude-scaled FP32 bound to both paths, retaining the NMSE bound.
-    const auto tolerance = 2e-6 * std::max(1.0, reference.abs().max().item<double>());
-    compare(unfused, reference, "unfused-projection-gelu-double-oracle", tolerance);
-    compare(actual, reference, "projection-gelu-double-oracle", tolerance);
-    compare(actual, unfused, "projection-gelu-unfused", tolerance);
-    if (actual.scalar_type() != at::kFloat || !at::equal(input, original)
-        || !at::equal(weight, original_weight) || !at::equal(bias, original_bias))
-        throw std::runtime_error("projection GELU output type or inputs changed");
-}
-void projection_residual(const at::Device& device, int64_t rows, int64_t contraction, int64_t columns,
-                         bool strided, bool with_bias) {
-    auto options = at::TensorOptions().device(device).dtype(at::kFloat);
-    auto storage = (at::arange(rows * contraction * 2, options) * 0.017).sin().reshape({1, rows, contraction * 2}) * 0.2;
-    auto input = storage.narrow(-1, contraction, contraction);
-    auto residual_storage = (at::arange(rows * columns * 2, options) * 0.031).cos().reshape({1, rows, columns * 2}) * 0.2;
-    auto residual = residual_storage.narrow(-1, columns, columns);
-    if (!strided) { input = input.contiguous(); residual = residual.contiguous(); }
-    auto weight = (at::arange(columns * contraction, options) * 0.013).cos().reshape({columns, contraction}) * 0.1;
-    auto bias = with_bias ? (at::arange(columns, options) * 0.11).sin() * 0.01 : at::Tensor();
-    auto original = input.clone(), original_weight = weight.clone(), original_residual = residual.clone();
-    auto original_bias = with_bias ? bias.clone() : at::Tensor();
-    auto actual = uta::torch_native::fused_roformer_projection_residual(input, weight, bias, residual);
-    auto reference = at::linear(input.to(at::kCPU).to(at::kDouble), weight.to(at::kCPU).to(at::kDouble),
-        with_bias ? bias.to(at::kCPU).to(at::kDouble) : at::Tensor()) + residual.to(at::kCPU).to(at::kDouble);
-    auto unfused = at::linear(input, weight, bias) + residual;
-    std::cout << "projection_residual_shape=" << rows << ',' << contraction << ',' << columns
-              << " strided=" << strided << " bias=" << with_bias << std::endl;
-    // Cancellation can make output-relative NMSE large for an ordinary FP32
-    // dot product. Bound each error by gamma times the sum of absolute terms,
-    // including product rounding, bias and residual. Both paths use one bound.
-    const double unit_roundoff = std::numeric_limits<float>::epsilon() / 2.0;
-    const double accumulated_roundoff = (2 * contraction + 2) * unit_roundoff;
-    auto absolute_terms = at::linear(input.to(at::kCPU).to(at::kDouble).abs(),
-        weight.to(at::kCPU).to(at::kDouble).abs(),
-        with_bias ? bias.to(at::kCPU).to(at::kDouble).abs() : at::Tensor())
-        + residual.to(at::kCPU).to(at::kDouble).abs();
-    auto roundoff_bound = absolute_terms * (accumulated_roundoff / (1.0 - accumulated_roundoff));
-    auto assess = [&](const at::Tensor& candidate, const char* label) {
-        auto value = candidate.to(at::kCPU).to(at::kDouble);
-        auto difference = value - reference;
-        std::cout << "comparison=" << label << " elements=" << value.numel()
-                  << " max_abs=" << difference.abs().max().item<double>()
-                  << " nmse=" << difference.square().sum().item<double>() / std::max(reference.square().sum().item<double>(), 1e-30)
-                  << " max_fraction_of_fp32_bound=" << (difference.abs() / roundoff_bound.clamp_min(std::numeric_limits<double>::min())).max().item<double>()
-                  << std::endl;
-        if (value.sizes() != reference.sizes() || !at::isfinite(value).all().item<bool>()
-            || (difference.abs() > roundoff_bound).any().item<bool>())
-            throw std::runtime_error(std::string(label) + " exceeds FP32 forward-error bound");
-    };
-    assess(unfused, "unfused-projection-residual-double-oracle");
-    assess(actual, "projection-residual-double-oracle");
-    std::cout << "comparison=projection-residual-unfused max_abs="
-              << (actual.to(at::kCPU) - unfused.to(at::kCPU)).abs().max().item<float>() << std::endl;
-    if (actual.scalar_type() != at::kFloat || !at::equal(input, original) || !at::equal(weight, original_weight)
-        || !at::equal(residual, original_residual) || (with_bias && !at::equal(bias, original_bias)))
-        throw std::runtime_error("projection residual output type or inputs changed");
-}
 void gating(const at::Device& device, int64_t batch, int64_t length, bool strided) {
     const int64_t heads = 8, width = 64;
     auto options = at::TensorOptions().device(device).dtype(at::kFloat);
@@ -235,31 +162,6 @@ int main(int argc, char** argv) {
         c10::DeviceGuard guard(device);
         at::globalContext().setFloat32Precision(at::Float32Backend::GENERIC, at::Float32Op::ALL, at::Float32Precision::IEEE);
         at::globalContext().setAllowTF32OneDNN(false);
-        if (device.is_cpu() || (argc > 2 && std::string(argv[2]) == "gelu")) {
-            for (const auto strided : {false, true}) {
-                projection_gelu(device, 17, 256, 1024, strided);
-                projection_gelu(device, 17, 384, 1536, strided);
-                projection_gelu(device, 1, 13, 17, strided);
-            }
-            if (!device.is_cpu()) {
-                synchronize(device);
-                std::cout << "RoFormer GELU projection checks passed on " << device << std::endl;
-                return 0;
-            }
-        }
-        if (device.is_cpu() || (argc > 2 && std::string(argv[2]) == "residual")) {
-            for (const auto strided : {false, true}) for (const auto with_bias : {false, true}) {
-                projection_residual(device, 17, 512, 256, strided, with_bias);
-                projection_residual(device, 17, 1024, 256, strided, with_bias);
-                projection_residual(device, 17, 1536, 384, strided, with_bias);
-                projection_residual(device, 1, 13, 17, strided, with_bias);
-            }
-            if (!device.is_cpu()) {
-                synchronize(device);
-                std::cout << "RoFormer residual projection checks passed on " << device << std::endl;
-                return 0;
-            }
-        }
         const bool rotary_only = argc > 2 && std::string(argv[2]) == "rotary";
         const bool full = (argc > 2 && std::string(argv[2]) == "full")
             || (rotary_only && argc > 3 && std::string(argv[3]) == "full");

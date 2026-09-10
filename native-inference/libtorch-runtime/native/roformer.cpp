@@ -2,7 +2,6 @@
 #include "projection.hpp"
 #include "attention_partition.hpp"
 #include "roformer_ops.hpp"
-#include "roformer_projection.hpp"
 #include <cmath>
 #include <numeric>
 #include <iostream>
@@ -249,23 +248,14 @@ private:
                                             weights->get(name(prefix, "gates_b", "gate.bias"))));
         attended = gated_roformer_attention(attended, gates);
         attended = attended.reshape({batch, length, heads * head_dimension});
-        const auto weight = weights->get(name(prefix, "out", "out.weight"));
-        return runtime->backend == "libtorch_xpu"
-            ? fused_roformer_projection_residual(attended, weight, {}, sequence)
-            : sequence + project(attended, weight);
+        return sequence + project(attended, weights->get(name(prefix, "out", "out.weight")));
     }
     at::Tensor feed_forward(const at::Tensor& sequence, const std::string& prefix) const {
         auto current = normalize(sequence, name(prefix, "ff_norm", "norm.weight"));
-        const auto weight = weights->get(name(prefix, "ff1_w", "in.weight"));
-        const auto bias = weights->get(name(prefix, "ff1_b", "in.bias"));
-        const bool fused = runtime->backend == "libtorch_xpu";
-        current = fused ? fused_roformer_projection_gelu(current, weight, bias) : project(current, weight, bias);
+        current = project(current, weights->get(name(prefix, "ff1_w", "in.weight")), weights->get(name(prefix, "ff1_b", "in.bias")));
         runtime->checkpoint(prefix + ".feed_forward_projection");
-        if (!fused) current = at::gelu(current, "none");
-        const auto output_weight = weights->get(name(prefix, "ff2_w", "out.weight"));
-        const auto output_bias = weights->get(name(prefix, "ff2_b", "out.bias"));
-        return fused ? fused_roformer_projection_residual(current, output_weight, output_bias, sequence)
-                     : sequence + project(current, output_weight, output_bias);
+        current = at::gelu(current, "none");
+        return sequence + project(current, weights->get(name(prefix, "ff2_w", "out.weight")), weights->get(name(prefix, "ff2_b", "out.bias")));
     }
 };
 } // namespace
