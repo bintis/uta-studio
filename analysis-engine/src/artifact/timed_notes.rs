@@ -49,30 +49,63 @@ impl TimedNoteExpertEvidence {
         let source_end = source_start
             .checked_add(source_duration)
             .ok_or_else(|| invalid("timed-note source timeline overflows"))?;
-        if source_duration == 0
-            || self.contract != TIMED_NOTE_EVIDENCE_CONTRACT
-            || self.version != TIMED_NOTE_EVIDENCE_VERSION
-            || !identity(&self.expert_id)
-            || !identity(&self.model_generation)
-            || !identity(&self.backend)
-            || self.provenance.expert_id != self.expert_id
-            || self.provenance.task != ExpertTask::NoteBoundary
-            || [
-                self.provenance.model_hash.as_deref(),
-                self.provenance.runtime_identity.as_deref(),
+        let mut reasons = Vec::new();
+        if source_duration == 0 {
+            reasons.push("source duration is zero".to_string());
+        }
+        if self.contract != TIMED_NOTE_EVIDENCE_CONTRACT {
+            reasons.push("contract".to_string());
+        }
+        if self.version != TIMED_NOTE_EVIDENCE_VERSION {
+            reasons.push("version".to_string());
+        }
+        if !identity(&self.expert_id) {
+            reasons.push(format!("expert identity {}", self.expert_id));
+        }
+        if !identity(&self.model_generation) {
+            reasons.push("model generation".to_string());
+        }
+        if !identity(&self.backend) {
+            reasons.push("backend".to_string());
+        }
+        if self.provenance.expert_id != self.expert_id {
+            reasons.push("provenance expert mismatch".to_string());
+        }
+        if self.provenance.task != ExpertTask::NoteBoundary {
+            reasons.push("provenance task".to_string());
+        }
+        for (label, value) in [
+            ("model hash", self.provenance.model_hash.as_deref()),
+            ("runtime identity", self.provenance.runtime_identity.as_deref()),
+            (
+                "calibration version",
                 self.provenance.calibration_version.as_deref(),
+            ),
+            (
+                "correlation group",
                 self.provenance.correlation_group.as_deref(),
-            ]
-            .into_iter()
-            .flatten()
-            .any(|value| !identity(value))
-            || self
-                .provenance
-                .depends_on
-                .iter()
-                .any(|dependency| !identity(dependency))
-        {
-            return Err(invalid("timed-note evidence identity is invalid"));
+            ),
+        ] {
+            if let Some(value) = value
+                && !identity(value)
+            {
+                reasons.push(format!(
+                    "{label} length {} value {}",
+                    value.len(),
+                    value
+                ));
+            }
+        }
+        for dependency in &self.provenance.depends_on {
+            if !identity(dependency) {
+                reasons.push(format!("dependency {dependency}"));
+            }
+        }
+        if !reasons.is_empty() {
+            return Err(invalid(format!(
+                "timed-note evidence identity is invalid: {}",
+                reasons.join("; ")
+            )));
         }
         let calibrated = self.notes.iter().any(|note| {
             note.calibrated_boundary_confidence.is_some()
@@ -153,7 +186,7 @@ impl TimedNoteExpertEvidence {
 }
 
 fn identity(value: &str) -> bool {
-    !value.trim().is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
+    !value.trim().is_empty() && value.len() <= 1_024 && !value.chars().any(char::is_control)
 }
 
 fn invalid(message: impl Into<String>) -> EngineError {
@@ -215,6 +248,19 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn long_conditioned_correlation_groups_remain_valid_identities() {
+        let mut evidence = evidence();
+        evidence.provenance.correlation_group = Some(format!(
+            "conditioned:{}",
+            (0..4)
+                .map(|_| format!("shared_frontend:rmvpe:{}", "a".repeat(64)))
+                .collect::<Vec<_>>()
+                .join("|")
+        ));
+        assert!(evidence.validate(0, 1_000_000).is_ok());
+    }
+
     fn empty_observation_is_valid_negative_evidence() {
         let mut evidence = evidence();
         evidence.notes.clear();
