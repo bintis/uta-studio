@@ -20,6 +20,9 @@ pub const HIDDEN_DIM: usize = 256;
 pub const MEL_BINS: usize = 80;
 pub const PITCH_CLASSES: usize = 89;
 pub const TECHNIQUE_CLASSES: usize = 9;
+// Host orchestration names its feature boundary explicitly. GGML supplies
+// borrowed host slices; another native backend can use an owned resident handle.
+pub(crate) type FrameFeatures = [f32];
 
 /// Loaded official STARS weights on one explicitly selected GGML backend.
 ///

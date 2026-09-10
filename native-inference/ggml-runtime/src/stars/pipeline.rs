@@ -123,8 +123,8 @@ pub fn prepare_inputs(audio_24k: &[f32], raw_rmvpe_f0: &[f32]) -> Result<SharedI
 
 impl Stars {
     /// Runs the complete transcript-conditioned STARS A/B/C pipeline and the
-    /// optional D/E technique path. Neural layers execute on the selected
-    /// upstream-GGML device; Rust owns segmentation and discrete decoders.
+    /// optional D/E technique path. Neural layers execute on the explicitly
+    /// selected native device; Rust owns segmentation and discrete decoders.
     pub fn infer_transcript<F, P>(
         &self,
         shared: &SharedInputs,
@@ -242,8 +242,8 @@ fn append_technique_outputs(
     model: &Stars,
     segment: &Segment,
     alignment: &Alignment,
-    mel_embedding: &[f32],
-    pitch_features: &[f32],
+    mel_embedding: &super::model::FrameFeatures,
+    pitch_features: &super::model::FrameFeatures,
     techniques: &mut Vec<RawTechnique>,
     styles: &mut Vec<GlobalStyle>,
 ) -> Result<(), String> {

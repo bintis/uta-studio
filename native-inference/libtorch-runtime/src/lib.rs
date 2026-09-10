@@ -13,6 +13,8 @@ mod stage_profile;
 pub mod roformer;
 pub mod game;
 pub mod jbm555;
+pub mod stars;
+pub mod rosvot;
 mod pitch;
 pub use pitch::{basic_pitch, fcpe, rmvpe};
 
