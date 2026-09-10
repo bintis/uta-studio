@@ -1,0 +1,13 @@
+--- a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
++++ b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
+@@ -64,6 +64,10 @@
+ shared vec4 float_workspace[row_split * 64];
+ shared f16vec4 probability_workspace[row_split * 64];
+ 
++// Only shared scratch is exchanged between invocations inside this shader.
++// Preserve the execution barrier without fencing unrelated storage buffers.
++#define subgroupBarrier() controlBarrier(gl_ScopeSubgroup, gl_ScopeSubgroup, gl_StorageSemanticsShared, gl_SemanticsAcquireRelease)
++
+ void main() {
+     init_indices();
+     const uint lane = gl_SubgroupInvocationID;
