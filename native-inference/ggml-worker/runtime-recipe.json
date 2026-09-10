@@ -65,6 +65,12 @@
         "sha256": "d1a59ce2ca1a094b0c7710247a7ee489fa3e2cfcc294542e2bc9e2fd8567c6a1",
         "scope": "Intel Xe2 native-SIMD32 M8 H64 F32-accumulator query-owned attention with independent F16/F32 K/V storage",
         "reason": "Load F32 or mixed K/V directly into the existing shared operand tile with the prior cooperative decoder's F16 rounding; no graph cast or global conversion tensor. Retain compact four/eight-subgroup workgroups, full context, masks, tails, accumulation order and other-device/type fallbacks. In six-second real graphs, Harmony time attention improves from 20.815 to 8.221 ms and Denoise from 20.663 to 8.139 ms; complete-output SNR is 67.04 and 74.42 dB, respectively, not bit-identical. Combined XE90 reaches 12.69 TFLOPS with bit-identical output against the seven-patch baseline. All 61 focused numerical fixtures pass. See docs/ROFORMER_B580_FLOATING_STORAGE.md."
+      },
+      {
+        "file": "native-inference/ggml-worker/patches/0010-vulkan-attention-compact-row-scales.patch",
+        "sha256": "c3a7b4ad6736902a73d9d5a97226c096fb61c5ad06f2b3c8e8748fbcd9204140",
+        "scope": "Existing Intel Xe2 native-SIMD32 M8 H64 F32-accumulator query-owned attention with independent F16/F32 K/V storage",
+        "reason": "Publish eight independent F32 row scales per subgroup and use a zero-stride column-major cooperative load, replacing 128 scalar scale writes and one hot-loop score-overwrite barrier. Account for the extra 32 shared bytes per subgroup. Full context, F16 probability rounding, F32 state, accumulation order and device/type selection are unchanged. Recorded XE90-shape controls measure 43.916/43.010 ms versus 42.688/42.474 ms; three real model pairs retain byte-identical complete output, but do not establish a consistent whole-model speedup. All 61 default and 61 four-subgroup numerical fixtures pass. The padded score/probability experiment is rejected. See docs/ROFORMER_B580_COMPACT_RESCALE.md."
       }
     ]
   },
