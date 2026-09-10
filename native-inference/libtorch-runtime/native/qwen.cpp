@@ -130,6 +130,7 @@ private:
                 ? projected_convolution(value, weights->get(prefix + ".weight"), weights->optional(prefix + ".bias"),
                                         {2, 2}, {1, 1}, [this] { check_cancel(); })
                 : convolution(*weights, value, prefix, {2, 2}, {1, 1});
+            runtime->checkpoint(prefix + ".convolution");
             value = at::gelu(convolved, "none");
             runtime->checkpoint(prefix + ".gelu");
         }
