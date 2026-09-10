@@ -464,10 +464,10 @@ new restriction. Complete half-storage-bit comparisons pass for both full
 negative zero, half-way rounding and subnormals. Local synchronized samples are
 about **1.85 → 1.50 ms**, with some slower scalar tail samples. Evidence:
 `paired-small-check/`, `paired-full-axis-check/`, operation
-`20260910T213828-d63726fa9660`. The selected build is `paired-build`; CPU checks,
-ABI and two-chunk model execution pass. Full waveform/full-song/family review is
-still pending. The next possible optimization is operator-only examination of
-normalization across axis views before any further model routing change.
+`20260910T213828-d63726fa9660`. At that stage, candidate `paired-build` passed
+CPU checks, ABI and two-chunk execution, while full-song/family review remained
+pending. That review and the follow-up normalization-axis investigation are
+complete below; neither candidate is retained in model routing.
 
 ### Final selection and verification scope
 
@@ -498,18 +498,22 @@ removed. Paired copy and axis-layout probes do not change model execution.
 The selected full-song evidence remains **64.525976343 s** inference /
 **66.647711604 s** process, **not under 60 seconds**.
 
-Family regression executed four complete 12-second model paths using the
-paired candidate; every retained guide waveform sample was compared against
-the original control, including earlier rotary/layout/normalization changes:
+Final active-source regression executed four complete 12-second model paths;
+every retained guide waveform sample was compared against the original control,
+including earlier rotary/layout/normalization changes:
 
 | Model | Max absolute difference | SNR |
 | --- | ---: | ---: |
-| XE90 vocals | 8.35955143e-6 | 111.20821 dB |
-| XE90 instrumental | 5.07570803e-5 | 67.62440 dB |
-| Mel-band denoise | 8.51228833e-7 | 136.80460 dB |
-| Mel-band dereverb | 8.76262784e-5 | 84.53302 dB |
+| XE90 vocals | 8.34465027e-6 | 111.20783 dB |
+| XE90 instrumental | 5.07570803e-5 | 67.62442 dB |
+| Mel-band denoise | 8.47503543e-7 | 136.84058 dB |
+| Mel-band dereverb | 8.76300037e-5 | 84.53295 dB |
 
-`selected-family-comparison.json` records all 1,058,400 finite samples per case.
+`final-active-comparison.json` records all 1,058,400 finite samples per case;
+`selected-family-comparison.json` preserves the preceding paired-candidate trial.
+Additional XE90 comparisons against the **pre-conversion normalized** controls
+isolate this round: vocals **143.20499 dB**, max difference **2.38418579e-7**;
+instrumental **140.00019 dB**, max difference **2.23517418e-8**.
 These different reference scopes must not be confused with the conversion-only
 full-song 144.18 dB result; none is a listening or family-wide parity claim.
 Original Harmony control produced **nonfinite masks**
@@ -519,9 +523,12 @@ No context shortening, alternate precision or backend fallback was used to make
 either failing model appear to pass.
 
 At final source review, a separate compiler drove a **68.10% CPU** snapshot;
-current-build GPU smoke was deferred while independent source/docs checks
-proceeded, not yet claimed executed. The preceding measured matching active
-path remains the executed GPU evidence. No more performance attempts are planned
-for this handoff. Kernel log access remains unavailable; no GPU-reset absence
-or post-exit host-stability guarantee is made. Installed assets are untouched,
-and this is not production or release acceptance.
+current-build GPU smoke was deferred during independent source/docs checks.
+After that work, a fresh observation found **7.23% CPU** with active desktop
+graphics (49% aggregate GPU). Four serial **numerical-only** smokes then completed
+in `20260910T222555-40b409a2bc8d`; no throughput conclusions are drawn. Final
+comparison operation: `20260910T222743-2cf28c28b116`. All report IEEE projections;
+observer read errors are 0/1/2/0 in table order, with unchanged boot IDs. No more
+GPU execution is planned for this handoff. Kernel log access remains unavailable;
+no GPU-reset absence or post-exit host-stability guarantee is made. Installed
+assets are untouched, and this is not production or release acceptance.

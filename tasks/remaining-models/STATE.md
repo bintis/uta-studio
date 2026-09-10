@@ -491,12 +491,12 @@ retirement (`20260910T202405-573055382379`).
 Family 12-second regression executed XE90 vocals/instrumental and mel-band
 denoise/dereverb, comparing every retained waveform sample. Comparisons against
 the original control include earlier rotary/layout/normalization changes:
-SNR 111.21 / 67.62 / 136.80 / 84.53 dB, respectively; no listening/parity claim.
+SNR 111.21 / 67.62 / 136.84 / 84.53 dB, respectively; no listening/parity claim.
 Original PolarFormer control failed inside native SDPA requesting 8.23 GiB.
 Original Harmony control emitted nonfinite masks
 (`20260910T215111-9b8cb57be73d`). Neither failed control was retried or used for
 candidate acceptance. Those two geometries remain blocked, not family-wide
-acceptance. Evidence: `selected-family-comparison.json` and the recorded cases.
+acceptance. Evidence: `final-active-comparison.json` and the recorded cases.
 
 Current authorization: optimize speed **while preserving the existing precision
 policy**, full context/chunk/overlap, serial execution, cancellation and sync.
@@ -553,11 +553,17 @@ copy was removed. Evidence: `selected-fullsong-comparison.json` and
 **Final active source:** `71c0ad0`; fresh private build `selected-build`.
 The active model operations match retained `gating-build`; no GELU/residual
 post-op, TF32 trial or paired value-copy routing remains. Current CPU primitives,
-ABI and **55 Rust tests** pass (`20260910T221000-8f26c62c9a55`). At the final
-source review, a 68.10% CPU/compiler snapshot deferred current-build GPU smoke
-while independent source/docs checks proceeded; it is not yet claimed executed.
-The retained matching active path already has full-song and exact XPU primitive
-evidence. No more performance attempts are planned in this handoff. The
+ABI and **55 Rust tests** pass (`20260910T221000-8f26c62c9a55`). A 68.10%
+CPU/compiler snapshot deferred current-build GPU smoke during source/docs
+review. After that independent work, CPU was 7.23% but desktop graphics active;
+four serial **numerical-only** 12-second model smokes completed
+(`20260910T222555-40b409a2bc8d`), not throughput measurements. Every retained
+sample is finite and compared; XE90 vocals/instrumental versus the pre-conversion
+normalized controls give **143.205 / 140.000 dB**, distinct from original-control
+comparisons. Observer read errors were 0/1/2/0, with unchanged boot IDs; no reset
+or host-stability guarantee. See `final-active-comparison.json`.
+The matching active path also has the retained full-song and exact XPU primitive
+evidence. No more GPU execution is planned in this handoff. The
 **60-second goal remains unmet**; no installed runtime/model/source media changed.
 Next technical blockers are the two original model failures and further
 precision-preserving bottleneck work, not TF32 or unqualified post-op promotion.
