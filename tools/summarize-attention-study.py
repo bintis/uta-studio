@@ -8,6 +8,32 @@ import re
 import statistics
 
 
+def other_gpu_clients(case: Path, target_pid: int) -> list:
+    path = case / "host-samples.ndjson"
+    if not path.exists():
+        return []
+    clients = {}
+    for line in path.read_text().splitlines():
+        interval = json.loads(line).get("interval_summary", {})
+        for item in interval.get("drm_engine_activity", []):
+            owners = item["owners"]
+            if any(owner["pid"] == target_pid for owner in owners):
+                continue
+            percent = item["percent_of_one_engine"]
+            if percent < 1:
+                continue
+            key = (item["device"], item["engine"],
+                   tuple((owner["pid"], owner["start_ticks"]) for owner in owners))
+            previous = clients.get(key, {})
+            if percent > previous.get("peak_percent_of_one_engine", 0):
+                clients[key] = {
+                    "device": item["device"], "driver": item["driver"],
+                    "engine": item["engine"], "owners": owners,
+                    "peak_percent_of_one_engine": percent,
+                }
+    return sorted(clients.values(), key=lambda item: item["peak_percent_of_one_engine"], reverse=True)
+
+
 def summarize_case(case: Path) -> dict:
     result = json.loads((case / "result.json").read_text())
     text = (case / "stderr.txt").read_text(errors="replace")
@@ -16,7 +42,11 @@ def summarize_case(case: Path) -> dict:
         for line in text.splitlines()
         if line.startswith("ATTENTION_RESULT ")
     ]
-    entry = {"exit_code": result["exit_code"], "numerical_cases": len(records)}
+    entry = {
+        "exit_code": result["exit_code"], "numerical_cases": len(records),
+        "timing_eligible": result["exit_code"] == 0 and not case.name.startswith("compiler-"),
+        "other_gpu_clients": other_gpu_clients(case, result["pid"]),
+    }
     if records:
         entry["maximum_nmse"] = max(row["nmse"] for row in records)
     for row in records:
@@ -84,6 +114,10 @@ def main() -> None:
         ]
         print(name, "exit=", result["exit_code"],
               "cases=", result["numerical_cases"], "; ".join(shapes))
+        for client in result["other_gpu_clients"]:
+            if client["engine"].endswith("ccs"):
+                print("  other compute client:", client["owners"],
+                      "peak engine percent:", round(client["peak_percent_of_one_engine"], 2))
 
 
 if __name__ == "__main__":
