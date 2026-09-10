@@ -102,6 +102,11 @@ int main(int argc, char** argv) {
         std::cout << "CAPACITY_READY {\"case\":" << probe::quote(name) << ",\"precision\":" << probe::quote(precision)
             << ",\"layout\":" << probe::quote(layout) << ",\"size\":" << size << ",\"sdpa_choice\":" << choice << "}\n";
         for (int index = 0; index < warmup; ++index) { compute(); torch::xpu::synchronize(0); }
+        auto phase = [](const char* name) {
+            const auto epoch = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+            std::cout << "CAPACITY_PHASE {\"phase\":" << probe::quote(name) << ",\"epoch_ns\":" << epoch << "}\n";
+        };
+        phase("measure_begin");
         std::vector<double> host_samples, device_samples;
         for (int iteration = 0; iteration < repeats; ++iteration) {
             c10::Event begin(at::kXPU, c10::EventFlag::BACKEND_DEFAULT), end(at::kXPU, c10::EventFlag::BACKEND_DEFAULT);
@@ -114,6 +119,7 @@ int main(int argc, char** argv) {
             host_samples.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count() / inner);
             device_samples.push_back(begin.elapsedTime(end) / inner);
         }
+        phase("measure_end");
         const bool finite = at::isfinite(output).all().item<bool>();
         double nmse = 0, original_nmse = 0, max_abs = 0;
         int reference_samples = 0;
