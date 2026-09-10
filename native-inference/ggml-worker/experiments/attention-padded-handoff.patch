@@ -1,0 +1,85 @@
+--- a/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -3868,7 +3868,7 @@
+         const auto & limits = device->properties.limits;
+         const bool wide_groups = limits.maxComputeWorkGroupInvocations >= 256 &&
+                                  limits.maxComputeWorkGroupSize[0] >= 256 &&
+-                                 limits.maxComputeSharedMemorySize >= 8u * 2592u + 32u;
++                                 limits.maxComputeSharedMemorySize >= 8u * 2848u + 32u;
+         const char * shared_groups = std::getenv("UTA_STUDIO_GGML_FA_SHARED_GROUPS");
+         const uint32_t groups = wide_groups &&
+             (shared_groups == nullptr || std::strcmp(shared_groups, "4") != 0) ? 8u : 4u;
+@@ -10867,10 +10867,10 @@
+ static bool ggml_vk_flash_attn_coopmat_shmem_support(const vk_device& device, const vk_fa_tuning_params& params, uint32_t hsk, uint32_t hsv, bool f32acc, ggml_type k_type, ggml_type v_type) {
+     GGML_UNUSED(v_type);
+     if (params.query_owned) {
+-        // Per subgroup: 1024-byte Q/K/V scratch, 1024-byte scores, 512-byte probabilities.
++        // Per subgroup: 1024-byte Q/K/V scratch, 1152-byte scores, 640-byte probabilities.
+         // Eight independent F32 row scales add 32 bytes without aliasing live scores.
+-        return params.row_split * 2592u + 32u <= device->properties.limits.maxComputeSharedMemorySize;
++        return params.row_split * 2848u + 32u <= device->properties.limits.maxComputeSharedMemorySize;
+     }
+     // Needs to be kept up to date on shader changes
+     const uint32_t Br = params.block_rows;
+--- a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
++++ b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
+@@ -61,8 +61,10 @@
+ // Workgroup barriers protect those common operands; score, probability and
+ // output workspaces remain subgroup-owned. Smaller groups use independent tiles.
+ shared f16vec4 operand_workspace[row_split * 128];
+-shared vec4 float_workspace[row_split * 64];
+-shared f16vec4 probability_workspace[row_split * 64];
++// Padded rows vary shared-memory bank addresses while keeping each cooperative
++// row stride a multiple of 16 bytes. No padding enters an attention reduction.
++shared vec4 float_workspace[row_split * 72];
++shared f16vec4 probability_workspace[row_split * 80];
+ // Separate from scores: publish each row once without a score-read/overwrite barrier.
+ // A zero-stride column-major load broadcasts these eight rows across all columns.
+ shared float row_scale_workspace[row_split * 8];
+@@ -81,8 +83,8 @@
+         return; // the independent one/two-subgroup paths have no workgroup barriers
+     }
+     const uint operand_base = group * 128;
+-    const uint float_base = group * 64;
+-    const uint probability_base = group * 64;
++    const uint float_base = group * 72;
++    const uint probability_base = group * 80;
+     const uint query_base = (iq2 * p.nb02 + iq3 * p.nb03) / 4;
+     const uint key_base = (ik2 * p.nb12 + ik3 * p.nb13) / (FaTypeK == FA_TYPE_F32 ? 4 : 2);
+     const uint value_base = (iv2 * p.nb22 + iv3 * p.nb23) / (FaTypeV == FA_TYPE_F32 ? 4 : 2);
+@@ -176,7 +178,7 @@
+                 }
+             }
+             coopMatStore(scores, float_workspace, float_base + key_tile * 4,
+-                         8, gl_CooperativeMatrixLayoutRowMajor);
++                         9, gl_CooperativeMatrixLayoutRowMajor);
+         }
+         if (row_split >= 4) {
+             barrier(); // finish every subgroup's K reads before this storage becomes V
+@@ -189,7 +191,7 @@
+         vec4 packed_scores[packs_per_lane];
+         float row_maximum = negative;
+         [[unroll]] for (uint part = 0; part < packs_per_lane; ++part) {
+-            vec4 scores = float_workspace[float_base + local_row * 8 + row_lane * packs_per_lane + part];
++            vec4 scores = float_workspace[float_base + local_row * 9 + row_lane * packs_per_lane + part];
+             if (LOGIT_SOFTCAP) {
+                 scores = p.logit_softcap * tanh(scores);
+             }
+@@ -222,7 +224,7 @@
+                 }
+                 normalizer += float(probabilities[component]);
+             }
+-            probability_workspace[probability_base + local_row * 8 + row_lane * packs_per_lane + part] = probabilities;
++            probability_workspace[probability_base + local_row * 10 + row_lane * packs_per_lane + part] = probabilities;
+         }
+         if (row_lane == 0) {
+             row_scale_workspace[group * 8 + local_row] = rescale;
+@@ -252,7 +254,7 @@
+         coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseA> probability_tiles[2];
+         [[unroll]] for (uint key_tile = 0; key_tile < 2; ++key_tile) {
+             coopMatLoad(probability_tiles[key_tile], probability_workspace, probability_base + key_tile * 4,
+-                        8, gl_CooperativeMatrixLayoutRowMajor);
++                        10, gl_CooperativeMatrixLayoutRowMajor);
+         }
+         // Keep each block's product separate, preserving the previous algorithm's
+         // blockwise addition instead of silently extending its FMA accumulation chain.
