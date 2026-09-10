@@ -93,6 +93,35 @@ void normalization(const at::Device& device, int64_t rows, int64_t width, bool s
     compare(actual, reference, "normalization-double-oracle");
     if (!at::equal(input, original)) throw std::runtime_error("normalization modified its input");
 }
+void normalization_layout(const at::Device& device, int64_t batch, int64_t length, int64_t width, bool timing) {
+    auto options = at::TensorOptions().device(device).dtype(at::kFloat);
+    auto storage = (at::arange(batch * length * width, options) * 0.013).sin().reshape({length, batch, width});
+    auto input = storage.transpose(0, 1);
+    auto original = input.clone();
+    auto weight = (at::arange(width, options) * 0.1).cos() * 0.5 + 1.25;
+    auto packed = [&] { return uta::torch_native::fused_roformer_normalization(input.contiguous(), weight); };
+    auto direct = [&] { return uta::torch_native::fused_roformer_normalization(input, weight); };
+    auto reference = packed(), actual = direct();
+    if (actual.sizes() != reference.sizes() || !at::equal(actual.view(at::kInt), reference.view(at::kInt))
+        || !at::equal(input.view(at::kInt), original.view(at::kInt)))
+        throw std::runtime_error("axis-view normalization changes storage bits or input");
+    std::cout << "normalization_layout_shape=" << batch << ',' << length << ',' << width
+              << " storage_bits_equal=true input_strides=" << input.strides()
+              << " output_strides=" << actual.strides() << std::endl;
+    if (!timing) return;
+    for (const auto& kind : {std::string("packed"), std::string("direct"), std::string("direct"), std::string("packed")}) {
+        auto invoke = [&] { return kind == "direct" ? direct() : packed(); };
+        for (int warm = 0; warm < 2; ++warm) { actual = invoke(); synchronize(device); }
+        for (int sample = 0; sample < 4; ++sample) {
+            synchronize(device);
+            const auto started = Clock::now();
+            actual = invoke();
+            synchronize(device);
+            std::cout << "normalization_layout=" << kind << " sample=" << sample << " synchronized_ms="
+                      << std::chrono::duration<double, std::milli>(Clock::now() - started).count() << std::endl;
+        }
+    }
+}
 void conversion(const at::Device& device, int64_t batch, int64_t length, int64_t width,
                 bool packed, bool shifted, bool timing) {
     const int64_t heads = 8;
@@ -204,6 +233,19 @@ int main(int argc, char** argv) {
         c10::DeviceGuard guard(device);
         at::globalContext().setFloat32Precision(at::Float32Backend::GENERIC, at::Float32Op::ALL, at::Float32Precision::IEEE);
         at::globalContext().setAllowTF32OneDNN(false);
+        if (device.is_cpu() || (argc > 2 && std::string(argv[2]) == "norm_layout")) {
+            normalization_layout(device, 3, 17, 256, false);
+            normalization_layout(device, 17, 3, 384, false);
+            if (!device.is_cpu()) {
+                if (argc > 3 && std::string(argv[3]) == "full") {
+                    normalization_layout(device, 90, 1722, 256, true);
+                    normalization_layout(device, 1722, 90, 256, true);
+                }
+                synchronize(device);
+                std::cout << "RoFormer normalization layout checks passed on " << device << std::endl;
+                return 0;
+            }
+        }
         if (device.is_cpu() || (argc > 2 && std::string(argv[2]) == "conversion")) {
             for (const auto packed : {false, true}) for (const auto shifted : {false, true}) {
                 conversion(device, 3, 17, 64, packed, shifted, false);
