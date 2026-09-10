@@ -102,27 +102,23 @@ fn load_ggml(_resource: &str, model_path: &Path) -> Result<GgmlLoaded, String> {
     Ok(GgmlLoaded { runtime, device, model_path: model_path.to_path_buf() })
 }
 
+fn benchmark_precision() -> Result<Precision, String> {
+    match std::env::var("UTA_BENCH_LIBTORCH_PRECISION").as_deref() {
+        Ok("mixed_attention") => Ok(Precision::MixedAttention),
+        Ok("strict") | Err(_) => Ok(Precision::Strict),
+        Ok(other) => Err(format!("unsupported UTA_BENCH_LIBTORCH_PRECISION: {other}")),
+    }
+}
+
 fn load_libtorch(resource: &str, model_path: &Path) -> Result<LibtorchLoaded, String> {
     let library_path = std::env::var("UTA_BENCH_LIBTORCH_LIB").map_err(|_| "UTA_BENCH_LIBTORCH_LIB is required".to_string())?;
     let library = Library::load(Path::new(&library_path))?;
-    let precision = match std::env::var("UTA_BENCH_LIBTORCH_PRECISION").as_deref() {
-        Ok("mixed_attention") => Precision::MixedAttention,
-        Ok("strict") | Err(_) => Precision::Strict,
-        Ok(other) => return Err(format!("unsupported UTA_BENCH_LIBTORCH_PRECISION: {other}")),
-    };
-    let _ = library.open(resource, model_path, Backend::LibtorchRocm, 0, precision)?;
+    let _ = library.open(resource, model_path, Backend::LibtorchRocm, 0, benchmark_precision()?)?;
     Ok(LibtorchLoaded { library, model_path: model_path.to_path_buf() })
 }
 
 fn lib_model(loaded: &LibtorchLoaded, resource: &str) -> Result<uta_libtorch_runtime::Model, String> {
-    let precision = if matches!(resource,
-        "bs_roformer_leap_xe90_vocals" | "bs_roformer_leap_xe90_instrumental" |
-        "bs_polarformer_public_instrumental" | "melband_roformer_harmony" |
-        "melband_roformer_denoise_aufr33" | "melband_roformer_dereverb_anvuew" |
-        "game_1_0_3_small" | "game_1_0_3_medium" | "game_1_0_3_large") {
-        Precision::MixedAttention
-    } else { Precision::Strict };
-    loaded.library.open(resource, &loaded.model_path, Backend::LibtorchRocm, 0, precision)
+    loaded.library.open(resource, &loaded.model_path, Backend::LibtorchRocm, 0, benchmark_precision()?)
 }
 
 fn run_ggml(loaded: GgmlLoaded, resource: &str, input: &Path) -> Result<String, String> {
