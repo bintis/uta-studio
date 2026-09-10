@@ -1,0 +1,19 @@
+diff --git a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
+--- a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
++++ b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
+@@ -218,7 +218,4 @@
+-        // Keep each block's product separate, preserving the previous algorithm's
+-        // blockwise addition instead of silently extending its FMA accumulation chain.
++        // Accumulate PV directly into the rescaled F32 output fragment. This
++        // removes the temporary product and its blockwise addition. Operands
++        // retain their precision, but the F32 addition order changes.
+         [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
+-            // Only one temporary product survives at a time. Holding four here
+-            // alongside Q and O spilled the first prototype beyond 128 GRFs.
+-            coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator> product =
+-                coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator>(0);
+@@ -252,1 +249,1 @@
+-                product = coopMatMulAdd(probabilities, values, product);
++                output_tiles[depth_tile] = coopMatMulAdd(probabilities, values, output_tiles[depth_tile]);
+@@ -257,1 +254,0 @@
+-            output_tiles[depth_tile] = output_tiles[depth_tile] + product;
