@@ -1,0 +1,11 @@
+--- a/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -3861,7 +3861,7 @@
+         result.block_cols = 32;
+         const char * shared_groups = std::getenv("UTA_STUDIO_GGML_FA_SHARED_GROUPS");
+         const uint32_t requested_groups = shared_groups ? std::atoi(shared_groups) : 4;
+-        const uint32_t groups = requested_groups == 1 || requested_groups == 2 || requested_groups == 4 || requested_groups == 8
++        const uint32_t groups = requested_groups == 1 || requested_groups == 2 || requested_groups == 4 || requested_groups == 8 || requested_groups == 16
+             ? requested_groups : 4;
+         result.row_split = groups;
+         result.block_rows = groups * 8;
