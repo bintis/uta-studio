@@ -38,3 +38,33 @@ fn query_owned_tail_mask_and_stride() {
         );
     }
 }
+
+#[test]
+#[ignore = "explicit B580 grouped-query and KV broadcast regression"]
+fn grouped_query_and_key_head_broadcast() {
+    let backend = super::backend();
+    for (queries, heads, key_heads, keys, padding, masked) in [
+        (1, 8, 1, 33, 0, false),
+        (8, 16, 1, 65, 0, false),
+        (1, 32, 1, 33, 0, false),
+        (8, 32, 1, 65, 0, true),
+        (17, 8, 2, 33, 4, false),
+        (33, 8, 2, 65, 0, false),
+        (65, 8, 2, 90, 4, true),
+    ] {
+        super::run_shape_with_key_heads(
+            &backend,
+            super::Shape {
+                d: 64,
+                queries,
+                keys,
+                heads,
+                batches: 2,
+                padding,
+                masked,
+            },
+            key_heads,
+            1,
+        );
+    }
+}

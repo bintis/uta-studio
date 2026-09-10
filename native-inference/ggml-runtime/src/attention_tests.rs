@@ -93,6 +93,21 @@ fn backend() -> GgmlBackendHandle {
 }
 
 fn run_shape(backend: &GgmlBackendHandle, s: Shape, timed_calls: usize) {
+    run_shape_with_key_heads(backend, s, s.heads, timed_calls);
+}
+
+fn run_shape_with_key_heads(
+    backend: &GgmlBackendHandle,
+    s: Shape,
+    key_heads: usize,
+    timed_calls: usize,
+) {
+    assert!(key_heads > 0 && s.heads % key_heads == 0);
+    let key_shape = Shape {
+        heads: key_heads,
+        ..s
+    };
+    let head_ratio = s.heads / key_heads;
     let api = &backend.runtime.model_api;
     // SAFETY: all shapes below are positive bounded fixtures. Every tensor and
     // graph belongs to this live metadata arena; the allocated backend buffer is
@@ -135,7 +150,7 @@ fn run_shape(backend: &GgmlBackendHandle, s: Shape, timed_calls: usize) {
             GGML_TYPE_F16,
             row as i64,
             s.keys as i64,
-            s.heads as i64,
+            key_heads as i64,
             s.batches as i64,
         );
         let v_parent = (api.ggml_new_tensor_4d)(
@@ -143,7 +158,7 @@ fn run_shape(backend: &GgmlBackendHandle, s: Shape, timed_calls: usize) {
             GGML_TYPE_F16,
             row as i64,
             s.keys as i64,
-            s.heads as i64,
+            key_heads as i64,
             s.batches as i64,
         );
         let kv_view = |parent| {
@@ -152,11 +167,11 @@ fn run_shape(backend: &GgmlBackendHandle, s: Shape, timed_calls: usize) {
                 parent,
                 s.d as i64,
                 s.keys as i64,
-                s.heads as i64,
+                key_heads as i64,
                 s.batches as i64,
                 row * 2,
                 row * s.keys * 2,
-                row * s.keys * s.heads * 2,
+                row * s.keys * key_heads * 2,
                 0,
             )
         };
@@ -192,7 +207,7 @@ fn run_shape(backend: &GgmlBackendHandle, s: Shape, timed_calls: usize) {
         // Poison row padding. Incorrect unguarded vector/tile reads must not be
         // hidden by friendly zero-filled storage.
         let mut queries = vec![f32::NAN; row * s.heads * s.queries * s.batches];
-        let mut keys = vec![0x7e00_u16; row * s.keys * s.heads * s.batches];
+        let mut keys = vec![0x7e00_u16; row * s.keys * key_heads * s.batches];
         let mut values = keys.clone();
         for b in 0..s.batches {
             for h in 0..s.heads {
@@ -202,11 +217,13 @@ fn run_shape(backend: &GgmlBackendHandle, s: Shape, timed_calls: usize) {
                         queries[index] = fixture_value(fixture_bits(index, 13));
                     }
                 }
-                for t in 0..s.keys {
-                    for d in 0..s.d {
-                        let index = s.kv_index(b, h, t, d);
-                        keys[index] = fixture_bits(index, 71);
-                        values[index] = fixture_bits(index, 191);
+                if h < key_heads {
+                    for t in 0..s.keys {
+                        for d in 0..s.d {
+                            let index = key_shape.kv_index(b, h, t, d);
+                            keys[index] = fixture_bits(index, 71);
+                            values[index] = fixture_bits(index, 191);
+                        }
                     }
                 }
             }
@@ -255,8 +272,13 @@ fn run_shape(backend: &GgmlBackendHandle, s: Shape, timed_calls: usize) {
         } else {
             vec![0, s.queries / 2, s.queries - 1]
         };
+        let head_positions: Vec<usize> = if s.queries <= 65 {
+            (0..s.heads).collect()
+        } else {
+            vec![0, s.heads - 1]
+        };
         for b in [0, s.batches - 1] {
-            for h in [0, s.heads - 1] {
+            for &h in &head_positions {
                 for &t in &query_positions {
                     let scores: Vec<f64> = (0..s.keys)
                         .map(|key| {
@@ -266,7 +288,9 @@ fn run_shape(backend: &GgmlBackendHandle, s: Shape, timed_calls: usize) {
                             (0..s.d)
                                 .map(|d| {
                                     f64::from(queries[s.q_index(b, h, t, d)])
-                                        * f64::from(fixture_value(keys[s.kv_index(b, h, key, d)]))
+                                        * f64::from(fixture_value(
+                                            keys[key_shape.kv_index(b, h / head_ratio, key, d)],
+                                        ))
                                 })
                                 .sum::<f64>()
                                 * f64::from(scale)
@@ -281,7 +305,9 @@ fn run_shape(backend: &GgmlBackendHandle, s: Shape, timed_calls: usize) {
                             .iter()
                             .enumerate()
                             .map(|(key, p)| {
-                                p * f64::from(fixture_value(values[s.kv_index(b, h, key, d)]))
+                                p * f64::from(fixture_value(
+                                    values[key_shape.kv_index(b, h / head_ratio, key, d)],
+                                ))
                             })
                             .sum::<f64>()
                             / sum;
@@ -302,6 +328,7 @@ fn run_shape(backend: &GgmlBackendHandle, s: Shape, timed_calls: usize) {
             serde_json::json!({
                 "d": s.d, "queries": s.queries, "keys": s.keys,
                 "heads": s.heads, "batches": s.batches, "padding": s.padding,
+                "key_heads": key_heads,
                 "masked": s.masked, "warmup_calls": warmup_calls, "host_compute_seconds": seconds,
                 "matmul_flops": 4_u64 * s.queries as u64 * s.keys as u64 * s.d as u64
                     * s.heads as u64 * s.batches as u64,
