@@ -14,7 +14,7 @@ use uta_analysis_engine::candidate_pipeline::{
     execute_candidate_graph_stage, execute_singing_fusion_stage_with_timed_notes,
     fuse_alignment_stage, fuse_transcript_stage,
 };
-use uta_analysis_engine::contract::FusionDecisionMode;
+use uta_analysis_engine::candidate_pipeline::FusionDecisionMode;
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, Box<dyn Error>> {
     Ok(serde_json::from_slice(&std::fs::read(path)?)?)
