@@ -9,7 +9,7 @@
          const char * shared_groups = std::getenv("UTA_STUDIO_GGML_FA_SHARED_GROUPS");
          const uint32_t groups = wide_groups &&
              (shared_groups == nullptr || std::strcmp(shared_groups, "4") != 0) ? 8u : 4u;
-@@ -10867,10 +10867,10 @@
+@@ -10867,9 +10867,9 @@
  static bool ggml_vk_flash_attn_coopmat_shmem_support(const vk_device& device, const vk_fa_tuning_params& params, uint32_t hsk, uint32_t hsv, bool f32acc, ggml_type k_type, ggml_type v_type) {
      GGML_UNUSED(v_type);
      if (params.query_owned) {
