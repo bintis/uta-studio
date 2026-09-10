@@ -123,6 +123,7 @@ macro_rules! model_api {
 
 model_api! {
     fn ggml_init(params: GgmlInitParams) -> ContextPtr;
+    fn ggml_reset(ctx: ContextPtr) -> ();
     fn ggml_free(ctx: ContextPtr) -> ();
     fn ggml_new_tensor_1d(ctx: ContextPtr, type_: GgmlType, ne0: i64) -> TensorPtr;
     fn ggml_new_tensor_2d(ctx: ContextPtr, type_: GgmlType, ne0: i64, ne1: i64) -> TensorPtr;

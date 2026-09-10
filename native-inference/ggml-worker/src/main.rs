@@ -92,6 +92,12 @@ fn run_task(
             native_reuse.resident_copy_bytes()
         ));
     }
+    if native_reuse.arena_hits() > 0 {
+        audio_cache::diagnostic(&format!(
+            "Native incremental decoder arena reused: {}",
+            native_reuse.arena_hits()
+        ));
+    }
     for output in outputs {
         emit(WorkerFrame::Output {
             task_id,

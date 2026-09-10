@@ -44,6 +44,7 @@ pub struct DecoderSession<'a> {
     capacity: usize,
     past: usize,
     failed: bool,
+    incremental_run: Option<DecoderRun>,
 }
 
 struct DecoderGraph {
@@ -167,6 +168,7 @@ impl Qwen {
             capacity,
             past: 0,
             failed: false,
+            incremental_run: None,
         })
     }
 
@@ -841,7 +843,15 @@ impl DecoderSession<'_> {
             }
         }
 
-        let mut run = DecoderRun::new(Arc::clone(&self.model.backend.runtime))?;
+        let reuse = crate::acceleration::enabled() && rows == 1;
+        let mut run = match self.incremental_run.take().filter(|_| reuse) {
+            Some(mut run) => {
+                run.reset()?;
+                crate::acceleration::record_arena_reuse();
+                run
+            }
+            None => DecoderRun::new(Arc::clone(&self.model.backend.runtime))?,
+        };
         let api = self.model.api();
         let token_input = ggml!(
             api,
@@ -980,6 +990,11 @@ impl DecoderSession<'_> {
         if values.len() != self.model.config.vocab {
             return Err("Qwen ASR vocabulary output shape is invalid".to_string());
         }
+        // Only incremental calls benefit from this arena again. Prefill's
+        // larger activation allocation is released, not pinned through tokens.
+        if reuse {
+            self.incremental_run = Some(run);
+        }
         Ok(DecoderLogits {
             values,
             rows: 1,
@@ -990,6 +1005,7 @@ impl DecoderSession<'_> {
 
 impl Drop for DecoderSession<'_> {
     fn drop(&mut self) {
+        self.incremental_run.take(); // Graph views before their KV sources.
         let api = self.model.api();
         if !self.buffer.is_null() {
             ggml!(api, ggml_backend_buffer_free(self.buffer));
@@ -1036,10 +1052,24 @@ impl DecoderRun {
         })
     }
 
+    fn reset(&mut self) -> Result<(), String> {
+        let api = &self.runtime.model_api;
+        // Previous compute/readback completed synchronously. No graph tensor
+        // escapes decode; KV storage belongs to the separate session context.
+        ggml!(api, ggml_reset(self.context));
+        self.graph = ggml!(api, ggml_new_graph_custom(self.context, GRAPH_NODES, false));
+        if self.graph.is_null() {
+            return Err("could not reset Qwen decoder graph metadata".into());
+        }
+        Ok(())
+    }
+
     fn allocate(&mut self, backend: &GgmlBackendHandle) -> Result<(), String> {
         let api = &self.runtime.model_api;
-        let buffer_type = ggml!(api, ggml_backend_get_default_buffer_type(backend.raw));
-        self.allocator = ggml!(api, ggml_gallocr_new(buffer_type));
+        if self.allocator.is_null() {
+            let buffer_type = ggml!(api, ggml_backend_get_default_buffer_type(backend.raw));
+            self.allocator = ggml!(api, ggml_gallocr_new(buffer_type));
+        }
         if self.allocator.is_null()
             || !ggml!(api, ggml_gallocr_reserve(self.allocator, self.graph))
             || !ggml!(api, ggml_gallocr_alloc_graph(self.allocator, self.graph))
@@ -1127,6 +1157,52 @@ mod tests {
             .chunks_exact(4)
             .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
             .collect()
+    }
+
+    #[test]
+    #[ignore = "requires an explicit packaged GGML library directory; native CPU reference only"]
+    fn native_incremental_arena_rebuilds_changed_shapes_without_stale_values() {
+        let directory = std::env::var("UTA_STUDIO_GGML_TEST_LIBRARY_DIR").unwrap();
+        let runtime = GgmlRuntime::load(std::path::Path::new(&directory)).unwrap();
+        let device = runtime
+            .devices()
+            .unwrap()
+            .into_iter()
+            .find(|device| device.kind == crate::DeviceKind::Cpu)
+            .unwrap();
+        let backend = runtime.create_backend(&device).unwrap();
+        let api = &runtime.model_api;
+        let mut run = DecoderRun::new(Arc::clone(&runtime)).unwrap();
+        let mut allocator = std::ptr::null_mut();
+        for (step, length) in [16usize, 64, 8, 32].into_iter().enumerate() {
+            if step > 0 {
+                run.reset().unwrap();
+            }
+            let input = ggml!(
+                api,
+                ggml_new_tensor_1d(run.context, GGML_TYPE_F32, length as i64)
+            );
+            ggml!(api, ggml_set_input(input));
+            let output = ggml!(api, ggml_add(run.context, input, input));
+            ggml!(api, ggml_set_output(output));
+            ggml!(api, ggml_build_forward_expand(run.graph, output));
+            run.allocate(&backend).unwrap();
+            if step == 0 {
+                allocator = run.allocator;
+            } else {
+                assert_eq!(allocator, run.allocator);
+            }
+            let values = (0..length)
+                .map(|index| index as f32 * 0.25 - step as f32)
+                .collect::<Vec<_>>();
+            set_f32(api, input, &values).unwrap();
+            run.compute(&backend).unwrap();
+            assert_eq!(
+                get_f32(api, output).unwrap(),
+                values.iter().map(|value| value + value).collect::<Vec<_>>()
+            );
+        }
+        drop(run);
     }
 
     #[test]

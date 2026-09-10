@@ -12,6 +12,7 @@ struct Context {
     hits: usize,
     graph_hits: usize,
     resident_copy_bytes: u64,
+    arena_hits: usize,
 }
 thread_local! { static CURRENT: RefCell<Option<Context>> = const { RefCell::new(None) }; }
 pub struct Scope {
@@ -24,6 +25,14 @@ impl Scope {
             previous: CURRENT.with(|current| current.replace(enabled.then(Context::default))),
             thread: PhantomData,
         }
+    }
+    pub fn arena_hits(&self) -> usize {
+        CURRENT.with(|current| {
+            current
+                .borrow()
+                .as_ref()
+                .map_or(0, |context| context.arena_hits)
+        })
     }
     pub fn resident_copy_bytes(&self) -> u64 {
         CURRENT.with(|current| {
@@ -50,6 +59,14 @@ impl Drop for Scope {
         CURRENT.with(|current| current.replace(self.previous.take()));
     }
 }
+pub(crate) fn record_arena_reuse() {
+    CURRENT.with(|current| {
+        if let Some(context) = current.borrow_mut().as_mut() {
+            context.arena_hits += 1;
+        }
+    });
+}
+
 pub(crate) fn record_resident_copy(bytes: usize) {
     CURRENT.with(|current| {
         if let Some(context) = current.borrow_mut().as_mut() {
