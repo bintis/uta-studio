@@ -1,4 +1,5 @@
 #include "runtime.hpp"
+#include "recurrent.hpp"
 #include <stdexcept>
 
 namespace uta::torch_native {
@@ -54,9 +55,12 @@ public:
         value = value.permute({0, 2, 1, 3}).contiguous().reshape({mel.size(0), 1, input_size});
         check_cancel();
         auto initial = at::zeros({2, 1, hidden}, value.options());
-        // One native bidirectional sequence operation, not host-dispatched cells.
-        // A ROCm/MIOpen failure propagates; never change to a CPU implementation.
-        auto recurrent = std::get<0>(at::gru(value, initial, parameters, true, 1, 0.0, false, true, false));
+        // The ROCm plan uses shipped ATen fused cells and a sequence-wide input
+        // GEMM. It never enters the failing MIOpen HIPRTC GRU compiler and never
+        // switches devices. CPU diagnostics and XPU retain their native sequence.
+        auto recurrent = runtime->backend == "libtorch_rocm"
+            ? fused_bidirectional_gru(value, initial, parameters, [this] { check_cancel(); })
+            : std::get<0>(at::gru(value, initial, parameters, true, 1, 0.0, false, true, false));
         check_cancel();
         auto activation = at::sigmoid(weights->linear(recurrent.squeeze(1), "fc.1"));
         return {{"salience", activation}};

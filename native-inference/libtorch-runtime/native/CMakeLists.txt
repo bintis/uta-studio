@@ -86,5 +86,21 @@ if(UTA_LIBTORCH_BACKEND STREQUAL "rocm")
   target_link_options(uta-libtorch-contract-check PRIVATE "-Wl,--disable-new-dtags")
 endif()
 set_target_properties(uta-libtorch-contract-check PROPERTIES BUILD_RPATH "$<TARGET_FILE_DIR:uta_libtorch>;${native_paths}")
+
+# GPU sequence parity check. Its CPU computation is an explicit independent
+# double-precision oracle, never a production inference fallback.
+add_executable(uta-libtorch-recurrent-check recurrent_check.cpp)
+target_compile_features(uta-libtorch-recurrent-check PRIVATE cxx_std_20)
+target_compile_definitions(uta-libtorch-recurrent-check PRIVATE _GLIBCXX_USE_CXX11_ABI=${TORCH_CXX_ABI})
+target_include_directories(uta-libtorch-recurrent-check SYSTEM PRIVATE
+  "${TORCH_ROOT}/include" "${TORCH_ROOT}/include/torch/csrc/api/include")
+target_link_libraries(uta-libtorch-recurrent-check PRIVATE uta_libtorch)
+foreach(component IN LISTS native_components)
+  target_link_libraries(uta-libtorch-recurrent-check PRIVATE "-Wl,--no-as-needed" "${native_${component}}" "-Wl,--as-needed")
+endforeach()
+if(UTA_LIBTORCH_BACKEND STREQUAL "rocm")
+  target_link_options(uta-libtorch-recurrent-check PRIVATE "-Wl,--disable-new-dtags")
+endif()
+set_target_properties(uta-libtorch-recurrent-check PROPERTIES BUILD_RPATH "$<TARGET_FILE_DIR:uta_libtorch>;${native_paths}")
 install(TARGETS uta_libtorch LIBRARY DESTINATION lib)
 install(FILES api.h DESTINATION include/uta_libtorch)
