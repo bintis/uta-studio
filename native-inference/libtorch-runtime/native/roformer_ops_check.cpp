@@ -74,6 +74,20 @@ void run(const at::Device& device, int64_t batch, int64_t length, int64_t width,
         }
     }
 }
+void normalization(const at::Device& device, int64_t rows, int64_t width, bool strided, double amplitude) {
+    auto options = at::TensorOptions().device(device).dtype(at::kFloat);
+    auto storage = (at::arange(rows * width * 2, options) * 0.013).sin().reshape({rows, width * 2}) * amplitude;
+    auto input = storage.narrow(-1, width, width);
+    if (!strided) input = input.contiguous();
+    auto original = input.clone();
+    auto weight = (at::arange(width, options) * 0.11).cos();
+    auto actual = uta::torch_native::fused_roformer_normalization(input, weight);
+    auto reference = input.to(at::kCPU).to(at::kDouble);
+    reference = reference * at::rsqrt(reference.square().mean(-1, true) + 1e-12) * weight.to(at::kCPU).to(at::kDouble);
+    std::cout << "normalization_shape=" << rows << ',' << width << " strided=" << strided << " amplitude=" << amplitude << std::endl;
+    compare(actual, reference, "normalization-double-oracle");
+    if (!at::equal(input, original)) throw std::runtime_error("normalization modified its input");
+}
 void attention(const at::Device& device, int64_t batch, int64_t length, bool timing) {
     const int64_t heads = 8, width = 64;
     auto options = at::TensorOptions().device(device).dtype(at::kFloat);
@@ -126,7 +140,15 @@ int main(int argc, char** argv) {
             run(device, 1, 1, 2, packed, false);
             run(device, 2, 65, 128, packed, false);
         }
-        if (full) { run(device, 90, 1722, 64, false, true); run(device, 1722, 90, 64, false, true); }
+        for (const auto width : {8, 16, 256, 384, 516})
+            for (const auto amplitude : {0.0, 1e-9, 1.0, 1e12})
+                for (const auto strided : {false, true}) normalization(device, 17, width, strided, amplitude);
+        if (full) {
+            run(device, 90, 1722, 64, false, true);
+            run(device, 1722, 90, 64, false, true);
+            normalization(device, 90 * 1722, 256, false, 1.0);
+            normalization(device, 60 * 801, 384, false, 1.0);
+        }
         if (device.is_xpu()) {
             at::globalContext().setSDPUseMath(false);
             attention(device, 3, 17, false);

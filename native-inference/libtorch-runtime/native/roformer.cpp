@@ -93,7 +93,7 @@ public:
         for (std::size_t band = 0; band < widths.size(); ++band) {
             const auto prefix = "band_split." + std::to_string(band) + '.';
             auto input = features.narrow(1, offset, widths[band]);
-            auto normalized = weights->rms_norm(input, prefix + (public_names ? "norm" : "norm.weight"), 1e-12);
+            auto normalized = normalize(input, prefix + (public_names ? "norm" : "norm.weight"));
             bands.push_back(project(normalized, weights->get(prefix + (public_names ? "w" : "linear.weight")),
                                       weights->get(prefix + (public_names ? "b" : "linear.bias"))));
             offset += widths[band];
@@ -109,15 +109,15 @@ public:
             time = attend(time, prefix + (public_names ? "time" : "time_attn"), true);
             time = feed_forward(time, prefix + (public_names ? "time" : "time_ff"));
             runtime->checkpoint(prefix + "time_feed_forward");
-            if (output_norm) time = weights->rms_norm(time, prefix + "time_norm.weight", 1e-12);
+            if (output_norm) time = normalize(time, prefix + "time_norm.weight");
             value = time.transpose(0, 1).contiguous();
             value = attend(value, prefix + (public_names ? "freq" : "freq_attn"), false);
             value = feed_forward(value, prefix + (public_names ? "freq" : "freq_ff"));
             runtime->checkpoint(prefix + "frequency_feed_forward");
-            if (output_norm) value = weights->rms_norm(value, prefix + "freq_norm.weight", 1e-12);
+            if (output_norm) value = normalize(value, prefix + "freq_norm.weight");
             if (skips) previous.push_back(value);
         }
-        if (final_norm) value = weights->rms_norm(value, public_names ? "final_norm" : "final_norm.weight", 1e-12);
+        if (final_norm) value = normalize(value, public_names ? "final_norm" : "final_norm.weight");
         std::vector<at::Tensor> predicted;
         for (int64_t stem = 0; stem < stems; ++stem) {
             check_cancel();
@@ -158,6 +158,11 @@ public:
         return {{"spectrum", stems == 1 ? separated.front() : at::stack(separated, 0)}};
     }
 private:
+    at::Tensor normalize(const at::Tensor& input, const std::string& name) const {
+        return runtime->backend == "libtorch_xpu"
+            ? fused_roformer_normalization(input, weights->get(name))
+            : weights->rms_norm(input, name, 1e-12);
+    }
     at::Tensor project(const at::Tensor& input, const at::Tensor& weight, const at::Tensor& bias = {}) const {
         if (runtime->backend != "libtorch_rocm" || input.numel() / input.size(-1) <= 1024)
             return at::linear(input, weight, bias);
@@ -205,7 +210,7 @@ private:
         return prefix + (public_names ? '.' + public_suffix : '_' + private_suffix);
     }
     at::Tensor attend(const at::Tensor& sequence, const std::string& prefix, bool time) {
-        auto normalized = weights->rms_norm(sequence, name(prefix, "attn_norm", "norm.weight"), 1e-12);
+        auto normalized = normalize(sequence, name(prefix, "attn_norm", "norm.weight"));
         runtime->checkpoint(prefix + ".normalization");
         const auto batch = sequence.size(0), length = sequence.size(1);
         auto qkv = project(normalized, weights->get(name(prefix, "qkv", "qkv.weight"))).chunk(3, -1);
@@ -238,7 +243,7 @@ private:
         return sequence + project(attended, weights->get(name(prefix, "out", "out.weight")));
     }
     at::Tensor feed_forward(const at::Tensor& sequence, const std::string& prefix) const {
-        auto current = weights->rms_norm(sequence, name(prefix, "ff_norm", "norm.weight"), 1e-12);
+        auto current = normalize(sequence, name(prefix, "ff_norm", "norm.weight"));
         current = project(current, weights->get(name(prefix, "ff1_w", "in.weight")), weights->get(name(prefix, "ff1_b", "in.bias")));
         runtime->checkpoint(prefix + ".feed_forward_projection");
         current = at::gelu(current, "none");

@@ -2,6 +2,12 @@
 #include <ATen/ATen.h>
 
 namespace uta::torch_native {
+// Keep the checkpoint's epsilon and FP32 reduction; avoid materializing square,
+// scaled-input and affine intermediates for every transformer normalization.
+inline at::Tensor fused_roformer_normalization(const at::Tensor& input, const at::Tensor& weight) {
+    return std::get<0>(at::_fused_rms_norm(input, {input.size(-1)}, weight, 1e-12));
+}
+
 // Ordinary RoPE stores adjacent real/imaginary coordinates. Reinterpret that
 // pair without packing QKV's strided view; one complex multiply replaces four
 // products, two sums and a stack. Phase and arithmetic remain complex-FP32.
