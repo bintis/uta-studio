@@ -107,9 +107,12 @@ void projection_gelu(const at::Device& device, int64_t rows, int64_t contraction
         weight.to(at::kCPU).to(at::kDouble), bias.to(at::kCPU).to(at::kDouble)), "none");
     std::cout << "projection_gelu_shape=" << rows << ',' << contraction << ',' << columns << " strided=" << strided << std::endl;
     auto unfused = at::gelu(at::linear(input, weight, bias), "none");
-    compare(unfused, reference, "unfused-projection-gelu-double-oracle");
-    compare(actual, reference, "projection-gelu-double-oracle");
-    compare(actual, unfused, "projection-gelu-unfused");
+    // GEMM outputs are not unit-bounded like the rotation fixtures. Apply the
+    // same magnitude-scaled FP32 bound to both paths, retaining the NMSE bound.
+    const auto tolerance = 2e-6 * std::max(1.0, reference.abs().max().item<double>());
+    compare(unfused, reference, "unfused-projection-gelu-double-oracle", tolerance);
+    compare(actual, reference, "projection-gelu-double-oracle", tolerance);
+    compare(actual, unfused, "projection-gelu-unfused", tolerance);
     if (actual.scalar_type() != at::kFloat || !at::equal(input, original)
         || !at::equal(weight, original_weight) || !at::equal(bias, original_bias))
         throw std::runtime_error("projection GELU output type or inputs changed");
