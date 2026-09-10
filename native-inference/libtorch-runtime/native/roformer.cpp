@@ -138,6 +138,7 @@ public:
             predicted.push_back(at::cat(bands, -1));
         }
         auto mask = at::stack(predicted, 1); // [time, stem, gathered stereo-complex feature]
+        runtime->checkpoint("roformer.mask");
         if (prepared) return {{"mask", mask}};
         std::vector<at::Tensor> separated;
         for (int64_t stem = 0; stem < stems; ++stem) {
@@ -150,6 +151,7 @@ public:
             if (zero_dc) result.select(1, 0).zero_();
             separated.push_back(result);
         }
+        runtime->checkpoint("roformer.output");
         return {{"spectrum", stems == 1 ? separated.front() : at::stack(separated, 0)}};
     }
 private:
