@@ -5,6 +5,8 @@
 #include <c10/core/InferenceMode.h>
 #include <cmath>
 #include <limits>
+#include <cstdlib>
+#include <iostream>
 #include <stdexcept>
 #if defined(UTA_LIBTORCH_ROCM)
 #include <hip/hip_runtime_api.h>
@@ -43,6 +45,8 @@ Runtime::Runtime(const std::string& selected, int index, const std::string& arit
     context.setFloat32Precision(at::Float32Backend::GENERIC, at::Float32Op::ALL, at::Float32Precision::IEEE);
     context.setSDPUseMath(false);
     at::set_num_threads(2);
+    const auto trace = std::getenv("UTA_STUDIO_LIBTORCH_TRACE_SYNC");
+    trace_synchronization = trace && std::string(trace) == "1";
 }
 void Runtime::synchronize() const {
     if (device.is_cpu()) return;
@@ -53,6 +57,12 @@ void Runtime::synchronize() const {
 #elif defined(UTA_LIBTORCH_XPU)
     torch::xpu::synchronize(device.index());
 #endif
+}
+void Runtime::checkpoint(const std::string& stage) const {
+    if (!trace_synchronization) return;
+    std::cerr << "[uta-libtorch-await] " << stage << std::endl;
+    synchronize();
+    std::cerr << "[uta-libtorch-complete] " << stage << std::endl;
 }
 const at::Tensor& Inputs::get(const std::string& name) const {
     const auto found = tensors.find(name);

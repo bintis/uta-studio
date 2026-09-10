@@ -124,9 +124,11 @@ private:
             check_cancel();
             const auto prefix = aligner ? "audio.encoder.conv" + std::to_string(layer + 1) : "enc.conv." + std::to_string(layer);
             value = at::gelu(convolution(*weights, value, prefix, {2, 2}, {1, 1}), "none");
+            runtime->checkpoint(prefix + ".gelu");
         }
         value = value.permute({0, 3, 1, 2}).contiguous().reshape({chunks * chunk_rows, -1}).narrow(0, 0, valid_rows);
         value = at::linear(value, weights->get(encoder_prefix + ".conv_out.weight")) + position_encoding(valid_rows, chunk_rows);
+        runtime->checkpoint(encoder_prefix + ".positioned");
         const std::array<std::string, 8> names = aligner
             ? std::array<std::string, 8>{"attn_norm", "attn_q", "attn_k", "attn_v", "attn_out", "ffn_norm", "ffn_up", "ffn_down"}
             : std::array<std::string, 8>{"norm_attn", "attn.q", "attn.k", "attn.v", "attn.out", "norm_ffn", "ffn.fc1", "ffn.fc2"};
@@ -140,10 +142,13 @@ private:
             auto query = layout(weights->linear(normalized, prefix + names[1]));
             auto key = layout(weights->linear(normalized, prefix + names[2]));
             auto values = layout(weights->linear(normalized, prefix + names[3]));
+            runtime->checkpoint(prefix + "qkv");
             auto attended = attention(query, key, values).transpose(1, 2).reshape({valid_rows, encoder_dimension});
+            runtime->checkpoint(prefix + "attention");
             value = value + weights->linear(attended, prefix + names[4]);
             normalized = weights->norm(value, prefix + names[5]);
             value = value + weights->linear(at::gelu(weights->linear(normalized, prefix + names[6]), "none"), prefix + names[7]);
+            runtime->checkpoint(prefix + "feed_forward");
         }
         value = weights->norm(value, encoder_prefix + ".ln_post");
         return weights->linear(at::gelu(weights->linear(value, encoder_prefix + ".proj1"), "none"), encoder_prefix + ".proj2");

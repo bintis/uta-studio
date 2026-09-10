@@ -96,6 +96,7 @@ public:
             offset += widths[band];
         }
         auto value = at::stack(bands, 1); // [time, band, model channel]
+        runtime->checkpoint("roformer.band_split");
         std::vector<at::Tensor> previous;
         for (int64_t layer = 0; layer < depth; ++layer) {
             check_cancel();
@@ -104,10 +105,12 @@ public:
             auto time = value.transpose(0, 1).contiguous(); // [band, time, channel]
             time = attend(time, prefix + (public_names ? "time" : "time_attn"), true);
             time = feed_forward(time, prefix + (public_names ? "time" : "time_ff"));
+            runtime->checkpoint(prefix + "time_feed_forward");
             if (output_norm) time = weights->rms_norm(time, prefix + "time_norm.weight", 1e-12);
             value = time.transpose(0, 1).contiguous();
             value = attend(value, prefix + (public_names ? "freq" : "freq_attn"), false);
             value = feed_forward(value, prefix + (public_names ? "freq" : "freq_ff"));
+            runtime->checkpoint(prefix + "frequency_feed_forward");
             if (output_norm) value = weights->rms_norm(value, prefix + "freq_norm.weight", 1e-12);
             if (skips) previous.push_back(value);
         }
@@ -194,16 +197,19 @@ private:
         auto normalized = weights->rms_norm(sequence, name(prefix, "attn_norm", "norm.weight"), 1e-12);
         const auto batch = sequence.size(0), length = sequence.size(1);
         auto qkv = at::linear(normalized, weights->get(name(prefix, "qkv", "qkv.weight"))).chunk(3, -1);
+        runtime->checkpoint(prefix + ".qkv");
         auto query = qkv[0].reshape({batch, length, heads, head_dimension}).transpose(1, 2);
         auto key = qkv[1].reshape({batch, length, heads, head_dimension}).transpose(1, 2);
         auto value = qkv[2].reshape({batch, length, heads, head_dimension}).transpose(1, 2);
         const auto& cache = positions(length, time);
         query = rotate(query, cache.cosine, cache.sine);
         key = rotate(key, polar ? cache.key_cosine : cache.cosine, polar ? cache.key_sine : cache.sine);
+        runtime->checkpoint(prefix + ".rotary");
         const double scale = 1.0 / std::sqrt(static_cast<double>(head_dimension));
         auto attended = runtime->precision == "mixed_attention"
             ? fused_attention(query, key, value, {}, false, false, scale)
             : dense_attention(query, key, value, {}, false, scale);
+        runtime->checkpoint(prefix + ".attention");
         auto gates = at::sigmoid(at::linear(normalized, weights->get(name(prefix, "gates_w", "gate.weight")),
                                             weights->get(name(prefix, "gates_b", "gate.bias"))));
         attended = attended.transpose(1, 2) * gates.unsqueeze(-1);

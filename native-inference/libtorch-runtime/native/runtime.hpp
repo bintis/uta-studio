@@ -12,6 +12,9 @@ struct Runtime {
     std::string precision;
     Runtime(const std::string& backend, int index, const std::string& precision);
     void synchronize() const;
+    // Opt-in fault localization; never enabled for performance measurements.
+    bool trace_synchronization = false;
+    void checkpoint(const std::string& stage) const;
 };
 struct Inputs {
     TensorMap tensors;
