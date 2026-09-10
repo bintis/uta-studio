@@ -45,6 +45,7 @@ use crate::separation::SeparationOutput;
 use crate::workflow::{FusionMode, WorkflowExecution};
 use crate::workflow_executor::{CompiledWorkflowExecutionPlan, WorkflowNodeExecutionState};
 
+mod acceleration;
 mod export;
 mod output_guard;
 mod runtime_route;
@@ -54,8 +55,8 @@ use output_guard::OutputRunGuard;
 use runtime_route::{
     RoformerRoute, caller_transcript, cancelled, execution_device, fingerprint_request,
     firered_language_applicable, model_dispatch, pitch_dispatch, qwen_alignment_words,
-    stars_g2p_language_applicable,
     request_lyrics_text, resolve_roformer_route, resource_provenance, roformer_dispatch_config,
+    stars_g2p_language_applicable,
 };
 use worker_tasks::{run_native_task, run_native_task_with_inputs, typed_worker_output};
 use workflow_execution::*;
@@ -254,6 +255,8 @@ impl AnalysisEngine {
         let (resolved, mut degraded_reasons) = self.resolve_execution_resources(request, &plan)?;
         let conditional_schedule = Vec::<serde_json::Value>::new();
         let _lease = self.runtime_manager.lease_resolved_models(&resolved);
+        let _acceleration =
+            acceleration::scope(request, &plan, &resolved, &output_root, cancellation);
         let decode_lifecycle = begin_node("decode", "audio.decode", None, "ffmpeg");
         let decoded_sources = self.decode_validated_audio(request, cancellation)?;
         decode_lifecycle.complete();
@@ -969,58 +972,58 @@ impl AnalysisEngine {
         } else {
             None
         };
-        let fcpe_evidence: Option<PitchEvidence> =
-            if has_capability(&plan, "pitch.secondary.fcpe") {
-                if let Some(model) = resolved.iter().find(|model| model.model_id == "fcpe") {
-                    let (input, _) = workflow_bound_audio(
-                        plan.workflow_execution.as_ref(),
+        let fcpe_evidence: Option<PitchEvidence> = if has_capability(&plan, "pitch.secondary.fcpe")
+        {
+            if let Some(model) = resolved.iter().find(|model| model.model_id == "fcpe") {
+                let (input, _) = workflow_bound_audio(
+                    plan.workflow_execution.as_ref(),
+                    "pitch.secondary.fcpe",
+                    &workflow_audio,
+                    &analysis_input,
+                    analysis_role,
+                )?;
+                let directory = create_task_dir(&output_root, "worker/fcpe")?;
+                let result = (|| {
+                    let (component, config) = pitch_dispatch(model, request)?;
+                    let outputs = run_native_task(
+                        model,
+                        component,
+                        "task-fcpe",
                         "pitch.secondary.fcpe",
-                        &workflow_audio,
-                        &analysis_input,
-                        analysis_role,
+                        &input,
+                        &directory,
+                        config,
+                        cancellation,
                     )?;
-                    let directory = create_task_dir(&output_root, "worker/fcpe")?;
-                    let result = (|| {
-                        let (component, config) = pitch_dispatch(model, request)?;
-                        let outputs = run_native_task(
-                            model,
-                            component,
-                            "task-fcpe",
-                            "pitch.secondary.fcpe",
-                            &input,
-                            &directory,
-                            config,
-                            cancellation,
-                        )?;
-                        parse_fcpe_pitch(
-                            typed_worker_output(&outputs, "pitch_evidence")?,
-                            source_start,
-                            source_duration,
-                        )
-                    })();
-                    match result {
-                        Ok(evidence) => Some(evidence),
-                        Err(error) if error.code == EngineErrorCode::Cancelled => {
-                            return Err(error);
-                        }
-                        Err(error) => {
-                            degraded_reasons.push(format!(
-                                "optional capability pitch.secondary.fcpe failed: {}",
-                                error.message
-                            ));
-                            None
-                        }
+                    parse_fcpe_pitch(
+                        typed_worker_output(&outputs, "pitch_evidence")?,
+                        source_start,
+                        source_duration,
+                    )
+                })();
+                match result {
+                    Ok(evidence) => Some(evidence),
+                    Err(error) if error.code == EngineErrorCode::Cancelled => {
+                        return Err(error);
                     }
-                } else {
-                    degraded_reasons.push(
-                        "optional capability pitch.secondary.fcpe skipped: model was not resolved"
-                            .to_string(),
-                    );
-                    None
+                    Err(error) => {
+                        degraded_reasons.push(format!(
+                            "optional capability pitch.secondary.fcpe failed: {}",
+                            error.message
+                        ));
+                        None
+                    }
                 }
             } else {
+                degraded_reasons.push(
+                    "optional capability pitch.secondary.fcpe skipped: model was not resolved"
+                        .to_string(),
+                );
                 None
-            };
+            }
+        } else {
+            None
+        };
         let basic_pitch_evidence: Option<BasicPitchEvidence> =
             if has_capability(&plan, "notes.basic_pitch") {
                 let (input, _) = workflow_bound_audio(

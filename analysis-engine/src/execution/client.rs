@@ -10,6 +10,9 @@ use serde::{Deserialize, Serialize};
 use crate::contract::{EngineError, EngineErrorCode, EngineResult};
 use crate::events::begin_node_for_presentation;
 
+mod acceleration;
+pub(crate) use acceleration::{AccelerationGuard, PreloadSpec};
+
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
 const MAX_STDERR_BYTES: usize = 1024 * 1024;
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -74,7 +77,8 @@ fn acquire_ggml_lease(
             );
         }
     }
-    // Keep GGML Vulkan work serialized through process shutdown.
+    // Serialize foreground GGML compute through shutdown. Super mode may
+    // independently prepare the next model's weights while this lease is held.
     guard.last_exit = None;
     Ok(Some(GgmlLease { gate: guard }))
 }
@@ -159,7 +163,14 @@ impl SupervisedWorker {
             )
         })?;
         let _ggml_lease = acquire_ggml_lease(expectation, cancellation)?;
-        let mut process = WorkerProcess::spawn(executable)?;
+        let prepared_process = uses_ggml_worker(expectation)
+            .then(|| acceleration::take_for(executable, task))
+            .flatten();
+        let was_prepared = prepared_process.is_some();
+        let mut process = match prepared_process {
+            Some(process) => process,
+            None => WorkerProcess::spawn(executable)?,
+        };
         let deadline = Instant::now() + task.timeout;
         let ready = process.next_frame(deadline, cancellation)?;
         match ready {
@@ -178,13 +189,39 @@ impl SupervisedWorker {
             }
         }
 
+        if was_prepared {
+            match process.next_frame(deadline, cancellation)? {
+                WorkerFrame::Prepared {
+                    model_id,
+                    status,
+                    message,
+                    device,
+                    free_bytes,
+                } if model_id == task.model_id => {
+                    lifecycle.worker_progress(0.0, task.task_id.clone(), format!("Preload {status}: {message}; device={device}; observed free bytes={free_bytes:?}"));
+                }
+                WorkerFrame::Error { message, .. } => {
+                    return Err(EngineError::new(EngineErrorCode::WorkerFailed, message));
+                }
+                _ => {
+                    return Err(protocol_error(
+                        "prepared worker did not acknowledge the requested model",
+                    ));
+                }
+            }
+        }
+        let config = if uses_ggml_worker(expectation) {
+            acceleration::task_config(&task.config)
+        } else {
+            task.config.clone()
+        };
         process.send(&WorkerCommand::Run {
             task_id: &task.task_id,
             node_id: &task.node_id,
             model_id: &task.model_id,
             input_artifacts: &task.input_artifacts,
             output_dir: &output_root,
-            config: &task.config,
+            config: &config,
         })?;
 
         let mut outputs = Vec::new();
@@ -239,6 +276,12 @@ impl SupervisedWorker {
                         );
                     } else {
                         lifecycle.worker_progress(fraction, task_id.clone(), lifecycle_message);
+                    }
+                    if work_units.is_some_and(|(completed, _)| completed > 0)
+                        && uses_ggml_worker(expectation)
+                        && let Some(message) = acceleration::start_next(task)
+                    {
+                        lifecycle.worker_progress(fraction, task_id.clone(), message);
                     }
                     progress(ProgressEvent {
                         task_id,
@@ -299,8 +342,14 @@ impl SupervisedWorker {
                     error.retryable = retryable;
                     return Err(error);
                 }
-                WorkerFrame::Ready { .. } => {
-                    return Err(protocol_error("worker emitted duplicate ready frame"));
+                WorkerFrame::Diagnostic { task_id, message } => {
+                    ensure_task_id(&task.task_id, &task_id)?;
+                    lifecycle.worker_progress(last_fraction, task_id, message);
+                }
+                WorkerFrame::Ready { .. } | WorkerFrame::Prepared { .. } => {
+                    return Err(protocol_error(
+                        "worker emitted duplicate readiness/preparation frame",
+                    ));
                 }
             }
         }
@@ -396,6 +445,10 @@ fn protocol_error(message: &str) -> EngineError {
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum WorkerCommand<'a> {
+    Prepare {
+        model_id: &'a str,
+        config: &'a serde_json::Value,
+    },
     Run {
         task_id: &'a str,
         node_id: &'a str,
@@ -410,6 +463,17 @@ enum WorkerCommand<'a> {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum WorkerFrame {
+    Prepared {
+        model_id: String,
+        status: String,
+        message: String,
+        device: String,
+        free_bytes: Option<u64>,
+    },
+    Diagnostic {
+        task_id: String,
+        message: String,
+    },
     Ready {
         component: String,
     },

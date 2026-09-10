@@ -253,6 +253,8 @@ pub(super) fn model_dispatch(
     let route = resolve_roformer_route(model, request)?;
     let (component, mut config) =
         roformer_dispatch_config(&route, &model.model_path, semantic_output)?;
+    config["turbo_acceleration"] =
+        serde_json::Value::Bool(request.execution_policy.turbo_acceleration);
     config["model_artifacts"] = serde_json::to_value(&model.model_artifacts).map_err(|error| {
         EngineError::new(
             EngineErrorCode::InternalError,
