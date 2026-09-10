@@ -56,6 +56,14 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - name: Verify workspace lockfile synchronization
+        shell: bash
+        run: |
+          if ! cargo check --workspace --all-targets --locked --quiet; then
+            echo "::error file=Cargo.lock::Cargo.lock is out of sync with workspace Cargo.toml manifests. Run 'cargo check' locally and commit the updated Cargo.lock."
+            exit 1
+          fi
+
       - name: Check all Rust targets
         run: cargo check --workspace --all-targets --locked
 

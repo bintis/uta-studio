@@ -36,3 +36,13 @@ for manifest in "${MANIFESTS[@]}"; do
     exit 1
   fi
 done
+
+if command -v cargo >/dev/null 2>&1; then
+  printf 'Verifying Cargo.lock synchronization with workspace manifests...\n'
+  if ! cargo check --workspace --all-targets --locked --quiet; then
+    echo "::error file=Cargo.lock::Cargo.lock is out of sync with workspace manifests for version $TAG_VERSION. Run 'cargo check' and commit Cargo.lock."
+    exit 1
+  fi
+  printf 'Cargo.lock is synchronized.\n'
+fi
+
