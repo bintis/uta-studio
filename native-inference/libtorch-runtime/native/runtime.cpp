@@ -86,6 +86,9 @@ const std::map<std::string, Factory>& factories() {
         {"melband_roformer_dereverb_anvuew", make_roformer},
         {"rmvpe", make_rmvpe}, {"fcpe", make_fcpe},
         {"basic_pitch", make_basic_pitch}, {"jbm555_cectc_80", make_jbm},
+        {"game_1_0_3_small", make_game}, {"game_1_0_3_medium", make_game}, {"game_1_0_3_large", make_game},
+        {"qwen3_asr_1_7b", make_qwen}, {"qwen3_forced_aligner_0_6b", make_qwen},
+        {"firered_asr2_aed", make_firered}, {"rosvot", make_rosvot}, {"stars", make_stars},
     };
     return table;
 }

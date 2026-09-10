@@ -11,7 +11,8 @@ if(NOT EXISTS "${TORCH_ROOT}/include/ATen/ATen.h")
 endif()
 
 add_library(uta_libtorch SHARED
-  api.cpp gguf.cpp runtime.cpp roformer.cpp rmvpe.cpp fcpe.cpp basic_pitch.cpp jbm.cpp)
+  api.cpp gguf.cpp runtime.cpp roformer.cpp rmvpe.cpp fcpe.cpp basic_pitch.cpp jbm.cpp
+  game.cpp qwen.cpp firered.cpp note_network.cpp stars.cpp rosvot.cpp)
 target_compile_features(uta_libtorch PUBLIC cxx_std_20)
 target_compile_options(uta_libtorch PRIVATE -Wall -Wextra)
 target_compile_definitions(uta_libtorch PRIVATE _GLIBCXX_USE_CXX11_ABI=${TORCH_CXX_ABI})
