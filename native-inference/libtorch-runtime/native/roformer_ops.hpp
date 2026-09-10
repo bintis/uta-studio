@@ -48,7 +48,7 @@ inline at::Tensor layout_preserving_roformer_attention(const at::Tensor& query, 
     checkpoint("query_conversion");
     auto key_half = key.to(at::kHalf);
     checkpoint("key_conversion");
-    auto value_half = value.to(at::kHalf);
+    auto value_half = paired_roformer_half(value);
     checkpoint("value_conversion");
     auto attended = at::scaled_dot_product_attention(query_half, key_half, value_half, {}, 0.0, false, scale);
     checkpoint("sdpa");
