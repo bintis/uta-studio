@@ -4,6 +4,7 @@
 #include <c10/core/DeviceGuard.h>
 #include <c10/core/InferenceMode.h>
 #include <cmath>
+#include <chrono>
 #include <limits>
 #include <cstdlib>
 #include <iostream>
@@ -60,9 +61,13 @@ void Runtime::synchronize() const {
 }
 void Runtime::checkpoint(const std::string& stage) const {
     if (!trace_synchronization) return;
-    std::cerr << "[uta-libtorch-await] " << stage << std::endl;
+    const auto timestamp = [] {
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+    };
+    std::cerr << "[uta-libtorch-await] " << stage << " time_ns=" << timestamp() << std::endl;
     synchronize();
-    std::cerr << "[uta-libtorch-complete] " << stage << std::endl;
+    std::cerr << "[uta-libtorch-complete] " << stage << " time_ns=" << timestamp() << std::endl;
 }
 const at::Tensor& Inputs::get(const std::string& name) const {
     const auto found = tensors.find(name);
