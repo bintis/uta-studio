@@ -302,7 +302,10 @@ exact-format decoded-audio reuse, shared separation outputs and useful Qwen enco
 residency. Each model remains on one device with its precision, chunks, synchronization and output
 semantics unchanged. Complete-model task scheduling is not implemented yet; the linear Engine
 orchestrator and global foreground lease require an ownership-aware redesign, not lock removal.
-The old dual-chunk implementation is being removed; its timings do not qualify the corrected goal.
+`844c016` removes the old dual-chunk implementation; its timings do not qualify the corrected goal.
+The correction passed **53 CPU / isolated protocol tests** (four RoFormer, 34 worker, thirteen
+supervisor and two prediction tests; `20260910T095055-5df40fd72c78`). Identity scan passed
+(`20260910T095215-585b34c730c4`). No GPU inference or new release build was run for this correction.
 Design and boundaries: [Super acceleration](../../docs/design/runtime/SUPER_ACCELERATION.md).
 
 Historical verification before the task-granularity correction:
@@ -339,8 +342,8 @@ Historical verification before the task-granularity correction:
   `test-artifacts/super-acceleration/refined/pipeline-super-observation/` and operation
   `20260910T093505-99361ad5df8d`; read-only review: `20260910T093840-953484ccee48`.
 
-Next: remove the rejected within-model split, retain real reuse, and implement dependency-aware
-complete-model/device scheduling with CPU simulation of loading, queueing, critical paths and
+Next: retain real reuse and implement dependency-aware complete-model/device scheduling with
+CPU simulation of loading, queueing, critical paths and
 resource lifetimes. Safety review follows the linked restart/submission/upload records in the
 design document: preserve synchronization/cleanup; do not add arbitrary waits, limits or retries.
 GPU experiments stay paused after the user's restart report; no automatic repeat of the incomplete

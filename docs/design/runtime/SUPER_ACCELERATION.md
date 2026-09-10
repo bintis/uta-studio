@@ -108,9 +108,10 @@ Read [restart handoff](../../ROFORMER_B580_REBOOT_HANDOFF_2026-09-07.md),
   preparation when the existing combined separator produces both artifacts, and uses requested
   language applicability to predict conditional preloads. This does not change which models
   actually execute: a later detected language can still require an on-demand FireRed run.
-- The earlier RoFormer secondary-backend/chunk-splitting path is rejected by the clarified
-  requirement. Remove that path, keeping ordinary single-device overlap-add unchanged. Its
-  historical dual-chunk tests and timings are not acceptance for complete-model task scheduling.
+- `844c016` removes the earlier RoFormer secondary-backend/chunk-splitting API and worker path,
+  keeping ordinary single-device overlap-add unchanged and consuming prepared weights as before.
+  Settings copy now explicitly says complete-model GPU scheduling is in development. Historical
+  dual-chunk tests and timings are not acceptance for complete-model task scheduling.
 - Exact source identity, sample rate and channel count key a per-analysis PCM cache. Workers
   reuse immutable hard-linked/copy inputs; another format is decoded from the original source,
   never from an already resampled representation. Source files remain untouched.
@@ -163,6 +164,16 @@ logs remain unreadable due to permissions. GPU experiments are paused, incomplet
 preserved, and no automatic retry is authorized by these records. Evidence:
 `test-artifacts/super-acceleration/refined/pipeline-super-observation/`, launch operation
 `20260910T093505-99361ad5df8d`, and read-only review `20260910T093840-953484ccee48`.
+
+## Correction verification
+
+Operation `20260910T095055-5df40fd72c78` on `844c016`: **53 CPU / isolated protocol tests passed**
+(four RoFormer, 34 worker, thirteen supervisor and two preload-prediction tests). These cover
+single-owner chunk processing, immediate failure propagation, preparation reuse, exact-format
+cache behavior and cancellation/cleanup. No GPU inference was run, no release binary was rebuilt,
+and no numerical, throughput or host-stability qualification of the corrected design is claimed.
+Product identity scan passed (`20260910T095215-585b34c730c4`); changed source files remain under
+2,000 lines. Useful existing reuse stays connected; complete-model task scheduling remains next.
 
 ## Verification and handoff
 
