@@ -86,6 +86,12 @@ fn run_task(
             native_reuse.graph_hits()
         ));
     }
+    if native_reuse.resident_copy_bytes() > 0 {
+        audio_cache::diagnostic(&format!(
+            "Native resident tensor copy bytes: {}",
+            native_reuse.resident_copy_bytes()
+        ));
+    }
     for output in outputs {
         emit(WorkerFrame::Output {
             task_id,

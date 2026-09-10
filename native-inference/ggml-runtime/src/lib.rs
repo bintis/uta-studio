@@ -28,6 +28,7 @@ pub mod firered;
 pub mod game;
 pub mod jbm555;
 pub mod qwen;
+mod resident;
 pub mod rmvpe;
 pub mod roformer;
 pub mod rosvot;

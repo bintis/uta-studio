@@ -35,6 +35,8 @@ macro_rules! ggml {
     }};
 }
 
+mod resident;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PitchFrame {
     pub time: f64,
@@ -182,7 +184,9 @@ impl Rmvpe {
         input_path: &Path,
         progress: impl FnMut(u64, u64),
     ) -> Result<Vec<PitchFrame>, String> {
-        host::process_wav(input_path, progress, |mel, frames| self.run_window(mel, frames))
+        host::process_wav(input_path, progress, |mel, frames| {
+            self.run_window(mel, frames)
+        })
     }
 
     fn api(&self) -> &ModelApi {
@@ -730,6 +734,16 @@ impl Rmvpe {
     }
 
     fn run_window(&self, mel: &[f32], frames: usize) -> Result<Vec<f32>, String> {
+        if crate::acceleration::enabled() {
+            match resident::Window::new(self, frames) {
+                Ok(mut window) => return window.run(mel),
+                Err(error) => {
+                    // No compute has started: optional allocation can be
+                    // skipped on the same backend without repeating inference.
+                    eprintln!("[super acceleration] optional RMVPE residency unavailable: {error}");
+                }
+            }
+        }
         let gru_input = self.run_cnn_head(mel, frames)?;
         if gru_input.len() != GRU_INPUT * frames {
             return Err("RMVPE CNN output shape is invalid".to_string());
@@ -1006,7 +1020,11 @@ mod tests {
 /// The callback is the only learned-computation boundary and may be any native backend.
 pub mod host {
     use super::*;
-    pub fn process_wav(input_path: &Path, mut progress: impl FnMut(u64, u64), mut run_window: impl FnMut(&[f32], usize) -> Result<Vec<f32>, String>) -> Result<Vec<PitchFrame>, String> {
+    pub fn process_wav(
+        input_path: &Path,
+        mut progress: impl FnMut(u64, u64),
+        mut run_window: impl FnMut(&[f32], usize) -> Result<Vec<f32>, String>,
+    ) -> Result<Vec<PitchFrame>, String> {
         let audio = read_f32_wav(input_path, SAMPLE_RATE, 1)?;
         let mel = log_mel_spectrogram(&audio)?;
         let frame_count = mel.len() / MEL_BINS;
