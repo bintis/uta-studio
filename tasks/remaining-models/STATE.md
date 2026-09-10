@@ -425,7 +425,7 @@ readiness, fused-SDPA availability or later host stability is established. See
 [LibTorch execution](../../docs/design/runtime/LIBTORCH_EXECUTION.md) for details and next checks.
 Super whole-task scheduling remains incomplete and is not qualified by these results.
 
-## LibTorch RoFormer speed optimization — IN_PROGRESS (2026-09-10 UTC)
+## LibTorch RoFormer speed optimization — PAUSED by user (2026-09-10 UTC)
 
 The user authorized optimizing the native XPU RoFormer family toward 60 seconds
 for the existing 354.88-second song. Historical native XE90 inference completed
@@ -450,6 +450,21 @@ benchmarks. Other RoFormer real-audio geometries and the matched whole-song pair
 remain, with explicit commands and private builds prepared but not executed.
 Details and operation evidence:
 [Native XPU comparison](../../docs/ROFORMER_B580_LIBTORCH_XPU.md#native-roformer-optimization--in-progress-2026-09-10-utc).
+
+The user subsequently authorized stopping worker PIDs 86316/93935 and then their
+analysis dispatcher 83448. All were sent TERM and confirmed absent. The first
+new full-song control completed in 134.104695026 seconds but a newly dispatched
+worker 94469 competed with it. After stopping the dispatcher, a separate control
+observer recorded exit 0, 38 chunks and 122.580421927 seconds inference in
+`test-artifacts/libtorch-roformer-speed/fullsong-control-resumed/`. Its outer
+operation `20260910T194129-71a332632928` lacks a completion record; do not invent
+one or equate observer completion with whole-operation completion/host stability.
+The user then explicitly cancelled and requested waiting for a new instruction.
+No owned test process remained at the cancellation inspection. The normalized
+full-song candidate and TF32 experiment have **not** executed; no paired speedup
+or new whole-song parity conclusion exists. **Do not resume automatically.**
+Pause receipt: `test-artifacts/libtorch-roformer-speed/PAUSED.txt`, operation
+`20260910T194410-ffe5f8febca8`. Unrelated working-tree changes remain intact.
 
 ## Next actions
 
