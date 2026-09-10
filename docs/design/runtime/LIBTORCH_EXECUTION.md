@@ -128,9 +128,20 @@ respectively, and every position matched exactly. XPU operation:
 `xpu-resume/qwen-decoder-comparison.json`. The XPU observer again sampled only the Intel xe device
 and Level Zero library and reached the second final-logits checkpoint.
 
-This verifies bounded native FCPE plans plus Qwen strict encoder/decoder execution. It does not
-establish real-audio encoder parity, a real transcription/token sequence, all eighteen XPU resources,
-fused attention availability, Super scheduling or production readiness. The historical
+The installed 1,842,216,416-byte Qwen forced-aligner container was then read-only tested with its
+separate 1,024-wide encoder and 5,000-class head. One synthetic mel row plus two selected
+classification rows produced 11,024 finite CPU/XPU float pairs and one identical position. Encoder
+maximum absolute error was `8.34465026855e-7` (NMSE `9.28168271953e-14`); classification-logit
+maximum was `9.17911529541e-6` (NMSE `6.01949681613e-13`). Per-row argmax matched at 202 and
+1,702. The recorded XPU process reached final logits and again sampled only Intel Level Zero and
+xe PCI `0000:07:00.0`; peak resident VRAM was 3,978,904 KiB. CPU operation:
+`20260910T182029-11ad2ef9116d`; XPU operation: `20260910T182102-4601fe611d8d`; full comparison:
+`20260910T182137-6223c2007e24` and `xpu-resume/qwen-aligner-comparison.json`. Synthetic token IDs
+and zero mel do not establish real-word timestamp alignment.
+
+This verifies bounded native FCPE plans plus Qwen strict encoder/decoder and aligner-core execution.
+It does not establish real-audio encoder parity, a real transcription/token sequence, real-word
+alignment, all eighteen XPU resources, fused attention availability, Super scheduling or production readiness. The historical
 OpenCL-dependent fused-SDPA failure was not rerun or repaired here. Next work uses recorded,
 non-retrying model-specific real-audio/conditioning checks and explicit attention dependency
 diagnosis. Successful exit does not establish later host stability.

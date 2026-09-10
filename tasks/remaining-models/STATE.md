@@ -412,8 +412,16 @@ matched. XPU operation `20260910T181634-369af609eb70`; comparison
 only Intel Level Zero and xe PCI `0000:07:00.0`; no AMD/ROCm/Vulkan target dependency or DRM device
 was observed.
 
-No controlled speedup, real-audio Qwen output parity, real transcription, all-model XPU readiness,
-fused-SDPA availability or later host stability is established. See
+The installed forced-aligner F16 container also completed its distinct 1,024-wide encoder and
+5,000-class strict classification head on CPU/XPU. All 11,024 float pairs and one position were
+compared. Encoder/logit maximum absolute errors were `8.34465e-7` / `9.17912e-6`, both selected-row
+argmax decisions matched, and position was exact. The XPU observer again sampled only Intel xe and
+reached final logits. XPU operation `20260910T182102-4601fe611d8d`; comparison
+`test-artifacts/libtorch-models/xpu-resume/qwen-aligner-comparison.json`. Synthetic mel/token IDs do
+not qualify real word timing.
+
+No controlled speedup, real-audio Qwen output parity, real transcription/alignment, all-model XPU
+readiness, fused-SDPA availability or later host stability is established. See
 [LibTorch execution](../../docs/design/runtime/LIBTORCH_EXECUTION.md) for details and next checks.
 Super whole-task scheduling remains incomplete and is not qualified by these results.
 

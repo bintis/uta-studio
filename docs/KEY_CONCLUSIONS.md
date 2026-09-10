@@ -42,9 +42,11 @@ maximum absolute error 6.29370333627e-10. Repeated XPU outputs were not bit-iden
 strict XPU also completed a real 12-second encoder call (156 x 2,048 finite values) with every traced
 stage synchronized. A separate synthetic-mel encoder/KV-cache/two-step decoder check compared all
 305,920 CPU/XPU float values and three positions; complete-logit argmax decisions matched, with
-maximum logit difference 1.09672546387e-4. The XPU observers sampled only Intel Level Zero and xe
-PCI `0000:07:00.0`. This does not qualify real-audio output parity, a real transcription, all models,
-Super scheduling or speedup; see [LibTorch execution](design/runtime/LIBTORCH_EXECUTION.md).
+maximum logit difference 1.09672546387e-4. The forced aligner's separate encoder/classification
+core also compared all 11,024 float values; both selected-row argmax decisions matched and maximum
+logit difference was 9.17911529541e-6. The XPU observers sampled only Intel Level Zero and xe PCI
+`0000:07:00.0`. This does not qualify real-audio output parity, a real transcription/alignment, all
+models, Super scheduling or speedup; see [LibTorch execution](design/runtime/LIBTORCH_EXECUTION.md).
 
 ## Current executable models
 
