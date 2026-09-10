@@ -68,3 +68,34 @@ fn grouped_query_and_key_head_broadcast() {
         );
     }
 }
+
+#[test]
+#[ignore = "explicit B580 online-softmax rescaling regression"]
+fn query_owned_online_rescale_stress() {
+    let backend = backend();
+    // Power-of-two gains keep the scaled H64 query exactly representable in
+    // binary16. Sharp scores exercise repeated maxima, tiny probabilities and
+    // long F32 output accumulation, rather than adding input-rounding error.
+    for (keys, padding, masked, score_gain) in [
+        (257, 0, false, 8.0),
+        (513, 4, false, 32.0),
+        (4097, 0, false, 32.0),
+        (129, 4, true, 32.0),
+    ] {
+        super::run_shape_with_score_gain(
+            &backend,
+            Shape {
+                d: 64,
+                queries: 65,
+                keys,
+                heads: 2,
+                batches: 2,
+                padding,
+                masked,
+            },
+            2,
+            1,
+            score_gain,
+        );
+    }
+}

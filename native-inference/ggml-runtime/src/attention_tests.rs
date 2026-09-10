@@ -102,6 +102,17 @@ fn run_shape_with_key_heads(
     key_heads: usize,
     timed_calls: usize,
 ) {
+    run_shape_with_score_gain(backend, s, key_heads, timed_calls, 1.0);
+}
+
+fn run_shape_with_score_gain(
+    backend: &GgmlBackendHandle,
+    s: Shape,
+    key_heads: usize,
+    timed_calls: usize,
+    score_gain: f32,
+) {
+    assert!(score_gain.is_finite() && score_gain > 0.0);
     assert!(key_heads > 0 && s.heads % key_heads == 0);
     let key_shape = Shape {
         heads: key_heads,
@@ -190,7 +201,7 @@ fn run_shape_with_key_heads(
         } else {
             std::ptr::null_mut()
         };
-        let scale = 1.0 / (s.d as f32).sqrt();
+        let scale = score_gain / (s.d as f32).sqrt();
         let output = (api.ggml_flash_attn_ext)(context, q, k, v, mask, scale, 0.0, 0.0);
         assert!(!output.is_null());
         (api.ggml_flash_attn_ext_set_prec)(output, GGML_PREC_F32);
@@ -329,6 +340,7 @@ fn run_shape_with_key_heads(
                 "d": s.d, "queries": s.queries, "keys": s.keys,
                 "heads": s.heads, "batches": s.batches, "padding": s.padding,
                 "key_heads": key_heads,
+                "score_gain": score_gain,
                 "masked": s.masked, "warmup_calls": warmup_calls, "host_compute_seconds": seconds,
                 "matmul_flops": 4_u64 * s.queries as u64 * s.keys as u64 * s.d as u64
                     * s.heads as u64 * s.batches as u64,
