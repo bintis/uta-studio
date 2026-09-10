@@ -57,6 +57,7 @@ public:
                     layer.value = at::empty({1, kv_heads, capacity, head_dimension}, options);
                 }
                 past = 0;
+                runtime->checkpoint("decoder.session");
             } catch (...) { invalidate_session(); throw; }
             return {{"position", at::scalar_tensor(past, at::kLong)}};
         }
@@ -188,6 +189,7 @@ private:
         auto positions = at::arange(start, start + rows, tokens.options());
         auto keys = at::arange(start + rows, tokens.options());
         auto mask = positions.unsqueeze(1) >= keys.unsqueeze(0);
+        runtime->checkpoint("decoder.positioned");
         const std::array<std::string, 11> names = aligner
             ? std::array<std::string, 11>{"attn_norm", "ffn_norm", "attn_q_norm", "attn_k_norm", "attn_q", "attn_k", "attn_v", "attn_output", "ffn_gate", "ffn_up", "ffn_down"}
             : std::array<std::string, 11>{"norm_attn", "norm_ffn", "attn.q_norm", "attn.k_norm", "attn.q", "attn.k", "attn.v", "attn.o", "ffn.gate", "ffn.up", "ffn.down"};
@@ -202,22 +204,27 @@ private:
             auto query = rotary_split(decoder_norm(layout(linear(normalized, 4), heads), prefix + names[2] + ".weight"), positions, theta);
             auto key = rotary_split(decoder_norm(layout(linear(normalized, 5), kv_heads), prefix + names[3] + ".weight"), positions, theta);
             auto projected_value = layout(linear(normalized, 6), kv_heads);
+            runtime->checkpoint(prefix + "qkv");
             if (incremental) {
                 cache[layer].key.narrow(2, start, rows).copy_(key);
                 cache[layer].value.narrow(2, start, rows).copy_(projected_value);
                 key = cache[layer].key.narrow(2, 0, start + rows);
                 projected_value = cache[layer].value.narrow(2, 0, start + rows);
+                runtime->checkpoint(prefix + "cache");
             }
             auto attended = attention(query, key, projected_value, mask, heads != kv_heads).transpose(1, 2).reshape({rows, heads * head_dimension});
+            runtime->checkpoint(prefix + "attention");
             value = value + linear(attended, 7);
             normalized = decoder_norm(value, prefix + names[1] + ".weight");
             value = value + linear(at::silu(linear(normalized, 8)) * linear(normalized, 9), 10);
+            runtime->checkpoint(prefix + "feed_forward");
         }
         value = decoder_norm(value, output_norm);
         auto selected = inputs.optional("selected_rows");
         if (selected.defined()) value = value.index_select(0, selected.to(at::kLong));
         else value = value.narrow(0, rows - 1, 1);
         auto logits = at::linear(value, weights->get(head_name));
+        runtime->checkpoint("decoder.logits");
         if (incremental) past += rows;
         return {{"logits", logits}, {"position", at::scalar_tensor(incremental ? past : rows, at::kLong)}};
     }
