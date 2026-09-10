@@ -236,31 +236,52 @@ impl Game {
             params.note_threshold,
         )?;
         let durations = count_region_durations(&regions, region_count)?;
-        let mut offset_micros = 0_u64;
-        let mut notes = Vec::with_capacity(region_count);
-        for note in 0..region_count {
-            let duration_micros = (durations[note + 1] as u64)
-                .checked_mul(FRAME_MICROS)
-                .ok_or_else(|| "GAME note duration overflows".to_string())?;
-            if duration_micros == 0 {
-                return Err("GAME produced a zero-duration note region".to_string());
-            }
-            notes.push(GameNote {
-                offset_micros,
-                duration_micros,
-                pitch_midi: decoded.values[note],
-                voiced: decoded.presence[note] != 0,
-            });
-            offset_micros = offset_micros
-                .checked_add(duration_micros)
-                .ok_or_else(|| "GAME note timeline overflows".to_string())?;
-        }
+        let notes = notes_from_region_durations(
+            &durations,
+            &decoded.values,
+            &decoded.presence,
+        )?;
         Ok(GameInferOutput {
             notes,
             boundaries,
             num_frames: frames,
         })
     }
+}
+
+fn notes_from_region_durations(
+    durations: &[usize],
+    values: &[f32],
+    presence: &[u8],
+) -> Result<Vec<GameNote>, String> {
+    let region_count = durations.len().saturating_sub(1);
+    if values.len() != region_count || presence.len() != region_count {
+        return Err("GAME region decoder length mismatch".to_string());
+    }
+    let mut offset_micros = 0_u64;
+    let mut notes = Vec::new();
+    for note in 0..region_count {
+        let frame_count = durations[note + 1];
+        if frame_count == 0 {
+            // Region ids are the running boundary counter. A boundary on the
+            // first frame, or on a masked frame, can skip an id. That hole is
+            // not a note and must not fail the worker.
+            continue;
+        }
+        let duration_micros = (frame_count as u64)
+            .checked_mul(FRAME_MICROS)
+            .ok_or_else(|| "GAME note duration overflows".to_string())?;
+        notes.push(GameNote {
+            offset_micros,
+            duration_micros,
+            pitch_midi: values[note],
+            voiced: presence[note] != 0,
+        });
+        offset_micros = offset_micros
+            .checked_add(duration_micros)
+            .ok_or_else(|| "GAME note timeline overflows".to_string())?;
+    }
+    Ok(notes)
 }
 
 fn append_stitched_note(
@@ -486,5 +507,96 @@ mod tests {
         assert_eq!(samples_to_micros(44_100).unwrap(), 1_000_000);
         assert_eq!(samples_to_micros(44_100 * 28).unwrap(), 28_000_000);
         assert_eq!(samples_to_micros(44_100 * 336).unwrap(), 336_000_000);
+    }
+
+    #[test]
+    fn empty_region_ids_are_skipped_rather_than_failing_the_worker() {
+        // First-frame boundary increments the running id before assignment, so
+        // region 1 never occupies a frame. The previous fail-closed check
+        // aborted the whole song here.
+        let durations = vec![0, 0, 3, 2];
+        let notes = notes_from_region_durations(
+            &durations,
+            &[50.0, 60.0, 62.0],
+            &[1, 1, 0],
+        )
+        .unwrap();
+        assert_eq!(notes.len(), 2);
+        assert_eq!(notes[0].offset_micros, 0);
+        assert_eq!(notes[0].duration_micros, 30_000);
+        assert_eq!(notes[0].pitch_midi, 60.0);
+        assert!(notes[0].voiced);
+        assert_eq!(notes[1].offset_micros, 30_000);
+        assert_eq!(notes[1].duration_micros, 20_000);
+        assert!(!notes[1].voiced);
+        assert_eq!(
+            notes.last().unwrap().offset_micros + notes.last().unwrap().duration_micros,
+            50_000
+        );
+    }
+
+    #[test]
+    fn skipped_region_ids_keep_a_contiguous_microsecond_timeline() {
+        let durations = vec![0, 4, 0, 0, 6];
+        let notes = notes_from_region_durations(
+            &durations,
+            &[60.0, 61.0, 62.0, 64.0],
+            &[1, 1, 1, 1],
+        )
+        .unwrap();
+        assert_eq!(notes.len(), 2);
+        assert_eq!(notes[0].duration_micros, 40_000);
+        assert_eq!(notes[1].offset_micros, 40_000);
+        assert_eq!(notes[1].duration_micros, 60_000);
+        assert!(notes.iter().all(|note| note.duration_micros > 0));
+    }
+
+    #[test]
+    fn unused_region_ids_yield_no_notes_instead_of_a_worker_error() {
+        let notes =
+            notes_from_region_durations(&[5, 0, 0], &[60.0, 61.0], &[1, 1]).unwrap();
+        assert!(notes.is_empty());
+    }
+
+    #[test]
+    fn integer_frame_notes_tile_across_a_long_song_without_overlap() {
+        let frame_count = 35_488;
+        let mut durations = vec![0; frame_count + 1];
+        for frame in 0..frame_count {
+            durations[frame + 1] = 1;
+        }
+        let values = vec![60.0; frame_count];
+        let presence = vec![1_u8; frame_count];
+        let notes = notes_from_region_durations(&durations, &values, &presence).unwrap();
+        assert_eq!(notes.len(), frame_count);
+        let mut previous_end = 0_u64;
+        for note in &notes {
+            assert_eq!(note.offset_micros, previous_end);
+            assert_eq!(note.duration_micros, FRAME_MICROS);
+            previous_end += note.duration_micros;
+        }
+        assert_eq!(previous_end, frame_count as u64 * FRAME_MICROS);
+        assert_eq!(previous_end, 354_880_000);
+    }
+
+    #[test]
+    fn f32_seconds_cannot_be_the_canonical_game_timeline() {
+        let mut offset_seconds = 0.0_f32;
+        let mut overlaps = 0_usize;
+        let mut previous_end = 0_u64;
+        for _ in 0..2_000 {
+            let duration_seconds = 0.01_f32;
+            let start = (f64::from(offset_seconds) * 1_000_000.0).round() as u64;
+            let duration = (f64::from(duration_seconds) * 1_000_000.0).round() as u64;
+            if start < previous_end {
+                overlaps += 1;
+            }
+            previous_end = start + duration;
+            offset_seconds += duration_seconds;
+        }
+        assert!(
+            overlaps > 0,
+            "f32 second accumulation must not be treated as a canonical timeline"
+        );
     }
 }

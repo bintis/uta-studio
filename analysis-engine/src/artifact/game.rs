@@ -330,6 +330,35 @@ mod tests {
     }
 
     #[test]
+    fn worker_integer_seconds_near_late_song_times_do_not_false_overlap() {
+        // These times are the late-song region that f32 accumulation overlapped
+        // by 15 microseconds on 穢れなき薔薇十字. Integer microseconds must parse.
+        let notes = [
+            (258_340_000_u64, 330_000_u64, 73.0),
+            (258_670_000_u64, 240_000_u64, 72.0),
+            (258_910_000_u64, 95_970_000_u64, 60.0),
+        ];
+        let encoded = notes
+            .iter()
+            .map(|(start, duration, midi)| {
+                serde_json::json!({
+                    "start": *start as f64 / 1_000_000.0,
+                    "duration": *duration as f64 / 1_000_000.0,
+                    "midi": midi,
+                    "voiced": true
+                })
+            })
+            .collect();
+        let path = write_game_notes(serde_json::Value::Array(encoded));
+        let evidence = parse_game_evidence(&path, 0, 354_880_000).unwrap();
+        assert_eq!(evidence.notes.len(), 3);
+        assert_eq!(evidence.notes[0].range.start, 258_340_000);
+        assert_eq!(evidence.notes[1].range.start, 258_670_000);
+        assert_eq!(evidence.notes[2].range.end, 354_880_000);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn still_rejects_notes_that_overlap_by_a_full_millisecond() {
         let path = write_game_notes(serde_json::json!([
             {"start":0.0,"duration":0.2,"midi":60.0,"voiced":true},
