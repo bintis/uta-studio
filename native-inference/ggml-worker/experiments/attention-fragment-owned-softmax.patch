@@ -1,0 +1,267 @@
+--- a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
++++ b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
+@@ -29,7 +29,7 @@
+ shared vec4 float_workspace[row_split * 128];
+ shared f16vec4 probability_workspace[row_split * 64];
+ 
+-void main() {
++void shared_attention() {
+     init_indices();
+     const uint lane = gl_SubgroupInvocationID;
+     const uint group = gl_SubgroupID;
+@@ -307,3 +307,255 @@
+         }
+     }
+ }
++
++// Guard the optimized register bridge with actual cooperative-matrix loads.
++// Vulkan does not guarantee a lane/component mapping, even on a named GPU.
++// A different implementation retains the original shared-memory algorithm.
++bool fragment_layout_matches() {
++    if (SubGroupSize != 32 || row_split != 4 || Br != 32 || Bc != 32) {
++        return false;
++    }
++    const uint lane = gl_SubgroupInvocationID;
++    const uint index = gl_LocalInvocationID.x;
++    if (index < 32) {
++        const vec4 coordinates = vec4(float(index * 4)) + vec4(0, 1, 2, 3);
++        float_workspace[index] = coordinates;
++        probability_workspace[index] = f16vec4(coordinates);
++    }
++    barrier();
++    coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator> accumulator_coordinates;
++    coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseA> operand_coordinates;
++    coopMatLoad(accumulator_coordinates, float_workspace, 0, 4, gl_CooperativeMatrixLayoutRowMajor);
++    coopMatLoad(operand_coordinates, probability_workspace, 0, 4, gl_CooperativeMatrixLayoutRowMajor);
++    uint mismatch = 0;
++    if (accumulator_coordinates.length() != 4 || operand_coordinates.length() != 4) {
++        mismatch = 1;
++    } else {
++        [[unroll]] for (int component = 0; component < 4; ++component) {
++            const uint accumulator_index = (lane / 16 + uint(component) * 2) * 16 + lane % 16;
++            const uint operand_index = (lane / 8 + uint(component / 2) * 4) * 16 + (lane % 8) * 2 + uint(component % 2);
++            if (accumulator_coordinates[component] != float(accumulator_index) ||
++                float(operand_coordinates[component]) != float(operand_index)) {
++                mismatch = 1;
++            }
++        }
++    }
++    mismatch = subgroupMax(mismatch);
++    if (lane == 0) {
++        float_workspace[32 + gl_SubgroupID] = vec4(float(mismatch));
++    }
++    barrier();
++    const bool matches = float_workspace[32].x == 0.0 && float_workspace[33].x == 0.0 &&
++                         float_workspace[34].x == 0.0 && float_workspace[35].x == 0.0;
++    barrier();
++    return matches;
++}
++
++coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseA>
++fragment_probabilities(f16vec4 probabilities) {
++    // Accumulator components cover four alternating rows, one column per lane.
++    // The A operand packs adjacent columns and covers two rows per lane.
++    // Exchange packed half pairs, without another probability rounding step.
++    const uint lane = gl_SubgroupInvocationID;
++    const uint source = (lane % 16) * 2;
++    const uint shift = (lane / 16) * 16;
++    const uint lower = packHalf2x16(vec2(probabilities.xy));
++    const uint upper = packHalf2x16(vec2(probabilities.zw));
++    const uint lower_even = subgroupShuffle(lower, source);
++    const uint lower_odd = subgroupShuffle(lower, source + 1);
++    const uint upper_even = subgroupShuffle(upper, source);
++    const uint upper_odd = subgroupShuffle(upper, source + 1);
++    const vec2 lower_pair = unpackHalf2x16(((lower_even >> shift) & 0xFFFFu) | ((lower_odd >> shift) << 16));
++    const vec2 upper_pair = unpackHalf2x16(((upper_even >> shift) & 0xFFFFu) | ((upper_odd >> shift) << 16));
++    coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseA> result;
++    result[0] = float16_t(lower_pair.x);
++    result[1] = float16_t(lower_pair.y);
++    result[2] = float16_t(upper_pair.x);
++    result[3] = float16_t(upper_pair.y);
++    return result;
++}
++
++void fragment_attention() {
++    init_indices();
++    const uint lane = gl_SubgroupInvocationID;
++    const uint group = gl_SubgroupID;
++    const uint first_query = i * Br + group * 8;
++    const uint operand_base = group * 128;
++    const uint query_base = (iq2 * p.nb02 + iq3 * p.nb03) / 4;
++    const uint key_base = (ik2 * p.nb12 + ik3 * p.nb13) / 2;
++    const uint value_base = (iv2 * p.nb22 + iv3 * p.nb23) / 2;
++    uint mask_base = 0;
++    if (p.nem2 != 1 || p.nem3 != 1) {
++        mask_base = ((iq3 % p.nem3) * p.nem2 + (iq2 % p.nem2)) * p.nem1 * KV;
++    }
++    const float negative = uintBitsToFloat(0xFEFFFFFF);
++    const float head_slope = p.max_bias > 0.0
++        ? float(perElemOpComputeSlope(0, 0, ACC_TYPE(0), iq2)) : 1.0;
++
++    [[unroll]] for (uint index = lane; index < 128; index += SubGroupSize) {
++        const uint row = index / 16;
++        const uint depth = (index % 16) * 4;
++        vec4 query = vec4(0);
++        if (first_query + row < N) {
++            const uint address = query_base + (first_query + row) * q_stride + depth;
++            query = vec4(query_data[address], query_data[address + 1],
++                         query_data[address + 2], query_data[address + 3]);
++        }
++        operand_workspace[operand_base + index] = f16vec4(query * p.scale);
++    }
++    subgroupBarrier();
++    coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseA> queries[4];
++    [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
++        coopMatLoad(queries[depth_tile], operand_workspace,
++                    operand_base + depth_tile * 4, 16, gl_CooperativeMatrixLayoutRowMajor);
++    }
++    barrier();
++    coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator> output_tiles[4];
++    [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
++        output_tiles[depth_tile] = coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator>(0);
++    }
++    vec4 running_maximum = vec4(negative);
++    vec4 normalizer = vec4(0);
++
++    [[dont_unroll]] for (uint block = start_j; block < end_j; ++block) {
++        [[unroll]] for (uint index = gl_LocalInvocationID.x; index < 512; index += WorkGroupSize) {
++            const uint row = block * 32 + index / 16;
++            const uint address = key_base + row * k_stride + (index % 16) * 4;
++            f16vec4 values = f16vec4(0);
++            if (row < KV) {
++                if ((address & 3) == 0) {
++                    values = key_vectors[address / 4];
++                } else {
++                    values = f16vec4(key_data[address], key_data[address + 1], key_data[address + 2], key_data[address + 3]);
++                }
++            }
++            operand_workspace[index] = values;
++        }
++        barrier();
++
++        vec4 score_vectors[2];
++        [[unroll]] for (uint key_tile = 0; key_tile < 2; ++key_tile) {
++            coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator> scores =
++                coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator>(0);
++            [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
++                coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> keys;
++                coopMatLoad(keys, operand_workspace, key_tile * 256 + depth_tile * 4,
++                            16, gl_CooperativeMatrixLayoutColumnMajor);
++                scores = coopMatMulAdd(queries[depth_tile], keys, scores);
++            }
++            vec4 values;
++            [[unroll]] for (int component = 0; component < 4; ++component) {
++                values[component] = scores[component];
++            }
++            if (LOGIT_SOFTCAP) {
++                values = p.logit_softcap * tanh(values);
++            }
++            const uint key_column = block * 32 + key_tile * 16 + lane % 16;
++            [[unroll]] for (uint component = 0; component < 4; ++component) {
++                const uint query_row = first_query + lane / 16 + component * 2;
++                if (key_column >= KV) {
++                    values[component] = negative;
++                } else if (MASK_ENABLE && query_row < N && query_row < p.nem1) {
++                    values[component] += head_slope * float(mask_data[mask_base + query_row * m_stride + key_column]);
++                }
++            }
++            score_vectors[key_tile] = values;
++        }
++
++        // Keep QK fragments in their native row distribution. Sixteen lanes
++        // reduce each row; no score store/reload or four-lane redistribution.
++        vec4 maximum = max(score_vectors[0], score_vectors[1]);
++        maximum = max(maximum, subgroupShuffleXor(maximum, 1));
++        maximum = max(maximum, subgroupShuffleXor(maximum, 2));
++        maximum = max(maximum, subgroupShuffleXor(maximum, 4));
++        maximum = max(maximum, subgroupShuffleXor(maximum, 8));
++        maximum = max(running_maximum, maximum + vec4(FATTN_KQ_MAX_OFFSET));
++        const vec4 rescale = exp(running_maximum - maximum);
++        running_maximum = maximum;
++        normalizer *= rescale;
++        coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseA> probabilities[2];
++        [[unroll]] for (uint key_tile = 0; key_tile < 2; ++key_tile) {
++            f16vec4 values = f16vec4(exp(score_vectors[key_tile] - maximum));
++            if (block * 32 + key_tile * 16 + lane % 16 >= KV) {
++                values = f16vec4(0);
++            }
++            normalizer += vec4(values);
++            probabilities[key_tile] = fragment_probabilities(values);
++        }
++        [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
++            [[unroll]] for (int component = 0; component < 4; ++component) {
++                output_tiles[depth_tile][component] *= rescale[component];
++            }
++        }
++
++        // Subgroups may do register softmax while peers finish QK. Synchronize
++        // only when K storage is actually about to be overwritten with V.
++        barrier();
++        [[unroll]] for (uint index = gl_LocalInvocationID.x; index < 512; index += WorkGroupSize) {
++            const uint row = block * 32 + index / 16;
++            const uint address = value_base + row * v_stride + (index % 16) * 4;
++            f16vec4 values = f16vec4(0);
++            if (row < KV) {
++                if ((address & 3) == 0) {
++                    values = value_vectors[address / 4];
++                } else {
++                    values = f16vec4(value_data[address], value_data[address + 1], value_data[address + 2], value_data[address + 3]);
++                }
++            }
++            operand_workspace[index] = values;
++        }
++        barrier();
++        [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
++            coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator> product =
++                coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator>(0);
++            [[unroll]] for (uint key_tile = 0; key_tile < 2; ++key_tile) {
++                coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> values;
++                coopMatLoad(values, operand_workspace, key_tile * 256 + depth_tile * 4,
++                            16, gl_CooperativeMatrixLayoutRowMajor);
++                product = coopMatMulAdd(probabilities[key_tile], values, product);
++            }
++            output_tiles[depth_tile] = output_tiles[depth_tile] + product;
++        }
++        barrier();
++    }
++
++    normalizer += subgroupShuffleXor(normalizer, 1);
++    normalizer += subgroupShuffleXor(normalizer, 2);
++    normalizer += subgroupShuffleXor(normalizer, 4);
++    normalizer += subgroupShuffleXor(normalizer, 8);
++    vec4 final_scale = vec4(1);
++    [[unroll]] for (uint component = 0; component < 4; ++component) {
++        const uint row = first_query + lane / 16 + component * 2;
++        if (p.k_num == 1) {
++            if ((p.mask_n_head_log2 & SINK_ENABLE_BIT) != 0) {
++                const float sink = float(perElemOpGetSink(row - first_query, 0, ACC_TYPE(0), iq2));
++                const float maximum = max(running_maximum[component], sink);
++                final_scale[component] = exp(running_maximum[component] - maximum);
++                normalizer[component] = normalizer[component] * final_scale[component] + exp(sink - maximum);
++            }
++            final_scale[component] = normalizer[component] == 0.0 ? 0.0 : final_scale[component] / normalizer[component];
++        } else if (lane % 16 == 0 && row < N) {
++            const uint address = HSV * p.ne1 * p.k_num * p.ne2 * p.ne3
++                + p.ne1 * 2 * (split_k_index + p.k_num * (row + p.ne2 * iq3));
++            data_o[address + iq2] = normalizer[component];
++            data_o[address + p.ne1 + iq2] = running_maximum[component];
++        }
++        if (row < N) {
++            [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
++                const uint depth = depth_tile * 16 + lane % 16;
++                const uint address = p.k_num > 1
++                    ? HSV * p.ne1 * (split_k_index + p.k_num * (row + p.ne2 * iq3)) + iq2 * 64 + depth
++                    : iq3 * p.ne2 * p.ne1 * HSV + (row * p.ne1 + iq2) * HSV + depth;
++                data_o[address] = output_tiles[depth_tile][component] * final_scale[component];
++            }
++        }
++    }
++}
++
++void main() {
++    if (fragment_layout_matches()) {
++        fragment_attention();
++    } else {
++        shared_attention();
++    }
++}
