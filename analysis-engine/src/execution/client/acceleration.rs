@@ -175,6 +175,9 @@ pub(super) fn start_next(task: &NativeTask) -> Option<String> {
 }
 
 #[cfg(all(test, unix))]
+mod cleanup_tests;
+
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
