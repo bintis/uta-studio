@@ -2,6 +2,7 @@
 //! Each invocation loads one library set; GGML's plugin registry is process-global.
 
 mod gemm;
+mod query_owned;
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -247,9 +248,16 @@ fn run_shape(backend: &GgmlBackendHandle, s: Shape, timed_calls: usize) {
         let mut squared_error = 0.0;
         let mut reference_energy = 0.0;
         let mut checked = 0;
+        // Small regressions check every query, including every subgroup/tile tail.
+        // Large throughput fixtures retain a bounded full-context reference sample.
+        let query_positions: Vec<usize> = if s.queries <= 65 {
+            (0..s.queries).collect()
+        } else {
+            vec![0, s.queries / 2, s.queries - 1]
+        };
         for b in [0, s.batches - 1] {
             for h in [0, s.heads - 1] {
-                for t in [0, s.queries / 2, s.queries - 1] {
+                for &t in &query_positions {
                     let scores: Vec<f64> = (0..s.keys)
                         .map(|key| {
                             if s.masked && key > t {
