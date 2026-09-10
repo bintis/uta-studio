@@ -1,5 +1,9 @@
 # B580 H64 attention: query-owned subgroups
 
+The subsequent eight-subgroup/compact-scratch optimization is documented in
+[Fragment reuse and shared workgroups](ROFORMER_B580_FRAGMENT_HANDOFF.md).
+The measurements below remain the separate seven-patch investigation.
+
 ## Accepted implementation and scope
 
 Measured on 2026-09-10, Intel Arc B580, Mesa 26.2.2, pinned upstream GGML
