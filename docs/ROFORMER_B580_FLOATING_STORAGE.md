@@ -171,3 +171,13 @@ tests passed, with 31 opt-in runtime tests ignored by that ordinary invocation.
 The 61 GPU fixtures above were executed separately, not counted as ordinary
 passes. `test-artifacts/operations/20260910T044331-bed31ba25804/` records successful
 Rust formatting, whitespace and canonical product-identity checks.
+
+## Follow-up: compact row-scale publication
+
+Patch `0010-vulkan-attention-compact-row-scales.patch` separates eight F32 row
+scales from score scratch and removes one hot-loop subgroup barrier. It keeps
+this storage extension and tensor/device eligibility unchanged. Paired shape
+measurements show a small kernel improvement; XE90, Harmony and Denoise retain
+byte-identical complete outputs against this nine-patch backend, but no
+consistent whole-model speedup is established. The padded-handoff experiment
+is rejected. See [the complete measurements and limits](ROFORMER_B580_COMPACT_RESCALE.md).
