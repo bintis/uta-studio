@@ -1,0 +1,26 @@
+diff --git a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
+--- a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
++++ b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
+@@ -190,8 +190,8 @@
+-        subgroupBarrier();
+-        // Row-major 8x16 broadcast matrix: no fragment-to-lane assumption.
+-        [[unroll]] for (uint column = row_lane; column < 4; column += lanes_per_row) {
+-            float_workspace[float_base + local_row * 4 + column] = vec4(rescale);
++        // Scores occupy only the first 64 vec4s; publish eight row scales in
++        // the unused output scratch without overwriting another lane's scores.
++        if (row_lane == 0) {
++            float_workspace[float_base + 64 + local_row / 4][local_row % 4] = rescale;
+         }
+         subgroupBarrier();
+         coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator> rescale_matrix;
+-        coopMatLoad(rescale_matrix, float_workspace, float_base, 4, gl_CooperativeMatrixLayoutRowMajor);
++        coopMatLoad(rescale_matrix, float_workspace, float_base + 64, 0, gl_CooperativeMatrixLayoutColumnMajor);
+@@ -280,3 +280,3 @@
+-    [[unroll]] for (uint column = row_lane; column < 4; column += lanes_per_row) {
+-        float_workspace[float_base + local_row * 4 + column] = vec4(final_scale);
++    if (row_lane == 0) {
++        float_workspace[float_base + 64 + local_row / 4][local_row % 4] = final_scale;
+     }
+@@ -291,1 +291,1 @@
+-    coopMatLoad(normalization, float_workspace, float_base, 4, gl_CooperativeMatrixLayoutRowMajor);
++    coopMatLoad(normalization, float_workspace, float_base + 64, 0, gl_CooperativeMatrixLayoutColumnMajor);
