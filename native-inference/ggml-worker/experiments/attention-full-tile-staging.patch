@@ -1,0 +1,78 @@
+--- a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
++++ b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
+@@ -88,19 +88,28 @@
+ 
+     [[dont_unroll]] for (uint block = start_j; block < end_j; ++block) {
+         if (row_split == 4) {
+-            // One coalesced 32x64 K tile serves all 32 queries in the workgroup.
+-            [[unroll]] for (uint index = gl_LocalInvocationID.x; index < 512; index += WorkGroupSize) {
+-                const uint row = block * 32 + index / 16;
+-                const uint address = key_base + row * k_stride + (index % 16) * 4;
+-                f16vec4 values = f16vec4(0);
+-                if (row < KV) {
+-                    if ((address & 3) == 0) {
+-                        values = key_vectors[address / 4];
+-                    } else {
+-                        values = f16vec4(key_data[address], key_data[address + 1], key_data[address + 2], key_data[address + 3]);
++            // A workgroup-uniform full-tile path avoids repeated per-vector
++            // bounds/alignment decisions. The final or unaligned tile retains
++            // the scalar-safe loading path and zero padding below.
++            if (block * 32 + 32 <= KV && ((key_base | k_stride) & 3) == 0) {
++                [[unroll]] for (uint index = gl_LocalInvocationID.x; index < 512; index += WorkGroupSize) {
++                    const uint address = key_base / 4 + (block * 32 + index / 16) * (k_stride / 4) + index % 16;
++                    operand_workspace[index] = key_vectors[address];
++                }
++            } else {
++                [[unroll]] for (uint index = gl_LocalInvocationID.x; index < 512; index += WorkGroupSize) {
++                    const uint row = block * 32 + index / 16;
++                    const uint address = key_base + row * k_stride + (index % 16) * 4;
++                    f16vec4 values = f16vec4(0);
++                    if (row < KV) {
++                        if ((address & 3) == 0) {
++                            values = key_vectors[address / 4];
++                        } else {
++                            values = f16vec4(key_data[address], key_data[address + 1], key_data[address + 2], key_data[address + 3]);
++                        }
+                     }
++                    operand_workspace[index] = values;
+                 }
+-                operand_workspace[index] = values;
+             }
+             barrier();
+         }
+@@ -199,18 +208,25 @@
+             output_tiles[depth_tile] = output_tiles[depth_tile] * rescale_matrix;
+         }
+         if (row_split == 4) {
+-            [[unroll]] for (uint index = gl_LocalInvocationID.x; index < 512; index += WorkGroupSize) {
+-                const uint row = block * 32 + index / 16;
+-                const uint address = value_base + row * v_stride + (index % 16) * 4;
+-                f16vec4 values = f16vec4(0);
+-                if (row < KV) {
+-                    if ((address & 3) == 0) {
+-                        values = value_vectors[address / 4];
+-                    } else {
+-                        values = f16vec4(value_data[address], value_data[address + 1], value_data[address + 2], value_data[address + 3]);
++            if (block * 32 + 32 <= KV && ((value_base | v_stride) & 3) == 0) {
++                [[unroll]] for (uint index = gl_LocalInvocationID.x; index < 512; index += WorkGroupSize) {
++                    const uint address = value_base / 4 + (block * 32 + index / 16) * (v_stride / 4) + index % 16;
++                    operand_workspace[index] = value_vectors[address];
++                }
++            } else {
++                [[unroll]] for (uint index = gl_LocalInvocationID.x; index < 512; index += WorkGroupSize) {
++                    const uint row = block * 32 + index / 16;
++                    const uint address = value_base + row * v_stride + (index % 16) * 4;
++                    f16vec4 values = f16vec4(0);
++                    if (row < KV) {
++                        if ((address & 3) == 0) {
++                            values = value_vectors[address / 4];
++                        } else {
++                            values = f16vec4(value_data[address], value_data[address + 1], value_data[address + 2], value_data[address + 3]);
++                        }
+                     }
++                    operand_workspace[index] = values;
+                 }
+-                operand_workspace[index] = values;
+             }
+             barrier();
+         }
