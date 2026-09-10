@@ -1,6 +1,7 @@
 #![allow(clippy::all)]
 
 mod audio;
+mod audio_cache;
 mod engine;
 mod firered;
 mod game;
@@ -44,6 +45,7 @@ fn run_task(
     } else {
         None
     };
+    let _audio_cache = audio_cache::Scope::enter(config);
     let outputs = engine::run(
         task_id,
         model_id,

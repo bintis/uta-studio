@@ -51,6 +51,9 @@ fn decode_wav(
     if destination.exists() {
         return Err("GGML decoded input target already exists".to_string());
     }
+    if crate::audio_cache::restore(source, sample_rate, channels, &destination) {
+        return Ok(destination);
+    }
     let mut command = Command::new(ffmpeg_path()?);
     command
         .args(["-v", "error", "-nostdin", "-i"])
@@ -74,6 +77,7 @@ fn decode_wav(
     if !destination.is_file() {
         return Err("ffmpeg did not publish the GGML input WAV".to_string());
     }
+    crate::audio_cache::store(source, sample_rate, channels, &destination);
     Ok(destination)
 }
 
