@@ -531,7 +531,7 @@ impl SegmentCandidate {
             }
         }
         let event_support = note_event_support(self);
-        let event_quality = (event_support / 1.75).clamp(0.0, 1.0);
+        let event_quality = (event_support / 1.5).clamp(0.0, 1.0);
         let shortness = ((0.2 - duration_seconds) / 0.16).clamp(0.0, 1.0);
         if onset_supported(self) {
             utility += 0.7 * event_quality;
@@ -573,9 +573,9 @@ fn onset_supported(candidate: &SegmentCandidate) -> bool {
             .is_some_and(|features| features.onset_supported)
 }
 
-/// Duration-dependent independent support for a semantic note event. A short
-/// event needs a strong source plus primary segmentation, a calibrated boundary,
-/// or corroboration from another evidence family.
+/// Boundary-local support for a semantic note event. Sustained pitch evidence
+/// deliberately does not count here: stable F0 can validate a pitch target, but
+/// it cannot turn a carried tone into a new onset.
 fn note_event_support(candidate: &SegmentCandidate) -> f32 {
     let boundary = if candidate.boundary_hard {
         1.5
@@ -602,7 +602,7 @@ fn note_event_support(candidate: &SegmentCandidate) -> f32 {
                 .filter(|features| features.onset_supported == Some(true))
                 .map_or(0.0, |_| 0.8),
         );
-    boundary + attack + sustained_pitch_support(candidate) * 0.7
+    boundary + attack
 }
 
 fn target_relative_expert_support(
