@@ -1,4 +1,5 @@
 #include "runtime.hpp"
+#include "projection.hpp"
 #include <cmath>
 #include <numeric>
 #include <stdexcept>
@@ -91,7 +92,7 @@ public:
             const auto prefix = "band_split." + std::to_string(band) + '.';
             auto input = features.narrow(1, offset, widths[band]);
             auto normalized = weights->rms_norm(input, prefix + (public_names ? "norm" : "norm.weight"), 1e-12);
-            bands.push_back(at::linear(normalized, weights->get(prefix + (public_names ? "w" : "linear.weight")),
+            bands.push_back(project(normalized, weights->get(prefix + (public_names ? "w" : "linear.weight")),
                                       weights->get(prefix + (public_names ? "b" : "linear.bias"))));
             offset += widths[band];
         }
@@ -123,8 +124,8 @@ public:
                 auto current = value.select(1, static_cast<int64_t>(band));
                 if (public_names) {
                     const auto prefix = "mask." + std::to_string(stem) + '.' + std::to_string(band) + '.';
-                    current = at::tanh(at::linear(current, weights->get(prefix + "w1"), weights->get(prefix + "b1")));
-                    current = at::linear(current, weights->get(prefix + "w2"), weights->get(prefix + "b2"));
+                    current = at::tanh(project(current, weights->get(prefix + "w1"), weights->get(prefix + "b1")));
+                    current = project(current, weights->get(prefix + "w2"), weights->get(prefix + "b2"));
                 } else {
                     const auto prefix = "mask_est." + std::to_string(stem) + ".freq." + std::to_string(band) + ".mlp.";
                     for (int64_t layer = 0; layer < mask_layers; ++layer) {
@@ -155,6 +156,11 @@ public:
         return {{"spectrum", stems == 1 ? separated.front() : at::stack(separated, 0)}};
     }
 private:
+    at::Tensor project(const at::Tensor& input, const at::Tensor& weight, const at::Tensor& bias = {}) const {
+        if (runtime->backend != "libtorch_rocm" || input.numel() / input.size(-1) <= 1024)
+            return at::linear(input, weight, bias);
+        return tiled_projection(input, weight, bias, [this] { check_cancel(); });
+    }
     std::string architecture;
     bool public_names = false, polar = false, final_norm = false, output_norm = false, skips = false, zero_dc = false;
     int64_t fft = 0, dimension = 0, depth = 0, heads = 0, head_dimension = 0, stems = 0, mask_layers = 0;
@@ -199,7 +205,7 @@ private:
         auto normalized = weights->rms_norm(sequence, name(prefix, "attn_norm", "norm.weight"), 1e-12);
         runtime->checkpoint(prefix + ".normalization");
         const auto batch = sequence.size(0), length = sequence.size(1);
-        auto qkv = at::linear(normalized, weights->get(name(prefix, "qkv", "qkv.weight"))).chunk(3, -1);
+        auto qkv = project(normalized, weights->get(name(prefix, "qkv", "qkv.weight"))).chunk(3, -1);
         runtime->checkpoint(prefix + ".qkv");
         auto query = qkv[0].reshape({batch, length, heads, head_dimension}).transpose(1, 2);
         auto key = qkv[1].reshape({batch, length, heads, head_dimension}).transpose(1, 2);
@@ -213,18 +219,18 @@ private:
             ? fused_attention(query, key, value, {}, false, false, scale)
             : dense_attention(query, key, value, {}, false, scale);
         runtime->checkpoint(prefix + ".attention");
-        auto gates = at::sigmoid(at::linear(normalized, weights->get(name(prefix, "gates_w", "gate.weight")),
+        auto gates = at::sigmoid(project(normalized, weights->get(name(prefix, "gates_w", "gate.weight")),
                                             weights->get(name(prefix, "gates_b", "gate.bias"))));
         attended = attended.transpose(1, 2) * gates.unsqueeze(-1);
         attended = attended.reshape({batch, length, heads * head_dimension});
-        return sequence + at::linear(attended, weights->get(name(prefix, "out", "out.weight")));
+        return sequence + project(attended, weights->get(name(prefix, "out", "out.weight")));
     }
     at::Tensor feed_forward(const at::Tensor& sequence, const std::string& prefix) const {
         auto current = weights->rms_norm(sequence, name(prefix, "ff_norm", "norm.weight"), 1e-12);
-        current = at::linear(current, weights->get(name(prefix, "ff1_w", "in.weight")), weights->get(name(prefix, "ff1_b", "in.bias")));
+        current = project(current, weights->get(name(prefix, "ff1_w", "in.weight")), weights->get(name(prefix, "ff1_b", "in.bias")));
         runtime->checkpoint(prefix + ".feed_forward_projection");
         current = at::gelu(current, "none");
-        return sequence + at::linear(current, weights->get(name(prefix, "ff2_w", "out.weight")), weights->get(name(prefix, "ff2_b", "out.bias")));
+        return sequence + project(current, weights->get(name(prefix, "ff2_w", "out.weight")), weights->get(name(prefix, "ff2_b", "out.bias")));
     }
 };
 } // namespace
