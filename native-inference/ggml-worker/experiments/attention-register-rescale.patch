@@ -1,0 +1,69 @@
+--- a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
++++ b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
+@@ -79,6 +79,17 @@
+         subgroupBarrier();
+     }
+ 
++    // Discover the implementation's accumulator row ownership once. Every
++    // component records the lane holding its row's scalar softmax state. This
++    // avoids assuming a particular cooperative-matrix component distribution.
++    [[unroll]] for (uint index = lane; index < 32; index += SubGroupSize) {
++        float_workspace[float_base + index] = vec4(float((index / 4) * lanes_per_row));
++    }
++    subgroupBarrier();
++    coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator> row_sources;
++    coopMatLoad(row_sources, float_workspace, float_base, 4, gl_CooperativeMatrixLayoutRowMajor);
++    subgroupBarrier();
++
+     coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator> output_tiles[4];
+     [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
+         output_tiles[depth_tile] = coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator>(0);
+@@ -188,15 +199,13 @@
+             probability_workspace[probability_base + local_row * 8 + row_lane * packs_per_lane + part] = probabilities;
+         }
+         subgroupBarrier();
+-        // Row-major 8x16 broadcast matrix: no fragment-to-lane assumption.
+-        [[unroll]] for (uint column = row_lane; column < 4; column += lanes_per_row) {
+-            float_workspace[float_base + local_row * 4 + column] = vec4(rescale);
+-        }
+-        subgroupBarrier();
+-        coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator> rescale_matrix;
+-        coopMatLoad(rescale_matrix, float_workspace, float_base, 4, gl_CooperativeMatrixLayoutRowMajor);
+-        [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
+-            output_tiles[depth_tile] = output_tiles[depth_tile] * rescale_matrix;
++        // Transfer the row scale directly to each owned accumulator component.
++        // QK scores and probabilities keep their existing shared-memory layout.
++        [[unroll]] for (int component = 0; component < row_sources.length(); ++component) {
++            const float scale = subgroupShuffle(rescale, uint(row_sources[component]));
++            [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
++                output_tiles[depth_tile][component] *= scale;
++            }
+         }
+         if (row_split == 4) {
+             [[unroll]] for (uint index = gl_LocalInvocationID.x; index < 512; index += WorkGroupSize) {
+@@ -277,8 +286,11 @@
+         }
+         final_scale = normalizer == 0.0 ? 0.0 : final_scale / normalizer;
+     }
+-    [[unroll]] for (uint column = row_lane; column < 4; column += lanes_per_row) {
+-        float_workspace[float_base + local_row * 4 + column] = vec4(final_scale);
++    [[unroll]] for (int component = 0; component < row_sources.length(); ++component) {
++        const float scale = subgroupShuffle(final_scale, uint(row_sources[component]));
++        [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
++            output_tiles[depth_tile][component] *= scale;
++        }
+     }
+     if (p.k_num > 1 && row_lane == 0 && first_query + local_row < N) {
+         const uint address = HSV * p.ne1 * p.k_num * p.ne2 * p.ne3
+@@ -287,11 +299,7 @@
+         data_o[address + p.ne1 + iq2] = running_maximum;
+     }
+     subgroupBarrier();
+-    coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator> normalization;
+-    coopMatLoad(normalization, float_workspace, float_base, 4, gl_CooperativeMatrixLayoutRowMajor);
+-    subgroupBarrier();
+     [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
+-        output_tiles[depth_tile] = output_tiles[depth_tile] * normalization;
+         coopMatStore(output_tiles[depth_tile], float_workspace, float_base + depth_tile * 4,
+                      16, gl_CooperativeMatrixLayoutRowMajor);
+     }
