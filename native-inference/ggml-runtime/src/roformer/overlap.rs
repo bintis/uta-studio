@@ -401,11 +401,11 @@ mod tests {
 
     #[test]
     fn a_lone_remaining_chunk_does_not_construct_a_cold_secondary() {
-        let input = vec![0.25; 1024];
+        let input = vec![0.25; 512];
         let (output, stats) = process_dual(
             &input,
             256,
-            1,
+            2,
             |chunk| Ok(vec![chunk.to_vec()]),
             || -> Result<fn(&[f32]) -> Result<Vec<Vec<f32>>, String>, String> {
                 panic!("a cold secondary cannot amortize its setup on the final chunk")
