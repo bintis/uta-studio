@@ -2,9 +2,6 @@
 #include "projection.hpp"
 #include "attention_partition.hpp"
 #include "roformer_ops.hpp"
-#if defined(UTA_LIBTORCH_ROFORMER_REDUCED_MATMUL)
-#include "roformer_projection.hpp"
-#endif
 #include <cmath>
 #include <numeric>
 #include <iostream>
@@ -167,12 +164,7 @@ private:
             ? fused_roformer_normalization(input, weights->get(name))
             : weights->rms_norm(input, name, 1e-12);
     }
-    at::Tensor project(const at::Tensor& input, const at::Tensor& weight, const at::Tensor& bias = {},
-                       [[maybe_unused]] bool diagnostic_reduced = false) const {
-#if defined(UTA_LIBTORCH_ROFORMER_REDUCED_MATMUL)
-        if (diagnostic_reduced && runtime->backend == "libtorch_xpu")
-            return diagnostic_roformer_projection(input, weight, bias);
-#endif
+    at::Tensor project(const at::Tensor& input, const at::Tensor& weight, const at::Tensor& bias = {}) const {
         if (runtime->backend != "libtorch_rocm" || input.numel() / input.size(-1) <= 1024)
             return at::linear(input, weight, bias);
         return tiled_projection(input, weight, bias, [this] { check_cancel(); });
@@ -222,7 +214,7 @@ private:
         auto normalized = normalize(sequence, name(prefix, "attn_norm", "norm.weight"));
         runtime->checkpoint(prefix + ".normalization");
         const auto batch = sequence.size(0), length = sequence.size(1);
-        auto qkv = project(normalized, weights->get(name(prefix, "qkv", "qkv.weight")), {}, true).chunk(3, -1);
+        auto qkv = project(normalized, weights->get(name(prefix, "qkv", "qkv.weight"))).chunk(3, -1);
         runtime->checkpoint(prefix + ".qkv");
         auto query = qkv[0].reshape({batch, length, heads, head_dimension}).transpose(1, 2);
         auto key = qkv[1].reshape({batch, length, heads, head_dimension}).transpose(1, 2);
@@ -258,10 +250,10 @@ private:
     }
     at::Tensor feed_forward(const at::Tensor& sequence, const std::string& prefix) const {
         auto current = normalize(sequence, name(prefix, "ff_norm", "norm.weight"));
-        current = project(current, weights->get(name(prefix, "ff1_w", "in.weight")), weights->get(name(prefix, "ff1_b", "in.bias")), true);
+        current = project(current, weights->get(name(prefix, "ff1_w", "in.weight")), weights->get(name(prefix, "ff1_b", "in.bias")));
         runtime->checkpoint(prefix + ".feed_forward_projection");
         current = at::gelu(current, "none");
-        return sequence + project(current, weights->get(name(prefix, "ff2_w", "out.weight")), weights->get(name(prefix, "ff2_b", "out.bias")), true);
+        return sequence + project(current, weights->get(name(prefix, "ff2_w", "out.weight")), weights->get(name(prefix, "ff2_b", "out.bias")));
     }
 };
 } // namespace

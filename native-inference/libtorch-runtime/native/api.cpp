@@ -84,11 +84,7 @@ const char* uta_libtorch_build_info(void) noexcept {
                 result += uta::torch_native::json_string(resource);
                 first = false;
             }
-#if defined(UTA_LIBTORCH_ROFORMER_REDUCED_MATMUL)
-            result += "],\"roformer_projection_math\":\"tf32_qkv_ffn_single_model_diagnostic\"";
-#else
             result += "],\"roformer_projection_math\":\"ieee\"";
-#endif
             return result + ",\"qualification\":\"not_asserted\"}";
         }();
         return description.c_str();
