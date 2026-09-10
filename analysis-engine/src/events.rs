@@ -70,6 +70,7 @@ struct EventIdentity {
     implementation: String,
 }
 
+#[derive(Clone)]
 struct EventContext {
     sink: EngineEventSink,
     request_id: String,
@@ -81,6 +82,29 @@ thread_local! {
     static EVENT_CONTEXT: RefCell<Option<EventContext>> = const { RefCell::new(None) };
 }
 
+#[derive(Clone)]
+pub(crate) struct EventSnapshot(Option<EventContext>);
+pub(crate) struct EventScope {
+    previous: Option<EventContext>,
+    thread: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+impl EventSnapshot {
+    pub(crate) fn capture() -> Self {
+        Self(EVENT_CONTEXT.with(|slot| slot.borrow().clone()))
+    }
+    pub(crate) fn enter(&self) -> EventScope {
+        EventScope {
+            previous: EVENT_CONTEXT.with(|slot| slot.replace(self.0.clone())),
+            thread: std::marker::PhantomData,
+        }
+    }
+}
+impl Drop for EventScope {
+    fn drop(&mut self) {
+        EVENT_CONTEXT.with(|slot| slot.replace(self.previous.take()));
+    }
+}
+
 pub(crate) fn with_event_sink<T>(
     request_id: &str,
     workflow: Option<WorkflowExecution>,
@@ -88,17 +112,14 @@ pub(crate) fn with_event_sink<T>(
     sink: EngineEventSink,
     execute: impl FnOnce() -> T,
 ) -> T {
-    EVENT_CONTEXT.with(|slot| {
-        let previous = slot.replace(Some(EventContext {
-            sink,
-            request_id: request_id.to_string(),
-            workflow,
-            plan_nodes,
-        }));
-        let output = execute();
-        slot.replace(previous);
-        output
-    })
+    let _scope = EventSnapshot(Some(EventContext {
+        sink,
+        request_id: request_id.to_string(),
+        workflow,
+        plan_nodes,
+    }))
+    .enter();
+    execute()
 }
 
 pub(crate) struct LifecycleNodeGuard {

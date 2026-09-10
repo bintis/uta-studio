@@ -49,6 +49,7 @@ mod acceleration;
 mod export;
 mod output_guard;
 mod runtime_route;
+mod tasks;
 mod worker_tasks;
 mod workflow_execution;
 use output_guard::OutputRunGuard;
@@ -218,6 +219,18 @@ impl AnalysisEngine {
         output_dir: impl AsRef<Path>,
         cancellation: &CancellationToken,
     ) -> EngineResult<AnalysisResultManifest> {
+        let owner = tasks::Owner::new(cancellation);
+        let result = self.analyze_owned(request, output_dir.as_ref(), &owner);
+        owner.finish(result)
+    }
+
+    fn analyze_owned(
+        &self,
+        request: &AnalyzeRequest,
+        output_dir: &Path,
+        owner: &tasks::Owner,
+    ) -> EngineResult<AnalysisResultManifest> {
+        let cancellation = &owner.cancellation;
         if cancellation.is_cancelled() {
             return Err(cancelled(request));
         }
@@ -658,41 +671,47 @@ impl AnalysisEngine {
                 guide_vocal_profile.as_ref(),
             )
         });
-        let (acoustic_evidence, acoustic_artifact) =
-            if has_capability(&plan, "analysis.acoustic_dsp") {
-                let (input, role) = workflow_bound_audio(
-                    plan.workflow_execution.as_ref(),
-                    "analysis.acoustic_dsp",
-                    &workflow_audio,
-                    &analysis_input,
-                    analysis_role,
-                )?;
-                let lifecycle = begin_node(
-                    "acoustic-dsp",
-                    "analysis.acoustic_dsp",
-                    None,
-                    ACOUSTIC_DSP_VERSION,
-                );
-                let evidence = analyze_acoustic_evidence(
-                    &ffmpeg,
-                    &input,
-                    &role,
-                    source_start,
-                    source_duration,
-                    cancellation,
-                )?;
-                let artifact = write_json_artifact(
-                    &output_root,
-                    Path::new("evidence/acoustic-evidence.json"),
-                    ACOUSTIC_MEDIA_TYPE,
-                    &evidence,
-                )?;
-                lifecycle.artifact("acoustic_evidence");
-                lifecycle.complete();
-                (Some(evidence), Some(artifact))
-            } else {
-                (None, None)
-            };
+        let acoustic_task = if has_capability(&plan, "analysis.acoustic_dsp") {
+            let (input, role) = workflow_bound_audio(
+                plan.workflow_execution.as_ref(),
+                "analysis.acoustic_dsp",
+                &workflow_audio,
+                &analysis_input,
+                analysis_role,
+            )?;
+            let ffmpeg = ffmpeg.clone();
+            let output_root = output_root.clone();
+            let cancellation = cancellation.clone();
+            Some(
+                owner.start(request.execution_policy.turbo_acceleration, move || {
+                    let lifecycle = begin_node(
+                        "acoustic-dsp",
+                        "analysis.acoustic_dsp",
+                        None,
+                        ACOUSTIC_DSP_VERSION,
+                    );
+                    let evidence = analyze_acoustic_evidence(
+                        &ffmpeg,
+                        &input,
+                        &role,
+                        source_start,
+                        source_duration,
+                        &cancellation,
+                    )?;
+                    let artifact = write_json_artifact(
+                        &output_root,
+                        Path::new("evidence/acoustic-evidence.json"),
+                        ACOUSTIC_MEDIA_TYPE,
+                        &evidence,
+                    )?;
+                    lifecycle.artifact("acoustic_evidence");
+                    lifecycle.complete();
+                    Ok((evidence, artifact))
+                })?,
+            )
+        } else {
+            None
+        };
         let needs_transcribe = has_capability(&plan, "speech.transcribe");
         let needs_alignment = has_capability(&plan, "speech.align");
         let needs_pitch = has_capability(&plan, "pitch.track");
@@ -1386,6 +1405,13 @@ impl AnalysisEngine {
         if cancellation.is_cancelled() {
             return Err(cancelled(request));
         }
+        let (acoustic_evidence, acoustic_artifact) = match acoustic_task {
+            Some(task) => {
+                let (evidence, artifact) = task.join()?;
+                (Some(evidence), Some(artifact))
+            }
+            None => (None, None),
+        };
         let singing_fusion = if has_capability(&plan, "fusion.singing") {
             let lifecycle = begin_node("singing-fusion", "fusion.singing", None, FUSION_VERSION);
             let output = execute_singing_fusion_stage_with_timed_notes(

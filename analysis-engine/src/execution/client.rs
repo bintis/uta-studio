@@ -83,16 +83,36 @@ fn acquire_ggml_lease(
     Ok(Some(GgmlLease { gate: guard }))
 }
 
+#[derive(Debug, Default)]
+struct CancellationState {
+    cancelled: AtomicBool,
+    parent: Option<Arc<CancellationState>>,
+}
+
 #[derive(Debug, Clone, Default)]
-pub struct CancellationToken(Arc<AtomicBool>);
+pub struct CancellationToken(Arc<CancellationState>);
 
 impl CancellationToken {
     pub fn cancel(&self) {
-        self.0.store(true, Ordering::Release);
+        self.0.cancelled.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn child(&self) -> Self {
+        Self(Arc::new(CancellationState {
+            cancelled: AtomicBool::new(false),
+            parent: Some(Arc::clone(&self.0)),
+        }))
     }
 
     pub fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::Acquire)
+        let mut state = Some(self.0.as_ref());
+        while let Some(current) = state {
+            if current.cancelled.load(Ordering::Acquire) {
+                return true;
+            }
+            state = current.parent.as_deref();
+        }
+        false
     }
 }
 
@@ -756,6 +776,19 @@ mod tests {
         let clone = token.clone();
         clone.cancel();
         assert!(token.is_cancelled());
+    }
+
+    #[test]
+    fn child_failure_cancels_siblings_without_mutating_the_callers_token() {
+        let caller = CancellationToken::default();
+        let work = caller.child();
+        let sibling = work.clone();
+        work.cancel();
+        assert!(sibling.is_cancelled());
+        assert!(!caller.is_cancelled());
+        let next = caller.child();
+        caller.cancel();
+        assert!(next.is_cancelled());
     }
 
     #[test]
