@@ -64,6 +64,11 @@ pub fn finalize_candidate_vocal_chart(
 
     // Missing or unresolved lyrics must not erase measured melody. These
     // notes remain editable without fabricated text ownership.
+    let mut lyric_ids = track
+        .words
+        .iter()
+        .map(|word| word.word_id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
     let mut notes = track
         .notes
         .iter()
@@ -72,7 +77,22 @@ pub fn finalize_candidate_vocal_chart(
                 .as_deref()
                 .is_none_or(|id| !word_order.contains_key(id))
         })
-        .map(|note| project_note(note, Vec::new()))
+        .map(|note| {
+            let mut id = format!("unassigned-{}", note.id);
+            while !lyric_ids.insert(id.clone()) {
+                id.push('-');
+            }
+            project_note(
+                note,
+                vec![LyricToken::Text(LyricTextToken {
+                    id,
+                    text: String::new(),
+                    join_before: LyricJoin::None,
+                    reading: None,
+                    phonemes: None,
+                })],
+            )
+        })
         .collect::<Vec<_>>();
     let mut deferred_lyrics = BTreeMap::<String, Vec<(usize, LyricToken)>>::new();
     for (word_index, word) in track.words.iter().enumerate() {
@@ -472,7 +492,7 @@ mod tests {
             note.duration,
             track.notes[0].range.end - track.notes[0].range.start
         );
-        assert!(note.lyrics.is_empty());
+        assert!(matches!(&note.lyrics[0], LyricToken::Text(token) if token.text.is_empty()));
         assert_eq!(note.pitch.unwrap().midi, track.notes[0].midi_note);
         chart.validate().unwrap();
     }
