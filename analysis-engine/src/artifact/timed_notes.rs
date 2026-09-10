@@ -248,7 +248,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn long_conditioned_correlation_groups_remain_valid_identities() {
         let mut evidence = evidence();
         evidence.provenance.correlation_group = Some(format!(
@@ -261,6 +260,7 @@ mod tests {
         assert!(evidence.validate(0, 1_000_000).is_ok());
     }
 
+    #[test]
     fn empty_observation_is_valid_negative_evidence() {
         let mut evidence = evidence();
         evidence.notes.clear();
