@@ -195,6 +195,7 @@ private:
     }
     at::Tensor attend(const at::Tensor& sequence, const std::string& prefix, bool time) {
         auto normalized = weights->rms_norm(sequence, name(prefix, "attn_norm", "norm.weight"), 1e-12);
+        runtime->checkpoint(prefix + ".normalization");
         const auto batch = sequence.size(0), length = sequence.size(1);
         auto qkv = at::linear(normalized, weights->get(name(prefix, "qkv", "qkv.weight"))).chunk(3, -1);
         runtime->checkpoint(prefix + ".qkv");
@@ -219,6 +220,7 @@ private:
     at::Tensor feed_forward(const at::Tensor& sequence, const std::string& prefix) const {
         auto current = weights->rms_norm(sequence, name(prefix, "ff_norm", "norm.weight"), 1e-12);
         current = at::linear(current, weights->get(name(prefix, "ff1_w", "in.weight")), weights->get(name(prefix, "ff1_b", "in.bias")));
+        runtime->checkpoint(prefix + ".feed_forward_projection");
         current = at::gelu(current, "none");
         return sequence + at::linear(current, weights->get(name(prefix, "ff2_w", "out.weight")), weights->get(name(prefix, "ff2_b", "out.bias")));
     }
