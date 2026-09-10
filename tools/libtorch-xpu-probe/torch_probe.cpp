@@ -44,6 +44,9 @@ int main(int argc, char** argv) {
         auto left_storage = upload(left_data);
         auto right_storage = upload(right_data);
         at::Tensor left, right, values, output;
+        const char* requested_layout = std::getenv("UTA_PROBE_GEMM_LAYOUT");
+        const std::string layout = requested_layout ? requested_layout : "native";
+        if (layout != "native" && layout != "batched") throw std::invalid_argument("Torch GEMM layout must be native or batched");
         int64_t sdpa_choice = -1;
         std::string note;
         if (current.attention) {
@@ -64,6 +67,8 @@ int main(int argc, char** argv) {
             right = right_storage.reshape({current.columns, current.depth}).transpose(0, 1);
             note = "shared weight matmul; native broadcasting/flattening/reordering allowed and included; output cast to float32 included; ";
             note += current.frequency ? "frequency-transposed input view" : "contiguous time input";
+            if (layout == "batched") right = right.unsqueeze(0).expand({current.batch, current.depth, current.columns});
+            note += "; GEMM layout=" + layout;
         }
         torch::xpu::synchronize(0);
         const double preparation = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - preparation_start).count();
@@ -78,7 +83,7 @@ int main(int argc, char** argv) {
             begin.record(stream);
             output = current.attention
                 ? at::scaled_dot_product_attention(left, right, values, {}, 0.0, false).to(at::kFloat)
-                : at::matmul(left, right).to(at::kFloat);
+                : (layout == "batched" ? at::bmm(left, right) : at::matmul(left, right)).to(at::kFloat);
             end.record(stream);
             torch::xpu::synchronize(0);
             const double milliseconds = begin.elapsedTime(end);

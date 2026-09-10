@@ -83,11 +83,20 @@ int main(int argc, char** argv) {
             left_storage = ggml_new_tensor_3d(context, activation_type, current.depth,
                 current.frequency ? current.batch : current.rows, current.frequency ? current.rows : current.batch);
             auto* left = current.frequency ? ggml_permute(context, left_storage, 0, 2, 1, 3) : left_storage;
+            const char* requested_layout = std::getenv("UTA_PROBE_GEMM_LAYOUT");
+            const std::string layout = requested_layout ? requested_layout : "native";
+            if (layout == "packed" || layout == "flat") {
+                if (!ggml_is_contiguous(left)) left = ggml_cont(context, left);
+                if (layout == "flat") left = ggml_reshape_2d(context, left, current.depth, current.rows * current.batch);
+            } else if (layout != "native") {
+                throw std::invalid_argument("GGML GEMM layout must be native, packed, or flat");
+            }
             right_storage = ggml_new_tensor_2d(context, dtype, current.depth, current.columns);
             output = ggml_mul_mat(context, right_storage, left);
             ggml_mul_mat_set_prec(output, GGML_PREC_F32);
             note = "shared weights, matched physical input layout; graph dispatch and synchronization included; F32 output; ";
             note += dtype == GGML_TYPE_BF16 ? "BF16 weights with BF16-rounded values stored in F32 activations" : "both operands in requested storage";
+            note += "; GEMM layout=" + layout + "; optional packing is included in timed graph";
         }
         if (!ggml_backend_supports_op(resources.backend, output)) throw std::runtime_error("selected GGML backend does not support the requested operator");
         ggml_set_name(output, "probe_output");
