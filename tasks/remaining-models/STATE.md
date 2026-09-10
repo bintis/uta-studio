@@ -232,6 +232,41 @@ The catalog already declares the right filenames (`runtime-manager/src/catalog.r
 missing installation and its provenance, not a code defect. The operator authorised fixing it in
 the post-measurement modification phase on 2026-09-09.
 
+## Full-pipeline debug regression (2026-09-10)
+
+**RUNNING; completion not yet established.** This is the full-song Analysis Engine request in
+`test-artifacts/ggml-pipeline-validation/request.json`, not the separate seventeen-model sweep.
+The current execution is recorded by operation `20260910T065356-cfaece833c9e`, with live logs and
+samples in `test-artifacts/ggml-pipeline-validation/debug-execution-observation/` and outputs in
+`test-artifacts/ggml-pipeline-validation/fullsong-debug/`. It started on boot
+`e56ad005-bfa7-47ea-9891-9b96928ffd25`; worker launch and Vulkan debug output are observed.
+A missing `result.json` remains an unknown completion, never a pass or proof of no launch.
+
+- Logging implementation `7e08a69` forwards worker stderr without truncating the live stream,
+  logs protocol frames, and enables CLI lifecycle diagnostics with `UTA_STUDIO_DEBUG=1`.
+  Build source commit is `f9c4b6f`; the run HEAD `900d2f0` differs only in unrelated documentation.
+  Operation `20260910T064749-c4d30143672f` passed targeted formatting, three debug-log tests,
+  eight worker-supervision tests, two lifecycle tests, and the release CLI/worker build.
+  Operation `20260910T064942-ab439830cba4` passed four recorder and four observer tests.
+- Independent runtime build `20260910T064825-5db5f0f3f9f3` succeeded with the pinned upstream
+  commit and ten declared patches, `RelWithDebInfo`, `GGML_VULKAN_DEBUG=ON`, and
+  `GGML_VULKAN_CHECK_RESULTS=OFF`. No installed runtime/model was replaced. Upstream emitted
+  a `ggml_can_fuse` maybe-uninitialized compiler warning; this was not a warning-free build.
+  Runtime memory logging, Vulkan loader logging, and stage profiling are enabled for the run.
+- Pre-run observations `20260910T065229-673a333b924b` and `20260910T065230-98eacba9bd5c`
+  measured about 2.2% total CPU and 2% B580 use; these do not establish isolation. Full debug
+  logging changes overhead and this run is not a normal-throughput measurement.
+- Prior `complete-observation/` has no completion record; its last process sample is
+  `2026-09-10T06:28:08.954889+00:00`. Its boot differs from the current boot. That does not
+  identify reset cause. Previous-boot kernel logs were unavailable due to journal permissions.
+- `debug-observation/` is a separate setup-only failure (`missing_required_input`: output
+  directory did not exist), before worker launch. Operation `20260910T065356-23a470f78cfa`
+  then created the isolated output directory before the explicit execution above. No GPU
+  failure has been automatically retried; all original evidence is retained.
+
+Next: inspect the execution/observer completion and actual artifacts, retain any degraded
+reasons, and update this section. Do not infer `production_ready` or post-exit host stability.
+
 ## Next actions
 
 1. Install the STARS and ROSVOT GGUF generations into the managed store with their manifests and
