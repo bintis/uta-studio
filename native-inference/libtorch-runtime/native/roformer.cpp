@@ -249,7 +249,10 @@ private:
                                             weights->get(name(prefix, "gates_b", "gate.bias"))));
         attended = gated_roformer_attention(attended, gates);
         attended = attended.reshape({batch, length, heads * head_dimension});
-        return sequence + project(attended, weights->get(name(prefix, "out", "out.weight")));
+        const auto weight = weights->get(name(prefix, "out", "out.weight"));
+        return runtime->backend == "libtorch_xpu"
+            ? fused_roformer_projection_residual(attended, weight, {}, sequence)
+            : sequence + project(attended, weight);
     }
     at::Tensor feed_forward(const at::Tensor& sequence, const std::string& prefix) const {
         auto current = normalize(sequence, name(prefix, "ff_norm", "norm.weight"));
@@ -259,7 +262,10 @@ private:
         current = fused ? fused_roformer_projection_gelu(current, weight, bias) : project(current, weight, bias);
         runtime->checkpoint(prefix + ".feed_forward_projection");
         if (!fused) current = at::gelu(current, "none");
-        return sequence + project(current, weights->get(name(prefix, "ff2_w", "out.weight")), weights->get(name(prefix, "ff2_b", "out.bias")));
+        const auto output_weight = weights->get(name(prefix, "ff2_w", "out.weight"));
+        const auto output_bias = weights->get(name(prefix, "ff2_b", "out.bias"));
+        return fused ? fused_roformer_projection_residual(current, output_weight, output_bias, sequence)
+                     : sequence + project(current, output_weight, output_bias);
     }
 };
 } // namespace

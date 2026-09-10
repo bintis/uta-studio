@@ -117,6 +117,32 @@ void projection_gelu(const at::Device& device, int64_t rows, int64_t contraction
         || !at::equal(weight, original_weight) || !at::equal(bias, original_bias))
         throw std::runtime_error("projection GELU output type or inputs changed");
 }
+void projection_residual(const at::Device& device, int64_t rows, int64_t contraction, int64_t columns,
+                         bool strided, bool with_bias) {
+    auto options = at::TensorOptions().device(device).dtype(at::kFloat);
+    auto storage = (at::arange(rows * contraction * 2, options) * 0.017).sin().reshape({1, rows, contraction * 2}) * 0.2;
+    auto input = storage.narrow(-1, contraction, contraction);
+    auto residual_storage = (at::arange(rows * columns * 2, options) * 0.031).cos().reshape({1, rows, columns * 2}) * 0.2;
+    auto residual = residual_storage.narrow(-1, columns, columns);
+    if (!strided) { input = input.contiguous(); residual = residual.contiguous(); }
+    auto weight = (at::arange(columns * contraction, options) * 0.013).cos().reshape({columns, contraction}) * 0.1;
+    auto bias = with_bias ? (at::arange(columns, options) * 0.11).sin() * 0.01 : at::Tensor();
+    auto original = input.clone(), original_weight = weight.clone(), original_residual = residual.clone();
+    auto original_bias = with_bias ? bias.clone() : at::Tensor();
+    auto actual = uta::torch_native::fused_roformer_projection_residual(input, weight, bias, residual);
+    auto reference = at::linear(input.to(at::kCPU).to(at::kDouble), weight.to(at::kCPU).to(at::kDouble),
+        with_bias ? bias.to(at::kCPU).to(at::kDouble) : at::Tensor()) + residual.to(at::kCPU).to(at::kDouble);
+    auto unfused = at::linear(input, weight, bias) + residual;
+    std::cout << "projection_residual_shape=" << rows << ',' << contraction << ',' << columns
+              << " strided=" << strided << " bias=" << with_bias << std::endl;
+    const auto tolerance = 2e-6 * std::max(1.0, reference.abs().max().item<double>());
+    compare(unfused, reference, "unfused-projection-residual-double-oracle", tolerance);
+    compare(actual, reference, "projection-residual-double-oracle", tolerance);
+    compare(actual, unfused, "projection-residual-unfused", tolerance);
+    if (actual.scalar_type() != at::kFloat || !at::equal(input, original) || !at::equal(weight, original_weight)
+        || !at::equal(residual, original_residual) || (with_bias && !at::equal(bias, original_bias)))
+        throw std::runtime_error("projection residual output type or inputs changed");
+}
 void gating(const at::Device& device, int64_t batch, int64_t length, bool strided) {
     const int64_t heads = 8, width = 64;
     auto options = at::TensorOptions().device(device).dtype(at::kFloat);
@@ -195,6 +221,19 @@ int main(int argc, char** argv) {
             if (!device.is_cpu()) {
                 synchronize(device);
                 std::cout << "RoFormer GELU projection checks passed on " << device << std::endl;
+                return 0;
+            }
+        }
+        if (device.is_cpu() || (argc > 2 && std::string(argv[2]) == "residual")) {
+            for (const auto strided : {false, true}) for (const auto with_bias : {false, true}) {
+                projection_residual(device, 17, 512, 256, strided, with_bias);
+                projection_residual(device, 17, 1024, 256, strided, with_bias);
+                projection_residual(device, 17, 1536, 384, strided, with_bias);
+                projection_residual(device, 1, 13, 17, strided, with_bias);
+            }
+            if (!device.is_cpu()) {
+                synchronize(device);
+                std::cout << "RoFormer residual projection checks passed on " << device << std::endl;
                 return 0;
             }
         }
