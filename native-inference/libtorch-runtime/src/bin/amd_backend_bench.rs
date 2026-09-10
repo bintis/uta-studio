@@ -1,4 +1,4 @@
-//! Diagnostic benchmark: one explicitly selected AMD backend and one resident
+//! Diagnostic benchmark: one explicit Intel Arc B580 backend and one resident
 //! model per process. Runtime/weight loading, cold inference and warm inference
 //! are separate measurements. Speech rows are encoder workloads, not ASR speed.
 use serde_json::{Value, json};
@@ -171,10 +171,9 @@ fn load_ggml(resource: &str, model_path: &Path) -> Result<Plan, String> {
         .devices()?
         .into_iter()
         .find(|device| {
-            device.kind == ggml::DeviceKind::IntegratedGpu
-                && device.description.contains("AMD Radeon 780M")
+            device.kind == ggml::DeviceKind::DiscreteGpu && device.description.contains("B580")
         })
-        .ok_or_else(|| "AMD Radeon 780M GGML device is unavailable; no fallback".to_string())?;
+        .ok_or_else(|| "Intel Arc B580 GGML device is unavailable; no fallback".to_string())?;
     let runtime_seconds = started.elapsed().as_secs_f64();
     let name = format!("{}: {}", device.name, device.description);
     emit(
@@ -355,7 +354,7 @@ fn load_libtorch(resource: &str, model_path: &Path) -> Result<Plan, String> {
     let model = library.open(
         resource,
         model_path,
-        torch::Backend::LibtorchRocm,
+        torch::Backend::LibtorchXpu,
         0,
         precision,
     )?;
@@ -526,7 +525,7 @@ fn load_libtorch(resource: &str, model_path: &Path) -> Result<Plan, String> {
         runner,
         runtime_seconds,
         model_seconds: started.elapsed().as_secs_f64(),
-        device: "ROCm device 0".into(),
+        device: "XPU device 0: Intel Arc B580".into(),
         precision: precision.name().into(),
     })
 }
@@ -556,7 +555,7 @@ fn firered_cmvn() -> Result<PathBuf, String> {
 fn temporary_wav() -> PathBuf {
     static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
     std::env::temp_dir().join(format!(
-        "uta-studio-amd-bench-{}-{}.wav",
+        "uta-studio-b580-bench-{}-{}.wav",
         std::process::id(),
         SEQUENCE.fetch_add(1, Ordering::Relaxed)
     ))
