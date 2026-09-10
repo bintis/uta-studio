@@ -47,6 +47,12 @@
         "sha256": "1ed8f63cbc59dafb069e8753d330eb7be15b387f327892731e0f13eea64c5e2b",
         "scope": "M8 F16 K/V H64 attention with F32 accumulation, sixteen query rows, thirty-two key columns and four SIMD32 subgroups",
         "reason": "Reuse packed scores between row maximum and probability calculation, and reuse each V matrix operand across the two M8 query-row products. Per-output accumulation order, F16 probability rounding, F32 online state, full context, masks, tail handling and all barriers remain unchanged. Matched B580 XE90 model measurements reduce time attention from about 108.6 to 96.2 ms and frequency attention from 8.78 to 7.92 ms; both six-second output passes are byte-identical to the control. Every other shape/type retains the prior shader path. See docs/ROFORMER_B580_ATTENTION.md."
+      },
+      {
+        "file": "native-inference/ggml-worker/patches/0007-vulkan-query-owned-attention.patch",
+        "sha256": "f1df9236d4450be04f0949ab4b069aedb7e264a60b5318514ad23f21d6c8b022",
+        "scope": "Intel Xe2 M8 F16 K/V H64 F32-accumulator attention with more than thirty-two queries, four native SIMD32 subgroups",
+        "reason": "Each subgroup owns eight complete query rows through QK, softmax and PV. Clustered four-lane row reductions, cached Q fragments, persistent F32 output fragments and coalesced shared K/V reduce the measured B580 time-attention kernel from 96.79 to 63.73 ms. The six-second production graph retains finite repeatable output with 72.05 dB SNR against the control; cross-version output is not bit-identical. Preserve full key context, existing F16 probability rounding, F32 accumulators, masks and tails. Small-query/GQA capacity and other device/type paths remain unchanged. UTA_STUDIO_GGML_FA_QUERY_OWNED=0 selects the prior path; explicit query-row or staging diagnostics also retain it. See docs/ROFORMER_B580_ATTENTION.md."
       }
     ]
   },
