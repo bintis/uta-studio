@@ -15,5 +15,7 @@ c++ -std=c++20 -O3 -pthread -D_GLIBCXX_USE_CXX11_ABI=1 \
     -o "$output/benchmark"
 c++ -std=c++20 -O2 -I"$level_root/include" tools/xpu-capacity-study/metrics.cpp \
     -L"$level_root/lib" -Wl,-rpath,"$level_root/lib" -lze_loader -o "$output/metrics"
+c++ -std=c++20 -O2 -I"$level_root/include" tools/xpu-capacity-study/sample.cpp \
+    -L"$level_root/lib" -Wl,-rpath,"$level_root/lib" -lze_loader -o "$output/sample"
 printf 'BUILT %s\n' "$output"
 ldd "$output/benchmark"
