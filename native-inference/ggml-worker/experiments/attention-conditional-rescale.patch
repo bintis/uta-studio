@@ -1,0 +1,30 @@
+--- a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
++++ b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
+@@ -188,15 +188,18 @@
+             probability_workspace[probability_base + local_row * 8 + row_lane * packs_per_lane + part] = probabilities;
+         }
+         subgroupBarrier();
+-        // Row-major 8x16 broadcast matrix: no fragment-to-lane assumption.
+-        [[unroll]] for (uint column = row_lane; column < 4; column += lanes_per_row) {
+-            float_workspace[float_base + local_row * 4 + column] = vec4(rescale);
+-        }
+-        subgroupBarrier();
+-        coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator> rescale_matrix;
+-        coopMatLoad(rescale_matrix, float_workspace, float_base, 4, gl_CooperativeMatrixLayoutRowMajor);
+-        [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
+-            output_tiles[depth_tile] = output_tiles[depth_tile] * rescale_matrix;
++        // A subgroup-uniform decision: unchanged online maxima need no output
++        // rescale. Never skip the shared K/V workgroup synchronization below.
++        if (subgroupMax(rescale == 1.0 ? 0u : 1u) != 0u) {
++            [[unroll]] for (uint column = row_lane; column < 4; column += lanes_per_row) {
++                float_workspace[float_base + local_row * 4 + column] = vec4(rescale);
++            }
++            subgroupBarrier();
++            coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator> rescale_matrix;
++            coopMatLoad(rescale_matrix, float_workspace, float_base, 4, gl_CooperativeMatrixLayoutRowMajor);
++            [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
++                output_tiles[depth_tile] = output_tiles[depth_tile] * rescale_matrix;
++            }
+         }
+         if (row_split == 4) {
+             [[unroll]] for (uint index = gl_LocalInvocationID.x; index < 512; index += WorkGroupSize) {
