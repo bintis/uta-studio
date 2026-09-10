@@ -425,7 +425,7 @@ readiness, fused-SDPA availability or later host stability is established. See
 [LibTorch execution](../../docs/design/runtime/LIBTORCH_EXECUTION.md) for details and next checks.
 Super whole-task scheduling remains incomplete and is not qualified by these results.
 
-## LibTorch RoFormer speed optimization — tests resumed by user (2026-09-10 UTC)
+## LibTorch RoFormer speed optimization — 72.54 seconds; precision-preserving work continues (2026-09-10 UTC)
 
 The user authorized optimizing the native XPU RoFormer family toward 60 seconds
 for the existing 354.88-second song. Historical native XE90 inference completed
@@ -446,8 +446,8 @@ bounded numerical and synchronized diagnostic results, not full-song performance
 Although a later pre-run snapshot was quiet, continuous observation captured
 other GGML workers during the final checks; those timings are not comparable.
 Other B580 activity (again 98% total busy at 19:24:51 UTC) paused further GPU
-benchmarks. Other RoFormer real-audio geometries and the matched whole-song pair
-remain, with explicit commands and private builds prepared but not executed.
+benchmarks. At that point other RoFormer real-audio geometries and the matched
+whole-song pair remained unexecuted; the later resumed results are below.
 Details and operation evidence:
 [Native XPU comparison](../../docs/ROFORMER_B580_LIBTORCH_XPU.md#native-roformer-optimization--in-progress-2026-09-10-utc).
 
@@ -460,9 +460,9 @@ observer recorded exit 0, 38 chunks and 122.580421927 seconds inference in
 operation `20260910T194129-71a332632928` lacks a completion record; do not invent
 one or equate observer completion with whole-operation completion/host stability.
 The user then explicitly cancelled and requested waiting for a new instruction.
-No owned test process remained at the cancellation inspection. The normalized
-full-song candidate and TF32 experiment have **not** executed; no paired speedup
-or new whole-song parity conclusion exists. **Do not resume automatically.**
+No owned test process remained at the cancellation inspection. At that point the
+normalized full-song candidate and TF32 experiment had not executed, and the user
+required waiting for explicit authorization, subsequently given below.
 Pause receipt: `test-artifacts/libtorch-roformer-speed/PAUSED.txt`, operation
 `20260910T194410-ffe5f8febca8`. Unrelated working-tree changes remain intact.
 
@@ -470,6 +470,36 @@ The user explicitly resumed testing after that cancellation. Operation
 `20260910T194530-561f36b751e3` records this new authorization and the fresh pair /
 separate TF32 diagnostic plan. The preceding pause is historical, not an active
 blocker; do not overwrite its files or reinterpret missing completion records.
+
+The fresh full-song pair completed: **114.231050341 → 72.537182110 seconds**
+inference (38 chunks), **36.50% less time / 1.575× speedup**, not yet 60 seconds.
+All 31,300,416 waveform samples are finite; maximum difference `0.0006777942`,
+SNR **83.26265 dB**, not bit-identical or listening-qualified. Continuous samples
+found no other CCS compute clients; both observers report zero read errors and
+unchanged boot IDs. Evidence: `current-fullsong-comparison.json` in the speed root.
+
+An isolated QKV/FFN TF32 diagnostic measured 73.695609837 versus 73.182877546
+seconds with differing CPU load (and one candidate observer read error): **no
+useful speedup established**. Full waveform SNR is 144.15589 dB. oneDNN accepted
+the TF32 attribute but actual reduced-precision hardware execution was not
+proven. The user explicitly **retired TF32**; `8483b41` removes its build switch,
+projection helper and dedicated tests. Historical artifacts remain; no more TF32
+experiments. The Rust metadata forwarding check brings the library suite to
+55 passing tests before retirement; rerun affected checks after current changes.
+
+Family 12-second regression completed XE90 vocals and instrumental control /
+current IEEE-projection candidate executions. Original PolarFormer control
+failed inside native SDPA requesting 8.23 GiB; no automatic retry. Its candidate
+and the three mel-band pairs remain unexecuted. This is not family-wide acceptance.
+
+Current authorization: optimize speed **while preserving the existing precision
+policy**, full context/chunk/overlap, serial execution, cancellation and sync.
+Investigate rotary-output conversion fusion, exact FFN GELU fusion and finer
+attention-stage timing (`5fa0499`, profile build compiled, not yet executed).
+Do not alter GPU clocks/power settings or resume counter stress tests. Prior
+power-loss cause remains unresolved; process success does not prove later host
+stability. Observe bounded runs and inspect anomalies rather than automatically
+retrying. Installed assets and unrelated user changes remain untouched.
 
 ## Next actions
 

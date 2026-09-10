@@ -285,12 +285,69 @@ Zero and xe PCI `0000:07:00.0`, unchanged boot IDs through each observation and
 no observer read errors. These statements do not establish later host stability.
 Unrelated working-tree changes remain untouched.
 
-**Remaining:** other RoFormer real-audio geometries and matched normal full-song
-control/candidate timing/output checks. `model-jobs.json` and
-`fullsong-jobs.json` contain prepared individual argv and new output directories;
-neither series has executed. The private control/native builds and benchmark
-binary are retained. Run each case under recorder + observer after inspecting
-host/GPU load, not as an automatic retry or competing benchmark. The candidate
-build is `normalized-build`, the control is `control-build`; tracing must stay
-**off** for both performance runs. No 60-second, family-wide speedup, installed
-runtime change, perceptual qualification or production-readiness claim.
+### Resumed full-song result and retired TF32 investigation
+
+After the recorded cancellation and subsequent explicit user resumption, a fresh
+normal-throughput full-song pair completed with tracing off:
+
+| Variant | Inference, 38 chunks | Observed process wall |
+| --- | ---: | ---: |
+| Original control | 114.231050341 s | 116.239005466 s |
+| Rotary/layout/normalization candidate | 72.537182110 s | 74.533642362 s |
+
+This is **36.50% less inference time / 1.575× speedup**, still above 60 seconds.
+`current-fullsong-comparison.json` scans all **31,300,416 finite samples**:
+max absolute difference **0.0006777942**, RMSE **1.2645061e-5**, SNR **83.26265 dB**.
+It is not bit-identical and is not a listening or production-parity qualification.
+Both observers sampled no other CCS compute clients, report zero read errors and
+unchanged boot IDs; mean total CPU busy was about 8%. Partial observation cannot
+prove exclusivity or later host stability. Raw cases: `fullsong-control-current/`
+and `fullsong-normalized-current/` in the speed evidence root.
+
+A separately compiled, single-model diagnostic temporarily enabled oneDNN's
+process-global TF32 allowance only around QKV and FFN input/output projections.
+Everything else retained its preceding precision. A matched-source control
+(`projection-control-build`) and diagnostic (`reduced-build`) measured
+**73.695609837 / 73.182877546 s** inference and **75.739714376 / 75.251221610 s**
+observed process wall. The nominal **0.696%** difference is not an established
+speedup: mean CPU busy differed (**9.34% / 19.78%**) and the candidate observer
+had one read error. Neither sampled other CCS clients; boot IDs were unchanged.
+All waveform samples were compared: max difference **2.384185791e-7**, RMSE
+**1.140929391e-8**, SNR **144.155894 dB**; one-second largest-error windows are
+retained in `tf32-fullsong-comparison.json`. No blind listening was performed.
+
+The two-chunk verbose diagnostic reports 192 TF32-attributed and 668 strict
+matmuls, with F32 operands and `jit:gemm:any`. This proves the attribute request,
+**not actual reduced-precision XMX execution**. Wheel-matched ATen `Matmul.cpp`
+reads `allowTF32OneDNN`; oneDNN revision
+`80afa71049cd69a3df32adcccb623b12cd7baa22`, `jit/gen_kernel.cpp`, retains the base
+F32 candidate and adds TF32 matches rather than forcing their selection. These
+observations do not establish TF32 hardware acceleration or general TF32 audio
+accuracy on B580. Raw diagnostics and upstream sources remain in the evidence
+root. The old benchmark omitted the native `roformer_projection_math` field
+from serialized Rust metadata; `4e5daf9` forwards it, with a passing unit test.
+`native-build-math.json` separately records post-run, read-only native metadata
+inspection, not reconstructed launch metadata.
+
+The user then explicitly **retired TF32**, prioritizing speed without reducing
+precision and avoiding recurrence of GPU power loss. `8483b41` removes the
+experimental switch, projection scope and tests; IEEE projection metadata stays.
+No installed runtime was replaced. Historical evidence remains, but TF32 is not
+a current candidate or a production mode. Current library tests passed **55**
+before this removal; affected checks must run again after changes.
+
+The family series completed XE90 vocals and instrumental control/candidate
+executions on 12-second audio; complete waveform analysis is pending. The
+**original PolarFormer control** failed inside native SDPA requesting **8.23 GiB**
+(`20260910T200940-6ea639e1d138`); the series stopped with no automatic retry.
+Its candidate and three mel-band pairs have not run. `family-results.json`
+records exact scope. Do not claim family-wide acceptance.
+
+**Next:** diagnose conversion/SDPA stages (`5fa0499`, compiled profile build but
+not executed), fuse ordinary rotary FP32 arithmetic with the already-required
+FP16 output rounding if numerically equivalent, and inspect exact-GELU matmul
+fusion. Preserve full context, defaults, precision policy, cancellation and sync.
+Use bounded serial native runs under recorder/observer; no clock/power changes,
+hardware-counter stress, automatic retries, or removal of safety to chase speed.
+The prior power-loss cause is unresolved. No 60-second, perceptual qualification
+or production-readiness claim.
