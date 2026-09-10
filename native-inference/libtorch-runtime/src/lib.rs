@@ -55,6 +55,7 @@ impl Precision {
 pub struct BuildInfo {
     pub torch_version: String,
     pub compiled_backend: String,
+    pub roformer_projection_math: String,
     pub models: Vec<String>,
     pub qualification: String,
 }
@@ -265,6 +266,15 @@ mod tests {
         assert!(Precision::parse("fp16").is_err());
     }
     #[test] fn strings_reject_embedded_nul() { assert!(cstring("model\0other").is_err()); }
+    #[test] fn build_info_preserves_projection_math_in_diagnostics() {
+        for math in ["ieee", "tf32_qkv_ffn_single_model_diagnostic"] {
+            let info: BuildInfo = serde_json::from_value(serde_json::json!({
+                "torch_version": "fixture", "compiled_backend": "libtorch_xpu",
+                "roformer_projection_math": math, "models": [], "qualification": "not_asserted"
+            })).unwrap();
+            assert_eq!(serde_json::to_value(info).unwrap()["roformer_projection_math"], math);
+        }
+    }
     #[test] fn missing_runtime_is_not_ready() {
         assert!(Library::load(Path::new("/uta-studio-no-such-native-runtime/libuta_libtorch.so")).is_err());
     }
