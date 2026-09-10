@@ -229,10 +229,9 @@ pub(super) fn align_scoped(
                             .checked_add(offset_ms)
                             .ok_or("Qwen corrected timestamp overflows")?;
                     }
+                    let midpoint = (measured.start_seconds + measured.end_seconds) * 0.5;
                     if measured.timing_issue.is_none()
-                        && (single
-                            || (measured.start_seconds >= core_start
-                                && measured.end_seconds <= core_end))
+                        && (single || (midpoint >= core_start && midpoint < core_end))
                     {
                         let mut measured = measured.clone();
                         measured.start_seconds += offset_seconds;
