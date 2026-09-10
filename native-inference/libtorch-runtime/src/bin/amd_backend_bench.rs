@@ -105,14 +105,10 @@ fn load_ggml(_resource: &str, model_path: &Path) -> Result<GgmlLoaded, String> {
 fn load_libtorch(resource: &str, model_path: &Path) -> Result<LibtorchLoaded, String> {
     let library_path = std::env::var("UTA_BENCH_LIBTORCH_LIB").map_err(|_| "UTA_BENCH_LIBTORCH_LIB is required".to_string())?;
     let library = Library::load(Path::new(&library_path))?;
-    let precision = if matches!(resource,
-        "bs_roformer_leap_xe90_vocals" | "bs_roformer_leap_xe90_instrumental" |
-        "bs_polarformer_public_instrumental" | "melband_roformer_harmony" |
-        "melband_roformer_denoise_aufr33" | "melband_roformer_dereverb_anvuew" |
-        "game_1_0_3_small" | "game_1_0_3_medium" | "game_1_0_3_large") {
-        Precision::MixedAttention
-    } else {
-        Precision::Strict
+    let precision = match std::env::var("UTA_BENCH_LIBTORCH_PRECISION").as_deref() {
+        Ok("mixed_attention") => Precision::MixedAttention,
+        Ok("strict") | Err(_) => Precision::Strict,
+        Ok(other) => return Err(format!("unsupported UTA_BENCH_LIBTORCH_PRECISION: {other}")),
     };
     let _ = library.open(resource, model_path, Backend::LibtorchRocm, 0, precision)?;
     Ok(LibtorchLoaded { library, model_path: model_path.to_path_buf() })
