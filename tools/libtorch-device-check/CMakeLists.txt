@@ -22,10 +22,10 @@ endforeach()
 find_library(native_hip NAMES amdhip64 PATHS "${ROCM_ROOT}/lib" NO_DEFAULT_PATH REQUIRED)
 find_library(native_host_blas NAMES rocm-openblas librocm-openblas.so.0
   PATHS "${ROCM_ROOT}/lib/host-math/lib" NO_DEFAULT_PATH REQUIRED)
-find_library(native_lzma NAMES rocm_sysdeps_liblzma librocm_sysdeps_liblzma.so.5
-  PATHS "${ROCM_ROOT}/lib/rocm_sysdeps/lib" NO_DEFAULT_PATH REQUIRED)
-# Native execution cannot depend on torch's Python preloader. The packaged
-# liblzma filename differs from its SONAME, so explicitly retain its handle.
+# AOTriton needs the standard XZ symbol namespace. ROCm's renamed private
+# liblzma does not satisfy that ABI. On NixOS set native_lzma explicitly to
+# the liblzma from the pinned development shell's nixpkgs input.
+find_library(native_lzma NAMES lzma REQUIRED)
 target_link_libraries(uta-libtorch-device-check PRIVATE "${native_hip}"
   "-Wl,--no-as-needed" "${native_host_blas}" "${native_lzma}" "-Wl,--as-needed")
 set_target_properties(uta-libtorch-device-check PROPERTIES
