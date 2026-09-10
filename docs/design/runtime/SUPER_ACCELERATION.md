@@ -284,6 +284,58 @@ single-producer tests; truthful early preparation progress; explicit whole-task/
 and cost accounting; then measured frontend/graph/resident-transfer improvements. No model,
 precision, context/overlap, fusion threshold, safety measure or GPU launch changed in this audit.
 
+## Implemented after the global audit (2026-09-10)
+
+The user authorized implementing the audited opportunities. These independent changes are now
+connected to Super mode; they do **not** establish whole-model GPU scheduling or measured speedup:
+
+- `6a5ce26`: shared Engine/worker `uta-audio-reuse` PCM ownership, cross-process single producers,
+  immutable completed publication, failure/cancellation wakeups and child reaping. Engine facts,
+  metrics and signal profiles survive artifact renames within the request. First-stream and
+  automatic stream selection remain distinct unless a single audio stream is established.
+- `f6275f2`: task-owned STFT/ISTFT, FCPE and Qwen FFT/window/filter/scratch reuse. Differing sequential
+  CPU inputs remain bit-identical to ordinary preparation; scratch does not leak between requests.
+- `5c39192`: Qwen reports real completed windows, enabling earlier preloading on multi-window work.
+  No synthetic work units or changed windows/overlap. Single-window execution still has no such
+  early completed window; allocation-phase preparation remains future work.
+- `2fb6d01`: owned Acoustic DSP overlap, inherited audio/event context, parent-linked cancellation,
+  failure-cause preservation and join-before-cleanup. This is CPU/model overlap, not dual-GPU work.
+- `4d8db66`, fixture correction `e1d5eac`: FCPE reuses its fixed-shape graph within the model/backend
+  lifetime, overwriting every input before synchronous compute/readback.
+- `c04f079`: optional RMVPE CNN → chunked GRU → head resident handoffs on the existing assigned
+  backend. Exact-size GRU graphs are reused within a window; directions, chunk order and +0 hidden
+  resets are unchanged. Allocation completes before compute, so unavailable optional allocation
+  may use ordinary execution on that same backend. Compute failures are not retried. The CNN arena
+  is released after compact capture; recurrent graphs are released after their final consumer.
+- `6df2a5e`: Qwen incremental-token context/allocator reuse with a freshly rebuilt growing-history
+  graph. The larger prefill arena is not pinned; cached graph views drop before session KV storage.
+  Full logits and the existing greedy decision rule remain in use.
+
+Executed CPU evidence includes shared-cache concurrency/failure/cancellation tests, ordinary/Super
+frontend comparisons, worker/progress tests and ownership/supervisor tests. Native CPU primitive
+checks at `20260910T113607-45fdcc9232e3` passed the FCPE input-refresh and resident-copy/lifetime
+fixtures; `20260910T115838-e7354a6bc379` passed Qwen/worker tests and a changing-shape native CPU
+arena-reset fixture. These tiny primitives are **not** complete-model numerical qualification.
+
+Preserved failed records: `20260910T111830-19e0273fea8e` stopped at Cargo lock resolution during
+concurrent LibTorch manifest edits; `20260910T113503-63b8228d7ca3` stopped at a test-only unbound
+`ggml_scale` call, corrected with the already bound add operation. Neither reached native tests.
+An earlier supervisor fixture encountered `ETXTBSY`; subsequent explicitly recorded serial checks
+passed. No automatic retry or GPU inference is implied by these follow-up operations.
+
+Remaining implementation: explicit shared acceleration ownership, complete-model dependency and
+device queues, observed whole-task cost/phase accounting, queue-aware hot-weight retention and
+preparation, and reduced Qwen readback with exact first-maximum/non-finite semantics. Source review
+found that pinned Vulkan `argmax.comp` resolves equal maxima by reduction lane, not always original
+index (equal maxima at indices 1 and one subgroup-width can select the latter). Direct substitution
+for host argmax is therefore invalid. Do not change token selection merely to reduce readback.
+Cross-song reuse and Studio publication timing remain separate batch/end-to-end boundaries.
+
+The concurrently authorized independent LibTorch work is preserved. Shared host DSP entry points
+must not call GGML model graphs; scheduler routing must respect the selected backend and precision.
+GPU experiments remain paused, saved pre-correction binaries remain unsuitable, and no production
+promotion or corrected end-to-end performance claim is made.
+
 ## Correction verification
 
 Operation `20260910T095055-5df40fd72c78` on `844c016`: **53 CPU / isolated protocol tests passed**

@@ -353,9 +353,20 @@ numerical/safety caveats are in the design's **Global optimization audit**; evid
 `test-artifacts/super-acceleration/global-audit.json` (`20260910T095859-63caa23dcca2`). No new model
 execution or speedup measurement was performed.
 
-Next: start with shared Engine PCM/facts/profile ownership and CPU single-producer tests, then
-truthful preload progress and dependency-aware complete-model/device scheduling with cost and
-resource-lifetime accounting. Safety review follows the linked restart/submission/upload records in the
+The user subsequently authorized implementation. Landed: shared Engine/worker PCM and validated
+facts/profile ownership (`6a5ce26`); task-owned FFT/frontend preparation (`f6275f2`); truthful Qwen
+window progress (`5c39192`); owned Acoustic DSP overlap and cancellation (`2fb6d01`); FCPE graph
+reuse (`4d8db66`, fixture fix `e1d5eac`); same-device RMVPE handoffs/GRU graph reuse (`c04f079`);
+Qwen incremental arena reuse without pinning prefill (`6df2a5e`). Focused CPU/protocol checks passed,
+including explicit native CPU primitive fixtures in `20260910T113607-45fdcc9232e3` and
+`20260910T115838-e7354a6bc379`. Preserve the preceding lock-resolution and fixture compile failures;
+these did not execute native tests. See the design's **Implemented after the global audit** section.
+
+Next: shared acceleration ownership, dependency-aware complete-model/device queues, observed task
+phase/cost accounting and queue-aware hot-weight retention/preparation. Qwen reduced readback must
+preserve first-maximum and all-logit finite checks: the pinned Vulkan argmax lane tie rule cannot be
+substituted directly. Full-model numerical checks, cross-song reuse and Studio publication timing
+remain incomplete. Safety review follows the linked restart/submission/upload records in the
 design document: preserve synchronization/cleanup; do not add arbitrary waits, limits or retries.
 GPU experiments stay paused after the user's restart report; no automatic repeat of the incomplete
 run. Whole-pipeline performance/output qualification for the corrected design is incomplete.
