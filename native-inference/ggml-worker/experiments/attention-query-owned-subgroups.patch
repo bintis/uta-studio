@@ -1,5 +1,5 @@
 diff --git a/src/ggml-vulkan/ggml-vulkan.cpp b/src/ggml-vulkan/ggml-vulkan.cpp
-index 7bb339b..e1988fd 100644
+index 7bb339b..b909307 100644
 --- a/src/ggml-vulkan/ggml-vulkan.cpp
 +++ b/src/ggml-vulkan/ggml-vulkan.cpp
 @@ -3694,6 +3694,7 @@ struct vk_fa_tuning_params {
@@ -64,18 +64,18 @@ index 7bb339b..e1988fd 100644
  static bool ggml_vk_flash_attn_coopmat_shmem_support(const vk_device& device, const vk_fa_tuning_params& params, uint32_t hsk, uint32_t hsv, bool f32acc, ggml_type k_type, ggml_type v_type) {
      GGML_UNUSED(v_type);
 +    if (params.query_owned) {
-+        // Query/tail, score/output and probabilities: 3584 bytes per subgroup.
-+        return params.row_split * 3584u <= device->properties.limits.maxComputeSharedMemorySize;
++        // 3584 bytes per subgroup plus the 32-byte IQ table from types.glsl.
++        return params.row_split * 3584u + 32u <= device->properties.limits.maxComputeSharedMemorySize;
 +    }
      // Needs to be kept up to date on shader changes
      const uint32_t Br = params.block_rows;
      const uint32_t Bc = params.block_cols;
 diff --git a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
 new file mode 100644
-index 0000000..ee18963
+index 0000000..f7a8c63
 --- /dev/null
 +++ b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
-@@ -0,0 +1,256 @@
+@@ -0,0 +1,254 @@
 +#version 450
 +#extension GL_EXT_control_flow_attributes : enable
 +#extension GL_EXT_shader_16bit_storage : require
@@ -248,16 +248,16 @@ index 0000000..ee18963
 +
 +        // Keep each block's product separate, preserving the previous algorithm's
 +        // blockwise addition instead of silently extending its FMA accumulation chain.
-+        coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator> products[4];
 +        [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
-+            products[depth_tile] = coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator>(0);
-+        }
-+        [[unroll]] for (uint key_tile = 0; key_tile < 2; ++key_tile) {
-+            coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseA> probabilities;
-+            coopMatLoad(probabilities, probability_workspace, probability_base + key_tile * 32,
-+                        2, gl_CooperativeMatrixLayoutColumnMajor);
-+            const uint value_row = block * 32 + key_tile * 16;
-+            [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
++            // Only one temporary product survives at a time. Holding four here
++            // alongside Q and O spilled the first prototype beyond 128 GRFs.
++            coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator> product =
++                coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator>(0);
++            [[unroll]] for (uint key_tile = 0; key_tile < 2; ++key_tile) {
++                coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseA> probabilities;
++                coopMatLoad(probabilities, probability_workspace, probability_base + key_tile * 32,
++                            2, gl_CooperativeMatrixLayoutColumnMajor);
++                const uint value_row = block * 32 + key_tile * 16;
 +                coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> values;
 +                if (value_row + 16 <= KV && (v_stride & 7) == 0) {
 +                    coopMatLoad(values, value_vectors, value_base / 4 + value_row * v_stride / 4 + depth_tile * 4,
@@ -277,14 +277,12 @@ index 0000000..ee18963
 +                    subgroupBarrier();
 +                    coopMatLoad(values, operand_workspace, operand_base, 4, gl_CooperativeMatrixLayoutRowMajor);
 +                }
-+                products[depth_tile] = coopMatMulAdd(probabilities, values, products[depth_tile]);
++                product = coopMatMulAdd(probabilities, values, product);
 +                if (value_row + 16 > KV || (v_stride & 7) != 0) {
 +                    subgroupBarrier();
 +                }
 +            }
-+        }
-+        [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
-+            output_tiles[depth_tile] = output_tiles[depth_tile] + products[depth_tile];
++            output_tiles[depth_tile] = output_tiles[depth_tile] + product;
 +        }
 +        subgroupBarrier();
 +    }
