@@ -27,6 +27,17 @@ inline at::Tensor interleaved_roformer_rotation_half(const at::Tensor& input, co
     at::mul_out(complex_output, paired, phase);
     return output;
 }
+// Copy two FP32 coordinates at a time, without complex arithmetic. Use the
+// same scalar conversion when a complex view cannot represent this tensor.
+inline at::Tensor paired_roformer_half(const at::Tensor& input) {
+    if (input.scalar_type() != at::kFloat || input.dim() == 0 || input.numel() == 0
+        || input.size(-1) % 2 != 0 || input.stride(-1) != 1 || input.storage_offset() % 2 != 0)
+        return input.to(at::kHalf);
+    for (int64_t axis = 0; axis + 1 < input.dim(); ++axis)
+        if (input.stride(axis) % 2 != 0) return input.to(at::kHalf);
+    auto paired = at::view_as_complex(input.unflatten(-1, {input.size(-1) / 2, 2}));
+    return at::view_as_real(paired.to(at::kComplexHalf)).flatten(-2);
+}
 // oneDNN SDPA supports dense head-interleaved tensors. Preserve the layout
 // produced by rotation/QKV conversion instead of copying every operand to BHLD;
 // the returned interleaved layout also avoids repacking before the output GEMM.

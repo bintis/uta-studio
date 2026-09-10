@@ -93,6 +93,48 @@ void normalization(const at::Device& device, int64_t rows, int64_t width, bool s
     compare(actual, reference, "normalization-double-oracle");
     if (!at::equal(input, original)) throw std::runtime_error("normalization modified its input");
 }
+void conversion(const at::Device& device, int64_t batch, int64_t length, int64_t width,
+                bool packed, bool shifted, bool timing) {
+    const int64_t heads = 8;
+    auto options = at::TensorOptions().device(device).dtype(at::kFloat);
+    const auto count = batch * length * heads * width * 3;
+    auto storage = (at::arange(count + 1, options) * 0.013).sin().narrow(0, shifted ? 1 : 0, count)
+        .reshape({batch, length, heads * width * 3});
+    auto input = storage.narrow(-1, heads * width * 2, heads * width)
+        .reshape({batch, length, heads, width}).transpose(1, 2);
+    if (packed) input = input.contiguous();
+    if (width >= 5) {
+        auto edge = input.select(0, 0).select(0, 0).select(0, 0);
+        edge.select(0, 0).fill_(-0.0);
+        edge.select(0, 1).fill_(65504.0);
+        edge.select(0, 2).fill_(1.00048828125);
+        edge.select(0, 3).fill_(std::ldexp(1.0, -24));
+        edge.select(0, 4).fill_(std::ldexp(3.0, -25));
+    }
+    auto original = input.clone();
+    auto reference = input.to(at::kHalf);
+    auto actual = uta::torch_native::paired_roformer_half(input);
+    if (actual.scalar_type() != at::kHalf || actual.sizes() != reference.sizes()
+        || !at::equal(actual.view(at::kShort), reference.view(at::kShort))
+        || !at::equal(input.view(at::kInt), original.view(at::kInt)))
+        throw std::runtime_error("paired conversion differs in storage bits or modifies input");
+    std::cout << "conversion_shape=" << batch << ',' << heads << ',' << length << ',' << width
+              << " packed=" << packed << " shifted=" << shifted << " elements=" << actual.numel()
+              << " storage_bits_equal=true" << std::endl;
+    if (!timing) return;
+    for (const auto& kind : {std::string("scalar"), std::string("paired"), std::string("paired"), std::string("scalar")}) {
+        auto invoke = [&] { return kind == "paired" ? uta::torch_native::paired_roformer_half(input) : input.to(at::kHalf); };
+        for (int warm = 0; warm < 2; ++warm) { actual = invoke(); synchronize(device); }
+        for (int sample = 0; sample < 4; ++sample) {
+            synchronize(device);
+            const auto started = Clock::now();
+            actual = invoke();
+            synchronize(device);
+            std::cout << "conversion=" << kind << " sample=" << sample << " synchronized_ms="
+                      << std::chrono::duration<double, std::milli>(Clock::now() - started).count() << std::endl;
+        }
+    }
+}
 void gating(const at::Device& device, int64_t batch, int64_t length, bool strided) {
     const int64_t heads = 8, width = 64;
     auto options = at::TensorOptions().device(device).dtype(at::kFloat);
@@ -162,6 +204,22 @@ int main(int argc, char** argv) {
         c10::DeviceGuard guard(device);
         at::globalContext().setFloat32Precision(at::Float32Backend::GENERIC, at::Float32Op::ALL, at::Float32Precision::IEEE);
         at::globalContext().setAllowTF32OneDNN(false);
+        if (device.is_cpu() || (argc > 2 && std::string(argv[2]) == "conversion")) {
+            for (const auto packed : {false, true}) for (const auto shifted : {false, true}) {
+                conversion(device, 3, 17, 64, packed, shifted, false);
+                conversion(device, 17, 3, 65, packed, shifted, false);
+                conversion(device, 1, 1, 2, packed, shifted, false);
+            }
+            if (!device.is_cpu()) {
+                if (argc > 3 && std::string(argv[3]) == "full") {
+                    conversion(device, 90, 1722, 64, false, false, true);
+                    conversion(device, 1722, 90, 64, false, false, true);
+                }
+                synchronize(device);
+                std::cout << "RoFormer paired conversion checks passed on " << device << std::endl;
+                return 0;
+            }
+        }
         const bool rotary_only = argc > 2 && std::string(argv[2]) == "rotary";
         const bool full = (argc > 2 && std::string(argv[2]) == "full")
             || (rotary_only && argc > 3 && std::string(argv[3]) == "full");
