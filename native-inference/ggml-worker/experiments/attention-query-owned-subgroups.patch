@@ -78,10 +78,10 @@ index 7bb339b..fa71993 100644
      const uint32_t Bc = params.block_cols;
 diff --git a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
 new file mode 100644
-index 0000000..14ba426
+index 0000000..d255005
 --- /dev/null
 +++ b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
-@@ -0,0 +1,309 @@
+@@ -0,0 +1,323 @@
 +#version 450
 +#extension GL_EXT_control_flow_attributes : enable
 +#extension GL_EXT_shader_16bit_storage : require
@@ -283,18 +283,32 @@ index 0000000..14ba426
 +            output_tiles[depth_tile] = output_tiles[depth_tile] * rescale_matrix;
 +        }
 +        if (row_split == 4) {
-+            // Store V transposed so each B fragment reads adjacent key values,
-+            // rather than issuing scalar half loads for every output column.
++            // Four adjacent lanes load four adjacent-key rows, then transpose
++            // their 4x4 values with shuffles. Global reads stay vectorized while
++            // the shared tile matches the column-major B fragment layout.
 +            [[unroll]] for (uint index = gl_LocalInvocationID.x; index < 512; index += WorkGroupSize) {
-+                const uint first_key = block * 32 + (index % 8) * 4;
-+                const uint depth = index / 8;
-+                f16vec4 values = f16vec4(0);
-+                [[unroll]] for (uint component = 0; component < 4; ++component) {
-+                    if (first_key + component < KV) {
-+                        values[component] = value_data[value_base + (first_key + component) * v_stride + depth];
++                const uint key_pack = index / 64;
++                const uint depth_pack = (index / 4) % 16;
++                const uint pack_lane = lane % 4;
++                const uint key_row = block * 32 + key_pack * 4 + pack_lane;
++                const uint address = value_base + key_row * v_stride + depth_pack * 4;
++                vec4 values = vec4(0);
++                if (key_row < KV) {
++                    if ((address & 3) == 0) {
++                        values = vec4(value_vectors[address / 4]);
++                    } else {
++                        values = vec4(value_data[address], value_data[address + 1], value_data[address + 2], value_data[address + 3]);
 +                    }
 +                }
-+                operand_workspace[index] = values;
++                vec4 exchanged = subgroupShuffleXor(values, 1);
++                values = (pack_lane & 1) == 0
++                    ? vec4(values.x, exchanged.x, values.z, exchanged.z)
++                    : vec4(exchanged.y, values.y, exchanged.w, values.w);
++                exchanged = subgroupShuffleXor(values, 2);
++                values = (pack_lane & 2) == 0
++                    ? vec4(values.xy, exchanged.xy)
++                    : vec4(exchanged.zw, values.zw);
++                operand_workspace[(depth_pack * 4 + pack_lane) * 8 + key_pack] = f16vec4(values);
 +            }
 +            barrier();
 +        }
