@@ -286,7 +286,7 @@ pub fn preview_engine_run(
     } else {
         draft.lyrics
     };
-    let mut request = compile_analyze_request_v1(
+    let mut request = compile_analyze_request(
         AnalysisRequestIntent {
             request_id: draft.request_id,
             source: source.clone(),
@@ -550,7 +550,7 @@ fn cached_step_one_audio_sources(
         .collect()
 }
 
-pub fn compile_analyze_request_v1(
+pub fn compile_analyze_request(
     intent: AnalysisRequestIntent,
     effective: &EffectiveAnalysisExperience,
 ) -> Result<AnalyzeRequestWireV1, String> {
@@ -1340,7 +1340,7 @@ mod tests {
             AnalysisDefaultTarget::PitchEvidence,
             AnalysisDefaultTarget::Instrumental,
         ] {
-            let request = compile_analyze_request_v1(
+            let request = compile_analyze_request(
                 AnalysisRequestIntent {
                     request_id: format!("test-{}", target.as_str()),
                     source: ResolvedAnalysisSource {
@@ -1409,7 +1409,7 @@ mod tests {
             alignment: false,
             instrumental: true,
         };
-        let request = compile_analyze_request_v1(
+        let request = compile_analyze_request(
             AnalysisRequestIntent {
                 request_id: "multi-output".to_string(),
                 source: ResolvedAnalysisSource {
@@ -1442,7 +1442,7 @@ mod tests {
 
     #[test]
     fn request_compiler_rejects_an_empty_run_sheet() {
-        let error = compile_analyze_request_v1(
+        let error = compile_analyze_request(
             AnalysisRequestIntent {
                 request_id: "empty-output-sheet".to_string(),
                 source: ResolvedAnalysisSource {
@@ -1474,7 +1474,7 @@ mod tests {
     #[test]
     fn request_compiler_normalizes_explicit_ggml_selection() {
         for configured in ["ggml", "ggml_vulkan", "vulkan"] {
-            let request = compile_analyze_request_v1(
+            let request = compile_analyze_request(
                 AnalysisRequestIntent {
                     request_id: format!("backend-{configured}"),
                     source: ResolvedAnalysisSource {
@@ -1507,7 +1507,7 @@ mod tests {
 
     #[test]
     fn request_compiler_preserves_per_model_backend_choices() {
-        let request = compile_analyze_request_v1(
+        let request = compile_analyze_request(
             AnalysisRequestIntent {
                 request_id: "model-backends".to_string(),
                 source: ResolvedAnalysisSource {
@@ -1556,7 +1556,7 @@ mod tests {
 
     #[test]
     fn canonical_full_candidate_does_not_request_redundant_asr() {
-        let request = compile_analyze_request_v1(
+        let request = compile_analyze_request(
             AnalysisRequestIntent {
                 request_id: "known-candidate".to_string(),
                 source: ResolvedAnalysisSource {
@@ -1602,7 +1602,7 @@ mod tests {
     fn disabling_continuous_pitch_omits_only_the_published_pitch_artifact() {
         let mut settings = effective(AnalysisDefaultTarget::FullCandidate);
         settings.preserve_continuous_pitch.value = false;
-        let request = compile_analyze_request_v1(
+        let request = compile_analyze_request(
             AnalysisRequestIntent {
                 request_id: "candidate-without-pitch-artifact".to_string(),
                 source: ResolvedAnalysisSource {
@@ -1656,7 +1656,7 @@ mod tests {
         let library_hash = crate::song::compute_file_hash(&path).unwrap();
         let source = resolve_true_source_path(&library_hash, &path).unwrap();
         let effective = effective(AnalysisDefaultTarget::Transcript);
-        let request = compile_analyze_request_v1(
+        let request = compile_analyze_request(
             AnalysisRequestIntent {
                 request_id: "exact-preview-1".to_string(),
                 source: source.clone(),

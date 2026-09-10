@@ -48,7 +48,7 @@ pub use analysis_artifact::{
 pub use analysis_engine_adapter::{
     AnalysisRequestIntent, EngineRunDraft, EngineRunPreview, QueuedEngineRun,
     ResolvedAnalysisSource, StudioLyricToken, StudioLyricsContext, StudioLyricsContextProjection,
-    StudioLyricsMode, compile_analyze_request_v1, preview_analyze_request_v1,
+    StudioLyricsMode, compile_analyze_request, preview_analyze_request_v1,
     preview_and_queue_engine_run, preview_and_stage_engine_run, preview_engine_run,
     project_lyrics_context, queue_exact_preview, resolve_true_source, stage_exact_preview,
 };

@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use sha2::{Digest, Sha256};
 
 use crate::analysis_engine_adapter::{
-    AnalysisRequestIntent, ResolvedAnalysisSource, StudioLyricsContext, compile_analyze_request_v1,
+    AnalysisRequestIntent, ResolvedAnalysisSource, StudioLyricsContext, compile_analyze_request,
 };
 use crate::analysis_experience::{
     AnalysisExperienceSettings, AnalysisOutputSelection, resolve_analysis_experience,
@@ -79,7 +79,7 @@ fn generate_acceptance_request() {
     let experience = AnalysisExperienceSettings::default();
     let effective = resolve_analysis_experience(&experience, None, None);
 
-    let mut request = compile_analyze_request_v1(intent, &effective).expect("compile request");
+    let mut request = compile_analyze_request(intent, &effective).expect("compile request");
 
     let mut definition = default_workflow(&sha256);
     set_workflow_parameter(
