@@ -1,5 +1,5 @@
 diff --git a/src/ggml-vulkan/ggml-vulkan.cpp b/src/ggml-vulkan/ggml-vulkan.cpp
-index 7bb339b..8cabe9e 100644
+index 7bb339b..fa71993 100644
 --- a/src/ggml-vulkan/ggml-vulkan.cpp
 +++ b/src/ggml-vulkan/ggml-vulkan.cpp
 @@ -3694,6 +3694,7 @@ struct vk_fa_tuning_params {
@@ -10,11 +10,11 @@ index 7bb339b..8cabe9e 100644
      uint32_t limit_occupancy_shmem;
  
      void print() const {
-@@ -3848,6 +3849,23 @@ static vk_fa_tuning_params get_fa_tuning_params_coopmat1(const vk_device& device
+@@ -3848,6 +3849,28 @@ static vk_fa_tuning_params get_fa_tuning_params_coopmat1(const vk_device& device
          result.shmem_staging = 1;
      }
  
-+    // Diagnostic query-owned M8 path: one native subgroup carries eight queries
++    // Diagnostic query-owned M8 path: one subgroup carries eight queries
 +    // through QK, softmax and PV. Small/GQA dispatches retain the original path.
 +    if (intel_m8_h64 && n_rows > 32 && result.subgroup_size == 32 &&
 +        std::getenv("UTA_STUDIO_GGML_FA_QUERY_OWNED") != nullptr) {
@@ -23,18 +23,23 @@ index 7bb339b..8cabe9e 100644
 +        if (requested && (std::strcmp(requested, "1") == 0 || std::strcmp(requested, "2") == 0)) {
 +            groups = static_cast<uint32_t>(std::atoi(requested));
 +        }
++        const char * width = std::getenv("UTA_STUDIO_GGML_FA_OWNED_WIDTH");
++        if (width && std::strcmp(width, "16") == 0 && device->subgroup_size_control &&
++            device->subgroup_min_size <= 16 && device->subgroup_max_size >= 16) {
++            result.subgroup_size = 16;
++        }
 +        result.query_owned = true;
 +        result.block_rows = groups * 8;
 +        result.block_cols = 32;
 +        result.row_split = groups;
-+        result.workgroup_size = groups * 32;
++        result.workgroup_size = groups * result.subgroup_size;
 +        result.shmem_staging = false;
 +    }
 +
      return result;
  }
  
-@@ -3935,7 +3953,8 @@ static vk_fa_pipeline_state get_fa_pipeline_state(const vk_device& device, const
+@@ -3935,7 +3958,8 @@ static vk_fa_pipeline_state get_fa_pipeline_state(const vk_device& device, const
      uint32_t flags = (use_mask_opt      ? 1 : 0) |
                       (use_mask          ? 2 : 0) |
                       (use_logit_softcap ? 4 : 0) |
@@ -44,7 +49,7 @@ index 7bb339b..8cabe9e 100644
  
      const uint32_t subgroup_size = params.disable_subgroups ? 0 : params.subgroup_size;
  
-@@ -4586,7 +4605,13 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+@@ -4586,7 +4610,14 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
  #endif
              } else {
                  // Bc is MatBc per subgroup, so this recovers the M the tuning chose.
@@ -54,28 +59,29 @@ index 7bb339b..8cabe9e 100644
 +                    spv_size = flash_attn_f32_f16_cm1_query_owned_len;
 +                    name = "flash_attn_f32_f16_cm1_query_owned";
 +                    std::cerr << "ggml_vulkan: experimental query-owned attention Br=" << Br
-+                              << " Bc=" << Bc << " subgroups=" << fa.first.row_split << std::endl;
++                              << " Bc=" << Bc << " subgroups=" << fa.first.row_split
++                              << " lanes=" << fa_sgs << std::endl;
 +                } else if (Bc / fa.first.row_split == 8) {
                      if (f32acc) { spv_data = flash_attn_f32_f16_cm1_m8_data;        spv_size = flash_attn_f32_f16_cm1_m8_len; }
                      else        { spv_data = flash_attn_f32_f16_f16acc_cm1_m8_data; spv_size = flash_attn_f32_f16_f16acc_cm1_m8_len; }
                      name = aligned ? "flash_attn_f32_f16_aligned_cm1_m8" : "flash_attn_f32_f16_cm1_m8";
-@@ -10824,6 +10849,10 @@ static bool ggml_vk_flash_attn_scalar_shmem_support(const vk_device& device, con
+@@ -10824,6 +10855,10 @@ static bool ggml_vk_flash_attn_scalar_shmem_support(const vk_device& device, con
  
  static bool ggml_vk_flash_attn_coopmat_shmem_support(const vk_device& device, const vk_fa_tuning_params& params, uint32_t hsk, uint32_t hsv, bool f32acc, ggml_type k_type, ggml_type v_type) {
      GGML_UNUSED(v_type);
 +    if (params.query_owned) {
-+        // 4608 bytes per subgroup plus the 32-byte IQ table from types.glsl.
-+        return params.row_split * 4608u + 32u <= device->properties.limits.maxComputeSharedMemorySize;
++        // 3584 bytes per subgroup plus the 32-byte IQ table from types.glsl.
++        return params.row_split * 3584u + 32u <= device->properties.limits.maxComputeSharedMemorySize;
 +    }
      // Needs to be kept up to date on shader changes
      const uint32_t Br = params.block_rows;
      const uint32_t Bc = params.block_cols;
 diff --git a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
 new file mode 100644
-index 0000000..90561ed
+index 0000000..c9d27b8
 --- /dev/null
 +++ b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
-@@ -0,0 +1,245 @@
+@@ -0,0 +1,258 @@
 +#version 450
 +#extension GL_EXT_control_flow_attributes : enable
 +#extension GL_EXT_shader_16bit_storage : require
@@ -90,7 +96,7 @@ index 0000000..90561ed
 +#include "types.glsl"
 +#include "flash_attn_base.glsl"
 +
-+// H64, F16 K/V, F32 accumulation, native SIMD32 only. Each subgroup owns
++// H64, F16 K/V, F32 accumulation, explicit SIMD16/32. Each subgroup owns
 +// eight queries for the complete key traversal. There is no cross-subgroup
 +// score or output exchange, and no assumed mapping of matrix elements to lanes.
 +layout(binding = 0) readonly buffer Query { float query_data[]; };
@@ -100,20 +106,22 @@ index 0000000..90561ed
 +layout(binding = 2) readonly buffer ValueVectors { f16vec4 value_vectors[]; };
 +layout(binding = 3) readonly buffer Mask { float16_t mask_data[]; };
 +
-+// Per subgroup: separate 1024-byte query and tail workspaces, 2048-byte
-+// score/output workspace and 512-byte probabilities. Subgroup barriers protect
-+// each reuse; the query tile stays read-only throughout the key traversal.
++// Per subgroup: 1024-byte query/tail workspace, 2048-byte score/output
++// workspace and 512-byte probabilities. Lifetimes are separated by subgroup
++// barriers, including the last reads before either workspace is overwritten.
 +shared f16vec4 operand_workspace[row_split * 128];
 +shared vec4 float_workspace[row_split * 128];
 +shared f16vec4 probability_workspace[row_split * 64];
-+shared f16vec4 query_workspace[row_split * 128];
 +
 +void main() {
 +    init_indices();
 +    const uint lane = gl_SubgroupInvocationID;
 +    const uint group = gl_SubgroupID;
-+    const uint local_row = lane / 4;
-+    const uint row_lane = lane % 4;
++    const uint lanes_per_row = SubGroupSize / 8;
++    const uint keys_per_lane = 32 / lanes_per_row;
++    const uint packs_per_lane = keys_per_lane / 4;
++    const uint local_row = lane / lanes_per_row;
++    const uint row_lane = lane % lanes_per_row;
 +    const uint first_query = i * Br + group * 8;
 +    if (first_query >= N) {
 +        return; // subgroup-uniform; no workgroup barriers in this shader
@@ -132,7 +140,7 @@ index 0000000..90561ed
 +    const float head_slope = p.max_bias > 0.0
 +        ? float(perElemOpComputeSlope(0, 0, ACC_TYPE(0), iq2)) : 1.0;
 +
-+    [[unroll]] for (uint index = lane; index < 128; index += 32) {
++    [[unroll]] for (uint index = lane; index < 128; index += SubGroupSize) {
 +        const uint row = index / 16;
 +        const uint depth = (index % 16) * 4;
 +        vec4 query = vec4(0);
@@ -141,7 +149,13 @@ index 0000000..90561ed
 +            query = vec4(query_data[address], query_data[address + 1],
 +                         query_data[address + 2], query_data[address + 3]);
 +        }
-+        query_workspace[operand_base + index] = f16vec4(query * p.scale);
++        operand_workspace[operand_base + index] = f16vec4(query * p.scale);
++    }
++    subgroupBarrier();
++    coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseA> queries[4];
++    [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
++        coopMatLoad(queries[depth_tile], operand_workspace,
++                    operand_base + depth_tile * 4, 16, gl_CooperativeMatrixLayoutRowMajor);
 +    }
 +    subgroupBarrier();
 +
@@ -164,7 +178,7 @@ index 0000000..90561ed
 +                    coopMatLoad(keys, key_vectors, key_base / 4 + key_row * k_stride / 4 + depth_tile * 4,
 +                                k_stride / 4, gl_CooperativeMatrixLayoutColumnMajor);
 +                } else {
-+                    [[unroll]] for (uint index = lane; index < 64; index += 32) {
++                    [[unroll]] for (uint index = lane; index < 64; index += SubGroupSize) {
 +                        const uint row = key_row + index / 4;
 +                        const uint depth = depth_tile * 16 + (index % 4) * 4;
 +                        f16vec4 value = f16vec4(0);
@@ -178,10 +192,7 @@ index 0000000..90561ed
 +                    subgroupBarrier();
 +                    coopMatLoad(keys, operand_workspace, operand_base, 4, gl_CooperativeMatrixLayoutColumnMajor);
 +                }
-+                coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseA> query;
-+                coopMatLoad(query, query_workspace, operand_base + depth_tile * 4,
-+                            16, gl_CooperativeMatrixLayoutRowMajor);
-+                scores = coopMatMulAdd(query, keys, scores);
++                scores = coopMatMulAdd(queries[depth_tile], keys, scores);
 +                // Protect the local operand tile before another contraction overwrites it.
 +                if (key_row + 16 > KV || (k_stride & 7) != 0) {
 +                    subgroupBarrier();
@@ -192,17 +203,17 @@ index 0000000..90561ed
 +        }
 +        subgroupBarrier();
 +
-+        // Four adjacent lanes own one query row, eight keys per lane. Online
++        // Two or four adjacent lanes own one query row, covering all 32 keys.
 +        // max/sum state is scalar instead of replicating eight rows in each lane.
-+        vec4 packed_scores[2];
++        vec4 packed_scores[packs_per_lane];
 +        float row_maximum = negative;
-+        [[unroll]] for (uint part = 0; part < 2; ++part) {
-+            vec4 scores = float_workspace[float_base + local_row * 8 + row_lane * 2 + part];
++        [[unroll]] for (uint part = 0; part < packs_per_lane; ++part) {
++            vec4 scores = float_workspace[float_base + local_row * 8 + row_lane * packs_per_lane + part];
 +            if (LOGIT_SOFTCAP) {
 +                scores = p.logit_softcap * tanh(scores);
 +            }
 +            [[unroll]] for (uint component = 0; component < 4; ++component) {
-+                const uint key_column = block * 32 + row_lane * 8 + part * 4 + component;
++                const uint key_column = block * 32 + row_lane * keys_per_lane + part * 4 + component;
 +                const uint query_row = first_query + local_row;
 +                if (key_column >= KV) {
 +                    scores[component] = negative;
@@ -214,25 +225,29 @@ index 0000000..90561ed
 +            row_maximum = max(row_maximum, max(max(scores.x, scores.y), max(scores.z, scores.w)));
 +        }
 +        row_maximum = max(row_maximum, subgroupShuffleXor(row_maximum, 1));
-+        row_maximum = max(row_maximum, subgroupShuffleXor(row_maximum, 2));
++        if (lanes_per_row == 4) {
++            row_maximum = max(row_maximum, subgroupShuffleXor(row_maximum, 2));
++        }
 +        const float maximum = max(running_maximum, row_maximum + FATTN_KQ_MAX_OFFSET);
 +        const float rescale = exp(running_maximum - maximum);
 +        running_maximum = maximum;
 +        normalizer *= rescale;
-+        [[unroll]] for (uint part = 0; part < 2; ++part) {
++        [[unroll]] for (uint part = 0; part < packs_per_lane; ++part) {
 +            f16vec4 probabilities = f16vec4(exp(packed_scores[part] - vec4(maximum)));
 +            [[unroll]] for (uint component = 0; component < 4; ++component) {
-+                const uint key_column = block * 32 + row_lane * 8 + part * 4 + component;
++                const uint key_column = block * 32 + row_lane * keys_per_lane + part * 4 + component;
 +                if (key_column >= KV) {
 +                    probabilities[component] = float16_t(0);
 +                }
 +                normalizer += float(probabilities[component]);
 +            }
-+            probability_workspace[probability_base + local_row * 8 + row_lane * 2 + part] = probabilities;
++            probability_workspace[probability_base + local_row * 8 + row_lane * packs_per_lane + part] = probabilities;
 +        }
 +        subgroupBarrier();
 +        // Row-major 8x16 broadcast matrix: no fragment-to-lane assumption.
-+        float_workspace[float_base + lane] = vec4(rescale);
++        [[unroll]] for (uint column = row_lane; column < 4; column += lanes_per_row) {
++            float_workspace[float_base + local_row * 4 + column] = vec4(rescale);
++        }
 +        subgroupBarrier();
 +        coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator> rescale_matrix;
 +        coopMatLoad(rescale_matrix, float_workspace, float_base, 4, gl_CooperativeMatrixLayoutRowMajor);
@@ -257,7 +272,7 @@ index 0000000..90561ed
 +                    coopMatLoad(values, value_vectors, value_base / 4 + value_row * v_stride / 4 + depth_tile * 4,
 +                                v_stride / 4, gl_CooperativeMatrixLayoutRowMajor);
 +                } else {
-+                    [[unroll]] for (uint index = lane; index < 64; index += 32) {
++                    [[unroll]] for (uint index = lane; index < 64; index += SubGroupSize) {
 +                        const uint row = value_row + index / 4;
 +                        const uint depth = depth_tile * 16 + (index % 4) * 4;
 +                        f16vec4 value = f16vec4(0);
@@ -282,7 +297,9 @@ index 0000000..90561ed
 +    }
 +
 +    normalizer += subgroupShuffleXor(normalizer, 1);
-+    normalizer += subgroupShuffleXor(normalizer, 2);
++    if (lanes_per_row == 4) {
++        normalizer += subgroupShuffleXor(normalizer, 2);
++    }
 +    float final_scale = 1.0;
 +    if (p.k_num == 1) {
 +        if ((p.mask_n_head_log2 & SINK_ENABLE_BIT) != 0) {
@@ -293,7 +310,9 @@ index 0000000..90561ed
 +        }
 +        final_scale = normalizer == 0.0 ? 0.0 : final_scale / normalizer;
 +    }
-+    float_workspace[float_base + lane] = vec4(final_scale);
++    [[unroll]] for (uint column = row_lane; column < 4; column += lanes_per_row) {
++        float_workspace[float_base + local_row * 4 + column] = vec4(final_scale);
++    }
 +    if (p.k_num > 1 && row_lane == 0 && first_query + local_row < N) {
 +        const uint address = HSV * p.ne1 * p.k_num * p.ne2 * p.ne3
 +            + p.ne1 * 2 * (split_k_index + p.k_num * (first_query + local_row + p.ne2 * iq3));
@@ -310,7 +329,7 @@ index 0000000..90561ed
 +                     16, gl_CooperativeMatrixLayoutRowMajor);
 +    }
 +    subgroupBarrier();
-+    [[unroll]] for (uint index = lane; index < 128; index += 32) {
++    [[unroll]] for (uint index = lane; index < 128; index += SubGroupSize) {
 +        const uint row = first_query + index / 16;
 +        if (row < N) {
 +            const uint depth = index % 16;
