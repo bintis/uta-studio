@@ -14,6 +14,9 @@ use crate::wav::{read_f32_wav, write_f32_wav};
 use crate::{DeviceDescriptor, GgmlBackendHandle, GgmlRuntime, path_c_string};
 
 mod frames;
+mod overlap;
+
+pub use overlap::DualChunkStats;
 
 use frames::{prepare_model_input, process_overlap_add, reconstruct_stems};
 
@@ -176,6 +179,41 @@ impl Roformer {
         };
         model.load_weights(model_path)?;
         Ok(Self { model })
+    }
+
+    /// Run independent chunks on two Vulkan devices while retaining ordered
+    /// overlap-add. The existing primary model stays on this thread; the
+    /// secondary owns a separate model/backend for the duration of this pass.
+    pub fn process_wav_with_secondary(
+        &mut self,
+        secondary_device: &DeviceDescriptor,
+        model_path: &Path,
+        input_path: &Path,
+        output_path: &Path,
+        mut progress: impl FnMut(u64, u64),
+    ) -> Result<DualChunkStats, String> {
+        let config = self.model.config.clone();
+        let input = read_f32_wav(input_path, config.sample_rate, 2)?;
+        let runtime = Arc::clone(&self.model.backend.runtime);
+        let device = secondary_device.clone();
+        let path = model_path.to_path_buf();
+        let (outputs, stats) = overlap::process_dual(
+            &input,
+            config.chunk_size,
+            config.overlap,
+            |chunk| self.model.process_chunk(chunk),
+            move || {
+                let mut secondary = Self::load(runtime, &device, &path)?;
+                Ok(move |chunk: &[f32]| secondary.model.process_chunk(chunk))
+            },
+            &mut progress,
+        )?;
+        self.model.profile.report();
+        if outputs.len() != 1 {
+            return Err("GGML separation route requires one estimate".to_string());
+        }
+        write_f32_wav(output_path, config.sample_rate, 2, &outputs[0])?;
+        Ok(stats)
     }
 
     pub fn process_wav(
