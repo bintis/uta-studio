@@ -54,6 +54,7 @@ use output_guard::OutputRunGuard;
 use runtime_route::{
     RoformerRoute, caller_transcript, cancelled, execution_device, fingerprint_request,
     firered_language_applicable, model_dispatch, pitch_dispatch, qwen_alignment_words,
+    stars_g2p_language_applicable,
     request_lyrics_text, resolve_roformer_route, resource_provenance, roformer_dispatch_config,
 };
 use worker_tasks::{run_native_task, run_native_task_with_inputs, typed_worker_output};
@@ -1252,7 +1253,9 @@ impl AnalysisEngine {
             .collect::<Vec<_>>();
         let mut advanced_note_evidence = Vec::<AdvancedNoteEvidence>::new();
         let mut technique_evidence = Vec::<TechniqueEvidence>::new();
-        if run_stars_notes || run_stars_technique {
+        if (run_stars_notes || run_stars_technique)
+            && stars_g2p_language_applicable(request.lyrics.language.as_deref())
+        {
             let capability = if run_stars_notes {
                 "notes.stars"
             } else {

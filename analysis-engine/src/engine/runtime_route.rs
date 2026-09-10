@@ -140,6 +140,18 @@ pub(super) fn firered_language_applicable(
     observed.any(|language| matches!(language.as_str(), "zh" | "yue" | "en"))
 }
 
+/// STARS ships a Chinese G2P lexicon only. Japanese (and other) lyrics must not
+/// fail the whole analysis for a missing Chinese reading.
+pub(super) fn stars_g2p_language_applicable(request_language: Option<&str>) -> bool {
+    let language = request_language
+        .unwrap_or_default()
+        .split(['-', '_'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    language.is_empty() || language == "und" || matches!(language.as_str(), "zh" | "yue")
+}
+
 pub(super) fn request_lyrics_text(request: &AnalyzeRequest) -> String {
     let separator = match request.lyrics.language.as_deref() {
         Some(language)
@@ -396,6 +408,17 @@ mod tests {
         assert!(firered_language_applicable(None, Some("und")));
         assert!(!firered_language_applicable(Some("ja"), Some("ja-JP")));
         assert!(firered_language_applicable(Some("ja"), Some("yue")));
+    }
+
+    #[test]
+    fn stars_g2p_is_limited_to_chinese_families() {
+        assert!(stars_g2p_language_applicable(Some("zh-CN")));
+        assert!(stars_g2p_language_applicable(Some("yue")));
+        assert!(stars_g2p_language_applicable(None));
+        assert!(stars_g2p_language_applicable(Some("und")));
+        assert!(!stars_g2p_language_applicable(Some("ja")));
+        assert!(!stars_g2p_language_applicable(Some("ja-JP")));
+        assert!(!stars_g2p_language_applicable(Some("en")));
     }
 
     #[test]
