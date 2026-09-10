@@ -142,7 +142,7 @@ pub(super) fn process(
     Ok(accumulator.finish(&chunks))
 }
 
-#[derive(Debug, Default, serde::Serialize)]
+#[derive(Debug, Default)]
 pub struct DualChunkStats {
     pub primary_chunks: usize,
     pub secondary_chunks: usize,
