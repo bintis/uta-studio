@@ -48,6 +48,18 @@ logit difference was 9.17911529541e-6. The XPU observers sampled only Intel Leve
 `0000:07:00.0`. This does not qualify real-audio output parity, a real transcription/alignment, all
 models, Super scheduling or speedup; see [LibTorch execution](design/runtime/LIBTORCH_EXECUTION.md).
 
+Subsequent authorized native RoFormer optimization fuses XPU ordinary rotary
+arithmetic and FP32 RMS normalization, and preserves head-interleaved SDPA
+operands to avoid copies. Full-axis primitive comparisons and a complete
+12-second XE90 waveform comparison pass; final waveform max difference is
+8.35955143e-6, SNR 111.2070 dB, not bitwise equality. Isolated rotation improves
+from roughly 14–15 ms to 2.2 ms per call, **not a whole-model speedup**. Other
+GGML work contaminated later timings; the matched full-song pair and other
+RoFormer real-audio geometries are prepared but unexecuted. The 60-second
+whole-song goal is unverified. Installed assets and precision/context/chunk/
+synchronization semantics remain unchanged. See the final section of
+[Native XPU comparison](ROFORMER_B580_LIBTORCH_XPU.md).
+
 ## Current executable models
 
 The Runtime Manager catalog contains exactly seventeen models and one shared-library runtime. Every model pins the `ggml` backend and depends on the `ggml_vulkan` runtime.

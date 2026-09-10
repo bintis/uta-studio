@@ -440,10 +440,15 @@ CPU primitive/ABI checks and 54 Rust library tests pass. Full-axis XPU primitive
 checks pass for rotation and attention layout; the latter compares every output
 exactly with native packed SDPA. A complete 12-second real-audio rotation+layout
 comparison has maximum sample difference 4.97698783875e-6 and SNR 112.6107 dB.
-These are bounded numerical and synchronized diagnostic results, not full-song
-performance. Other B580 worker activity (96–98% total busy at 19:20–19:21 UTC)
-paused new performance runs; fused-normalization XPU, other RoFormer geometries
-and the matched whole-song pair remain. Details and operation evidence:
+The final fused-normalization XPU primitive and real-weight XE90 checks also
+pass: full waveform maximum difference 8.35955143e-6, SNR 111.2070 dB. These are
+bounded numerical and synchronized diagnostic results, not full-song performance.
+Although a later pre-run snapshot was quiet, continuous observation captured
+other GGML workers during the final checks; those timings are not comparable.
+Other B580 activity (again 98% total busy at 19:24:51 UTC) paused further GPU
+benchmarks. Other RoFormer real-audio geometries and the matched whole-song pair
+remain, with explicit commands and private builds prepared but not executed.
+Details and operation evidence:
 [Native XPU comparison](../../docs/ROFORMER_B580_LIBTORCH_XPU.md#native-roformer-optimization--in-progress-2026-09-10-utc).
 
 ## Next actions

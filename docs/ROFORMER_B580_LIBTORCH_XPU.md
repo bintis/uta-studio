@@ -247,13 +247,50 @@ Executed verification so far:
   intervals fall from about 31/30 ms to 6/5 ms (time/frequency); this synchronized
   trace is not normal-throughput acceptance. `bounded-comparison.json` retains
   both independent changes' results.
+- Fused normalization's CPU and XPU checks pass, including 8/16/256/384/516-wide
+  packed and strided rows at zero, tiny, ordinary and high amplitudes. Complete
+  full-shape FP64 comparisons cover 39,674,880 XE90 and 18,455,040 mel-band values;
+  maximum absolute errors are `2.6747e-7` and `2.6563e-7`, respectively
+  (`20260910T192400-87a86ab25936`). The final two-chunk XE90 model check completes
+  (`20260910T192429-7f790442817d`): all 1,058,400 waveform values are finite,
+  same 12.000-second/44.1-kHz/stereo shape, max difference **8.35955143e-6** and
+  SNR **111.2070 dB** against the control. `normalized-comparison.json` contains
+  the complete scan. These runs observed other GPU clients and are numerical
+  evidence only, not evidence that fused normalization improves model speed.
 - The first new control invocation used a nonexistent top-level model path and
   failed before model loading/inference (`20260910T190918-03d97127c817`). Its
   record remains. The explicitly corrected generation path completed under
   `20260910T190950-d415828a2e64`; no failed GPU inference was automatically retried.
 
 At 19:20–19:21 UTC, pre-run observations found another `uta-ggml-worker` using
-B580 (total GPU busy 96–98%). New performance runs were deferred rather than
-competing with or terminating that client. Fused-normalization XPU checks,
-other RoFormer geometries, and matched full-song timing/output checks remain
-pending. No 60-second, production-readiness or later host-stability claim.
+B580 (total GPU busy 96–98%). After CPU checks and command preparation, the
+19:23:42 snapshot reported only 7% total busy. The subsequent bounded native
+checks completed, but their continuous samples captured new GGML work:
+`normalized-check` observed clients 83557/84777, and `normalized-profile`
+observed 84777/85057 with CCS activity up to about 49%/30%. At 19:24:51 total
+GPU busy was again 98%. Do not use these normalized timings as speed evidence.
+No other client was terminated, no idle threshold/retry loop was added, and no
+further GPU benchmark was launched after recognizing the continued contention.
+
+`observed-competition-summary.json` parses the actual `interval_summary`
+records (`20260910T192712-31b0c55091ca`). The preceding
+`competition-summary.json` used a nonexistent field and parsed no intervals;
+it is retained as **unusable**, not evidence of an idle host. Earlier control,
+rotation and layout traces sampled no other GGML compute client, but desktop
+activity/partial visibility still preclude an exclusivity claim.
+
+Source-size/whitespace and product-identity checks pass
+(`20260910T192341-aaf61c7faf06`). Native observers report only Intel OpenCL/Level
+Zero and xe PCI `0000:07:00.0`, unchanged boot IDs through each observation and
+no observer read errors. These statements do not establish later host stability.
+Unrelated working-tree changes remain untouched.
+
+**Remaining:** other RoFormer real-audio geometries and matched normal full-song
+control/candidate timing/output checks. `model-jobs.json` and
+`fullsong-jobs.json` contain prepared individual argv and new output directories;
+neither series has executed. The private control/native builds and benchmark
+binary are retained. Run each case under recorder + observer after inspecting
+host/GPU load, not as an automatic retry or competing benchmark. The candidate
+build is `normalized-build`, the control is `control-build`; tracing must stay
+**off** for both performance runs. No 60-second, family-wide speedup, installed
+runtime change, perceptual qualification or production-readiness claim.
