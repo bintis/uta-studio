@@ -655,7 +655,9 @@ fn execute_benchmark_wav(
     {
         let cleanup = std::fs::remove_file(published);
         return match cleanup {
-            Ok(()) => Err(format!("failed to sync retained benchmark directory: {error}")),
+            Ok(()) => Err(format!(
+                "failed to sync retained benchmark directory: {error}"
+            )),
             Err(cleanup_error) => Err(format!(
                 "failed to sync retained benchmark directory: {error}; failed to clean {}: {cleanup_error}",
                 published.display()
