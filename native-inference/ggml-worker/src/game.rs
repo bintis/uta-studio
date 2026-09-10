@@ -74,8 +74,8 @@ pub fn infer(
             .notes
             .into_iter()
             .map(|note| GameNoteEvidence {
-                start: f64::from(note.offset_seconds),
-                duration: f64::from(note.duration_seconds),
+                start: note.offset_micros as f64 / 1_000_000.0,
+                duration: note.duration_micros as f64 / 1_000_000.0,
                 midi: note.pitch_midi,
                 voiced: note.voiced,
             })

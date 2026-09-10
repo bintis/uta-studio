@@ -1382,8 +1382,8 @@ mod tests {
             bytes.extend_from_slice(&inference.boundaries);
             bytes.extend_from_slice(&(inference.notes.len() as u32).to_le_bytes());
             for note in inference.notes {
-                bytes.extend_from_slice(&note.offset_seconds.to_le_bytes());
-                bytes.extend_from_slice(&note.duration_seconds.to_le_bytes());
+                bytes.extend_from_slice(&note.offset_micros.to_le_bytes());
+                bytes.extend_from_slice(&note.duration_micros.to_le_bytes());
                 bytes.extend_from_slice(&note.pitch_midi.to_le_bytes());
                 bytes.push(u8::from(note.voiced));
             }

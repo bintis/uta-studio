@@ -306,4 +306,38 @@ mod tests {
         assert!(error.message.contains("invalid values"));
         std::fs::remove_file(path).unwrap();
     }
+
+    #[test]
+    fn accepts_integer_microsecond_grid_notes_across_a_long_source() {
+        let mut cursor = 0_u64;
+        let mut notes = Vec::new();
+        for index in 0..721_u64 {
+            let duration = 10_000 * ((index % 17) + 1);
+            notes.push(serde_json::json!({
+                "start": cursor as f64 / 1_000_000.0,
+                "duration": duration as f64 / 1_000_000.0,
+                "midi": 60.0,
+                "voiced": true
+            }));
+            cursor += duration;
+        }
+        let path = write_game_notes(serde_json::Value::Array(notes));
+        let evidence = parse_game_evidence(&path, 0, cursor).unwrap();
+        assert_eq!(evidence.notes.len(), 721);
+        assert_eq!(evidence.notes[0].range.start, 0);
+        assert_eq!(evidence.notes.last().unwrap().range.end, cursor);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn still_rejects_notes_that_overlap_by_a_full_millisecond() {
+        let path = write_game_notes(serde_json::json!([
+            {"start":0.0,"duration":0.2,"midi":60.0,"voiced":true},
+            {"start":0.199,"duration":0.1,"midi":62.0,"voiced":true}
+        ]));
+        let error = parse_game_evidence(&path, 0, 1_000_000).unwrap_err();
+        assert_eq!(error.code, EngineErrorCode::OutputValidationFailed);
+        assert!(error.message.contains("overlap or exceed"));
+        std::fs::remove_file(path).unwrap();
+    }
 }

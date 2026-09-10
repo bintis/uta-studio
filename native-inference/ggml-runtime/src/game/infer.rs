@@ -32,10 +32,17 @@ impl Default for GameInferParams {
     }
 }
 
+const SAMPLE_RATE: u64 = 44_100;
+const SECOND_MICROS: u64 = 1_000_000;
+const FRAME_MICROS: u64 = 10_000;
+const SEAM_OWNED_MICROS: u64 = 1_000_000;
+const SEAM_BOUNDARY_TOLERANCE_MICROS: u64 = 50_000;
+const SEAM_MERGE_MAX_SEMITONES: f32 = 1.0;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GameNote {
-    pub offset_seconds: f32,
-    pub duration_seconds: f32,
+    pub offset_micros: u64,
+    pub duration_micros: u64,
     pub pitch_midi: f32,
     pub voiced: bool,
 }
@@ -97,20 +104,34 @@ impl Game {
                 single_chunk_boundaries = result.boundaries;
             }
 
-            let offset_seconds = offset as f32 / 44_100.0;
-            let left_cut = if chunk_index == 0 { 0.0 } else { 1.0 };
-            let right_cut = if chunk_index + 1 == chunk_count {
-                valid as f32 / 44_100.0
+            let offset_micros = samples_to_micros(offset)?;
+            let chunk_duration_micros = samples_to_micros(valid)?;
+            let left_cut = if chunk_index == 0 {
+                0
             } else {
-                valid as f32 / 44_100.0 - 1.0
+                SEAM_OWNED_MICROS
             };
-            let seam_time = (chunk_index > 0).then_some(offset_seconds + 1.0);
+            let right_cut = if chunk_index + 1 == chunk_count {
+                chunk_duration_micros
+            } else {
+                chunk_duration_micros.saturating_sub(SEAM_OWNED_MICROS)
+            };
+            let seam_time = (chunk_index > 0).then_some(
+                offset_micros
+                    .checked_add(SEAM_OWNED_MICROS)
+                    .ok_or_else(|| "GAME chunk seam overflows".to_string())?,
+            );
             for mut note in result.notes {
-                let midpoint = note.offset_seconds + note.duration_seconds / 2.0;
+                let midpoint = note
+                    .offset_micros
+                    .saturating_add(note.duration_micros / 2);
                 if midpoint < left_cut || midpoint >= right_cut {
                     continue;
                 }
-                note.offset_seconds += offset_seconds;
+                note.offset_micros = note
+                    .offset_micros
+                    .checked_add(offset_micros)
+                    .ok_or_else(|| "GAME chunk offset overflows".to_string())?;
                 append_stitched_note(&mut notes, note, seam_time)?;
             }
             report((chunk_index + 1) as u64, chunk_count as u64);
@@ -215,17 +236,24 @@ impl Game {
             params.note_threshold,
         )?;
         let durations = count_region_durations(&regions, region_count)?;
-        let mut offset_seconds = 0.0_f32;
+        let mut offset_micros = 0_u64;
         let mut notes = Vec::with_capacity(region_count);
         for note in 0..region_count {
-            let duration_seconds = durations[note + 1] as f32 * 0.01;
+            let duration_micros = (durations[note + 1] as u64)
+                .checked_mul(FRAME_MICROS)
+                .ok_or_else(|| "GAME note duration overflows".to_string())?;
+            if duration_micros == 0 {
+                return Err("GAME produced a zero-duration note region".to_string());
+            }
             notes.push(GameNote {
-                offset_seconds,
-                duration_seconds,
+                offset_micros,
+                duration_micros,
                 pitch_midi: decoded.values[note],
                 voiced: decoded.presence[note] != 0,
             });
-            offset_seconds += duration_seconds;
+            offset_micros = offset_micros
+                .checked_add(duration_micros)
+                .ok_or_else(|| "GAME note timeline overflows".to_string())?;
         }
         Ok(GameInferOutput {
             notes,
@@ -237,78 +265,88 @@ impl Game {
 
 fn append_stitched_note(
     notes: &mut Vec<GameNote>,
-    note: GameNote,
-    seam_time: Option<f32>,
+    mut note: GameNote,
+    seam_time: Option<u64>,
 ) -> Result<(), String> {
-    const SEAM_BOUNDARY_TOLERANCE_SECONDS: f32 = 0.05;
-    const SEAM_MERGE_MAX_SEMITONES: f32 = 1.0;
-
     if let Some(previous) = notes.last_mut() {
-        let previous_end = previous.offset_seconds + previous.duration_seconds;
-        if note.offset_seconds < previous.offset_seconds {
-            let note_end = note.offset_seconds + note.duration_seconds;
+        let previous_end = previous
+            .offset_micros
+            .checked_add(previous.duration_micros)
+            .ok_or_else(|| "GAME stitched note end overflows".to_string())?;
+        let note_end = note
+            .offset_micros
+            .checked_add(note.duration_micros)
+            .ok_or_else(|| "GAME stitched note end overflows".to_string())?;
+        if note.offset_micros < previous.offset_micros {
             if let Some(seam) = seam_time
-                && previous.offset_seconds < seam
+                && previous.offset_micros < seam
                 && note_end > seam
             {
                 let previous_owned_end = previous_end.min(seam);
-                if previous_owned_end <= previous.offset_seconds {
+                if previous_owned_end <= previous.offset_micros {
                     return Err(
                         "GAME chunk stitching produced an empty left seam interval".to_string()
                     );
                 }
-                previous.duration_seconds = previous_owned_end - previous.offset_seconds;
-                let mut note = note;
-                note.offset_seconds = seam;
-                note.duration_seconds = note_end - seam;
+                previous.duration_micros = previous_owned_end - previous.offset_micros;
+                note.offset_micros = seam;
+                note.duration_micros = note_end - seam;
                 notes.push(note);
                 return Ok(());
             }
             return Err("GAME chunk stitching produced an unordered note".to_string());
         }
-        if note.offset_seconds < previous_end {
-            let note_end = note.offset_seconds + note.duration_seconds;
+        if note.offset_micros < previous_end {
             let seam_continuation = seam_time.is_some_and(|seam| {
-                previous_end >= seam - SEAM_BOUNDARY_TOLERANCE_SECONDS
-                    && note.offset_seconds <= seam + SEAM_BOUNDARY_TOLERANCE_SECONDS
+                previous_end >= seam.saturating_sub(SEAM_BOUNDARY_TOLERANCE_MICROS)
+                    && note.offset_micros <= seam.saturating_add(SEAM_BOUNDARY_TOLERANCE_MICROS)
                     && (previous.pitch_midi - note.pitch_midi).abs() <= SEAM_MERGE_MAX_SEMITONES
             });
             if seam_continuation {
-                let total_weight = previous.duration_seconds + note.duration_seconds;
-                if total_weight <= 0.0 || !total_weight.is_finite() {
+                let total_weight = previous.duration_micros.checked_add(note.duration_micros).ok_or_else(
+                    || "GAME chunk stitching produced invalid seam weights".to_string(),
+                )?;
+                if total_weight == 0 {
                     return Err("GAME chunk stitching produced invalid seam weights".to_string());
                 }
-                previous.pitch_midi = (previous.pitch_midi * previous.duration_seconds
-                    + note.pitch_midi * note.duration_seconds)
-                    / total_weight;
-                previous.duration_seconds = previous_end.max(note_end) - previous.offset_seconds;
+                previous.pitch_midi = ((f64::from(previous.pitch_midi)
+                    * previous.duration_micros as f64
+                    + f64::from(note.pitch_midi) * note.duration_micros as f64)
+                    / total_weight as f64) as f32;
+                previous.duration_micros = previous_end.max(note_end) - previous.offset_micros;
                 previous.voiced = previous.voiced && note.voiced;
                 return Ok(());
             }
-            if note.offset_seconds == previous.offset_seconds
+            if note.offset_micros == previous.offset_micros
                 && let Some(seam) = seam_time
             {
                 let split = previous_end.min(seam);
-                if split > previous.offset_seconds && note_end > split {
-                    previous.duration_seconds = split - previous.offset_seconds;
-                    let mut note = note;
-                    note.offset_seconds = split;
-                    note.duration_seconds = note_end - split;
+                if split > previous.offset_micros && note_end > split {
+                    previous.duration_micros = split - previous.offset_micros;
+                    note.offset_micros = split;
+                    note.duration_micros = note_end - split;
                     notes.push(note);
                     return Ok(());
                 }
             }
-            let clipped_duration = note.offset_seconds - previous.offset_seconds;
-            if clipped_duration <= 0.0 {
+            let clipped_duration = note.offset_micros - previous.offset_micros;
+            if clipped_duration == 0 {
                 return Err(
                     "GAME chunk stitching could not resolve a monophonic overlap".to_string(),
                 );
             }
-            previous.duration_seconds = clipped_duration;
+            previous.duration_micros = clipped_duration;
         }
     }
     notes.push(note);
     Ok(())
+}
+
+fn samples_to_micros(samples: usize) -> Result<u64, String> {
+    (samples as u64)
+        .checked_mul(SECOND_MICROS)
+        .ok_or_else(|| "GAME sample time overflows".to_string())
+        .map(|value| value / SAMPLE_RATE)
 }
 
 fn validate_params(game: &Game, frames: usize, params: &GameInferParams) -> Result<(), String> {
@@ -398,40 +436,40 @@ mod tests {
     #[test]
     fn stitching_merges_matching_pitch_across_seam() {
         let mut notes = vec![GameNote {
-            offset_seconds: 27.0,
-            duration_seconds: 2.02,
+            offset_micros: 27_000_000,
+            duration_micros: 2_020_000,
             pitch_midi: 60.0,
             voiced: true,
         }];
         append_stitched_note(
             &mut notes,
             GameNote {
-                offset_seconds: 28.98,
-                duration_seconds: 2.0,
+                offset_micros: 28_980_000,
+                duration_micros: 2_000_000,
                 pitch_midi: 60.5,
                 voiced: true,
             },
-            Some(29.0),
+            Some(29_000_000),
         )
         .unwrap();
         assert_eq!(notes.len(), 1);
-        assert!((notes[0].duration_seconds - 3.98).abs() < 1.0e-5);
+        assert_eq!(notes[0].duration_micros, 3_980_000);
         assert!(notes[0].pitch_midi > 60.0 && notes[0].pitch_midi < 60.5);
     }
 
     #[test]
     fn stitching_clips_nonmatching_monophonic_overlap() {
         let mut notes = vec![GameNote {
-            offset_seconds: 10.0,
-            duration_seconds: 2.0,
+            offset_micros: 10_000_000,
+            duration_micros: 2_000_000,
             pitch_midi: 60.0,
             voiced: true,
         }];
         append_stitched_note(
             &mut notes,
             GameNote {
-                offset_seconds: 11.5,
-                duration_seconds: 1.0,
+                offset_micros: 11_500_000,
+                duration_micros: 1_000_000,
                 pitch_midi: 64.0,
                 voiced: true,
             },
@@ -439,6 +477,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(notes.len(), 2);
-        assert_eq!(notes[0].duration_seconds, 1.5);
+        assert_eq!(notes[0].duration_micros, 1_500_000);
+        assert_eq!(notes[1].offset_micros, 11_500_000);
+    }
+
+    #[test]
+    fn sample_times_stay_on_the_canonical_microsecond_grid() {
+        assert_eq!(samples_to_micros(44_100).unwrap(), 1_000_000);
+        assert_eq!(samples_to_micros(44_100 * 28).unwrap(), 28_000_000);
+        assert_eq!(samples_to_micros(44_100 * 336).unwrap(), 336_000_000);
     }
 }
