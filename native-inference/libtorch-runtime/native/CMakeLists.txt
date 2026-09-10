@@ -146,5 +146,18 @@ if(UTA_LIBTORCH_BACKEND STREQUAL "rocm" OR UTA_LIBTORCH_BACKEND STREQUAL "xpu")
 endif()
 set_target_properties(uta-libtorch-attention-partition-check PROPERTIES BUILD_RPATH "$<TARGET_FILE_DIR:uta_libtorch>;${native_paths}")
 
+add_executable(uta-libtorch-roformer-ops-check roformer_ops_check.cpp)
+target_compile_features(uta-libtorch-roformer-ops-check PRIVATE cxx_std_20)
+target_compile_definitions(uta-libtorch-roformer-ops-check PRIVATE _GLIBCXX_USE_CXX11_ABI=${TORCH_CXX_ABI})
+target_include_directories(uta-libtorch-roformer-ops-check SYSTEM PRIVATE
+  "${TORCH_ROOT}/include" "${TORCH_ROOT}/include/torch/csrc/api/include")
+foreach(component IN LISTS native_components)
+  target_link_libraries(uta-libtorch-roformer-ops-check PRIVATE "-Wl,--no-as-needed" "${native_${component}}" "-Wl,--as-needed")
+endforeach()
+if(UTA_LIBTORCH_BACKEND STREQUAL "rocm" OR UTA_LIBTORCH_BACKEND STREQUAL "xpu")
+  target_link_options(uta-libtorch-roformer-ops-check PRIVATE "-Wl,--disable-new-dtags")
+endif()
+set_target_properties(uta-libtorch-roformer-ops-check PROPERTIES BUILD_RPATH "${native_paths}")
+
 install(TARGETS uta_libtorch LIBRARY DESTINATION lib)
 install(FILES api.h DESTINATION include/uta_libtorch)

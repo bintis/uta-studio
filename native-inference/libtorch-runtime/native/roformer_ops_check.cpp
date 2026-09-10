@@ -1,0 +1,96 @@
+// Explicit diagnostic device; no model, fallback, timing gate or installation.
+#include "roformer_ops.hpp"
+#include <ATen/Context.h>
+#include <ATen/Parallel.h>
+#include <c10/core/InferenceMode.h>
+#include <c10/core/DeviceGuard.h>
+#include <c10/core/impl/VirtualGuardImpl.h>
+#include <chrono>
+#include <cmath>
+#include <iostream>
+#include <stdexcept>
+#include <string>
+
+namespace {
+using Clock = std::chrono::steady_clock;
+void synchronize(const at::Device& device) {
+    if (!device.is_cpu()) c10::impl::VirtualGuardImpl(device.type()).synchronizeDevice(device.index());
+}
+at::Tensor decomposed(const at::Tensor& input, const at::Tensor& cosine, const at::Tensor& sine) {
+    auto shape = input.sizes().vec();
+    shape.back() /= 2;
+    shape.push_back(2);
+    auto paired = input.reshape(shape);
+    auto even = paired.select(-1, 0), odd = paired.select(-1, 1);
+    return at::stack({even * cosine - odd * sine, even * sine + odd * cosine}, -1).flatten(-2);
+}
+void compare(const at::Tensor& actual, const at::Tensor& expected, const char* name) {
+    auto value = actual.to(at::kCPU).to(at::kDouble);
+    auto reference = expected.to(at::kCPU).to(at::kDouble);
+    if (value.sizes() != reference.sizes() || !at::isfinite(value).all().item<bool>())
+        throw std::runtime_error(std::string(name) + " shape/finite failure");
+    auto difference = value - reference;
+    const auto maximum = difference.abs().max().item<double>();
+    const auto nmse = difference.square().sum().item<double>() / std::max(reference.square().sum().item<double>(), 1e-30);
+    std::cout << "comparison=" << name << " elements=" << value.numel()
+              << " max_abs=" << maximum << " nmse=" << nmse << std::endl;
+    if (maximum > 2e-6 || nmse > 1e-12) throw std::runtime_error(std::string(name) + " numerical mismatch");
+}
+void run(const at::Device& device, int64_t batch, int64_t length, int64_t width, bool packed, bool timing) {
+    const int64_t heads = 8;
+    auto options = at::TensorOptions().device(device).dtype(at::kFloat);
+    auto storage = (at::arange(batch * length * heads * width * 3, options) * 0.013).sin()
+        .reshape({batch, length, heads * width * 3});
+    auto input = storage.narrow(-1, heads * width, heads * width)
+        .reshape({batch, length, heads, width}).transpose(1, 2);
+    if (packed) input = input.contiguous();
+    auto original = input.clone();
+    auto angle = at::arange(length, options).reshape({1, 1, length, 1})
+        * at::exp(at::arange(0, width, 2, options) * (-std::log(10000.0) / width));
+    auto cosine = angle.cos(), sine = angle.sin();
+    auto phase = at::complex(cosine, sine);
+    auto actual = uta::torch_native::interleaved_roformer_rotation(input, phase);
+    std::cout << "shape=" << batch << ',' << heads << ',' << length << ',' << width
+              << " packed=" << packed << std::endl;
+    compare(actual, decomposed(input, cosine, sine), "decomposed-float");
+    // Complete FP64 arithmetic over exactly the same FP32 phase/input values.
+    compare(actual, decomposed(input.to(at::kCPU).to(at::kDouble),
+        cosine.to(at::kCPU).to(at::kDouble), sine.to(at::kCPU).to(at::kDouble)), "double-oracle");
+    if (!at::equal(input, original)) throw std::runtime_error("rotation modified its input");
+    if (!timing) return;
+    for (const auto& kind : {std::string("decomposed"), std::string("complex"), std::string("complex") , std::string("decomposed")}) {
+        auto invoke = [&] { return kind == "complex"
+            ? uta::torch_native::interleaved_roformer_rotation(input, phase)
+            : decomposed(input, cosine, sine); };
+        for (int warm = 0; warm < 2; ++warm) { actual = invoke(); synchronize(device); }
+        for (int sample = 0; sample < 4; ++sample) {
+            synchronize(device);
+            const auto started = Clock::now();
+            actual = invoke();
+            synchronize(device);
+            const auto elapsed = std::chrono::duration<double, std::milli>(Clock::now() - started).count();
+            std::cout << "rotation=" << kind << " sample=" << sample << " synchronized_ms=" << elapsed << std::endl;
+        }
+    }
+}
+}
+int main(int argc, char** argv) {
+    try {
+        c10::InferenceMode inference;
+        at::set_num_threads(2);
+        const at::Device device(argc > 1 ? argv[1] : "cpu");
+        c10::DeviceGuard guard(device);
+        at::globalContext().setFloat32Precision(at::Float32Backend::GENERIC, at::Float32Op::ALL, at::Float32Precision::IEEE);
+        const bool full = argc > 2 && std::string(argv[2]) == "full";
+        for (const auto packed : {false, true}) {
+            run(device, 3, 17, 64, packed, false);
+            run(device, 17, 3, 64, packed, false);
+            run(device, 1, 1, 2, packed, false);
+            run(device, 2, 65, 128, packed, false);
+        }
+        if (full) { run(device, 90, 1722, 64, false, true); run(device, 1722, 90, 64, false, true); }
+        synchronize(device);
+        std::cout << "RoFormer primitive checks passed on " << device << std::endl;
+        return 0;
+    } catch (const std::exception& error) { std::cerr << error.what() << std::endl; return 1; }
+}

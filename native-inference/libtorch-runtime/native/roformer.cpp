@@ -1,6 +1,7 @@
 #include "runtime.hpp"
 #include "projection.hpp"
 #include "attention_partition.hpp"
+#include "roformer_ops.hpp"
 #include <cmath>
 #include <numeric>
 #include <stdexcept>
@@ -17,7 +18,7 @@ at::Tensor device_integers(std::vector<int64_t>& values, const at::Device& devic
 }
 struct PositionCache {
     int64_t length = 0;
-    at::Tensor cosine, sine, key_cosine, key_sine;
+    at::Tensor cosine, sine, key_cosine, key_sine, complex_phase;
 };
 
 class RoformerPlan final : public Plan {
@@ -186,6 +187,7 @@ private:
             auto phase = position * inverse;
             cache.cosine = phase.cos();
             cache.sine = phase.sin();
+            if (runtime->backend == "libtorch_xpu") cache.complex_phase = at::complex(cache.cosine, cache.sine);
         }
         cache.length = length;
         return cache;
@@ -212,8 +214,13 @@ private:
         auto key = qkv[1].reshape({batch, length, heads, head_dimension}).transpose(1, 2);
         auto value = qkv[2].reshape({batch, length, heads, head_dimension}).transpose(1, 2);
         const auto& cache = positions(length, time);
-        query = rotate(query, cache.cosine, cache.sine);
-        key = rotate(key, polar ? cache.key_cosine : cache.cosine, polar ? cache.key_sine : cache.sine);
+        if (!polar && runtime->backend == "libtorch_xpu") {
+            query = interleaved_roformer_rotation(query, cache.complex_phase);
+            key = interleaved_roformer_rotation(key, cache.complex_phase);
+        } else {
+            query = rotate(query, cache.cosine, cache.sine);
+            key = rotate(key, polar ? cache.key_cosine : cache.cosine, polar ? cache.key_sine : cache.sine);
+        }
         runtime->checkpoint(prefix + ".rotary");
         const double scale = 1.0 / std::sqrt(static_cast<double>(head_dimension));
         auto attended = runtime->precision == "mixed_attention"
