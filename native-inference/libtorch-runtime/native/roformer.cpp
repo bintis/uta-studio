@@ -246,7 +246,7 @@ private:
         runtime->checkpoint(prefix + ".attention");
         auto gates = at::sigmoid(project(normalized, weights->get(name(prefix, "gates_w", "gate.weight")),
                                             weights->get(name(prefix, "gates_b", "gate.bias"))));
-        attended = attended.transpose(1, 2) * gates.unsqueeze(-1);
+        attended = gated_roformer_attention(attended, gates);
         attended = attended.reshape({batch, length, heads * head_dimension});
         return sequence + project(attended, weights->get(name(prefix, "out", "out.weight")));
     }

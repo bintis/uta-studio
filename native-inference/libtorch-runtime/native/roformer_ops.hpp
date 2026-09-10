@@ -41,12 +41,15 @@ inline at::Tensor layout_preserving_roformer_attention(const at::Tensor& query, 
     checkpoint("value_conversion");
     auto attended = at::scaled_dot_product_attention(query_half, key_half, value_half, {}, 0.0, false, scale);
     checkpoint("sdpa");
-    auto output = attended.to(at::kFloat);
-    checkpoint("attention_output_conversion");
-    return output;
+    return attended;
 }
 inline at::Tensor layout_preserving_roformer_attention(const at::Tensor& query, const at::Tensor& key,
                                                       const at::Tensor& value, double scale) {
     return layout_preserving_roformer_attention(query, key, value, scale, [](const char*) {});
+}
+// Gates are FP32, so TensorIterator promotes half attention values to FP32
+// inside this multiply, exactly as an explicit conversion followed by gating.
+inline at::Tensor gated_roformer_attention(const at::Tensor& attended, const at::Tensor& gates) {
+    return attended.transpose(1, 2) * gates.unsqueeze(-1);
 }
 } // namespace uta::torch_native

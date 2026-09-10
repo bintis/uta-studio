@@ -93,6 +93,22 @@ void normalization(const at::Device& device, int64_t rows, int64_t width, bool s
     compare(actual, reference, "normalization-double-oracle");
     if (!at::equal(input, original)) throw std::runtime_error("normalization modified its input");
 }
+void gating(const at::Device& device, int64_t batch, int64_t length, bool strided) {
+    const int64_t heads = 8, width = 64;
+    auto options = at::TensorOptions().device(device).dtype(at::kFloat);
+    auto storage = (at::arange(batch * length * heads * width * 2, options) * 0.017).sin().to(at::kHalf)
+        .reshape({batch, length, heads, width * 2});
+    auto input = storage.narrow(-1, width, width).transpose(1, 2);
+    if (!strided) input = input.contiguous();
+    auto original = input.clone();
+    auto gates = at::sigmoid(at::arange(batch * length * heads, options).reshape({batch, length, heads}) * 0.013);
+    auto original_gates = gates.clone();
+    auto actual = uta::torch_native::gated_roformer_attention(input, gates);
+    auto reference = input.to(at::kFloat).transpose(1, 2) * gates.unsqueeze(-1);
+    compare(actual, reference, "fused-attention-gating", 0.0, 0.0);
+    if (actual.scalar_type() != at::kFloat || !at::equal(input, original) || !at::equal(gates, original_gates))
+        throw std::runtime_error("gating output type or input changed");
+}
 void attention(const at::Device& device, int64_t batch, int64_t length, bool timing) {
     const int64_t heads = 8, width = 64;
     auto options = at::TensorOptions().device(device).dtype(at::kFloat);
@@ -110,7 +126,14 @@ void attention(const at::Device& device, int64_t batch, int64_t length, bool tim
     auto interleaved = [&] { return uta::torch_native::layout_preserving_roformer_attention(query, key, value, scale); };
     auto actual = interleaved();
     std::cout << "attention_shape=" << batch << ',' << heads << ',' << length << ',' << width << std::endl;
-    compare(actual, packed(), "attention-packed", 2e-3, 2e-6);
+    auto packed_output = packed();
+    compare(actual, packed_output, "attention-packed", 2e-3, 2e-6);
+    if (actual.scalar_type() != at::kHalf) throw std::runtime_error("attention changed its output rounding");
+    if (!timing) {
+        auto gates = at::sigmoid(at::arange(batch * length * heads, options).reshape({batch, length, heads}) * 0.013);
+        compare(uta::torch_native::gated_roformer_attention(actual, gates),
+            packed_output.transpose(1, 2) * gates.unsqueeze(-1), "attention-gated-packed", 0.0, 0.0);
+    }
     if (!timing) {
         auto rounded = [](const at::Tensor& input) { return input.to(at::kHalf).to(at::kCPU).to(at::kDouble); };
         auto reference = at::matmul(at::softmax(at::matmul(rounded(query), rounded(key).transpose(-1, -2)) * scale, -1), rounded(value));
@@ -152,6 +175,20 @@ int main(int argc, char** argv) {
             if (full) { run(device, 90, 1722, 64, false, true); run(device, 1722, 90, 64, false, true); }
             synchronize(device);
             std::cout << "RoFormer rotary checks passed on " << device << std::endl;
+            return 0;
+        }
+        for (const auto strided : {false, true}) {
+            gating(device, 3, 17, strided);
+            gating(device, 1, 1, strided);
+        }
+        if (argc > 2 && std::string(argv[2]) == "gating") {
+            if (device.is_xpu()) {
+                at::globalContext().setSDPUseMath(false);
+                attention(device, 3, 17, false);
+                attention(device, 1, 1, false);
+            }
+            synchronize(device);
+            std::cout << "RoFormer gating checks passed on " << device << std::endl;
             return 0;
         }
         for (const auto width : {8, 16, 256, 384, 516})
