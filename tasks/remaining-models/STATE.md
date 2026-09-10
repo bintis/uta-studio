@@ -293,6 +293,16 @@ Verification and limits:
 The authorized full-song debug execution and artifact verification are complete. Broader
 per-model/linguistic/perceptual qualification and the explicit release pass remain unchanged.
 
+## Super acceleration — IN_PROGRESS (2026-09-10)
+
+Authorized: one opt-in switch in Settings > Models & runtime, next-model weight preloading when
+VRAM permits, real concurrent AMD integrated/B580 discrete GPU work, retained useful song
+intermediates and decode/resample reuse. The existing `turbo_acceleration` config field is only
+a placeholder at task start; it must not be presented as already implemented acceleration.
+Design and verification scope: [Super acceleration](../../docs/design/runtime/SUPER_ACCELERATION.md).
+Next: wire the setting into exact requests; implement native scheduling/residency and supervision;
+verify isolated behavior and matched real dual-device performance. No production promotion yet.
+
 ## Next actions
 
 1. Install the STARS and ROSVOT GGUF generations into the managed store with their manifests and
