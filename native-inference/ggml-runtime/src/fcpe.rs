@@ -858,7 +858,7 @@ mod tests {
             )
         );
         ggml!(api, ggml_set_input(input));
-        let output = ggml!(api, ggml_scale(run.context, input, 0.5));
+        let output = ggml!(api, ggml_add(run.context, input, input));
         ggml!(api, ggml_set_output(output));
         ggml!(api, ggml_build_forward_expand(run.graph, output));
         run.allocate(&backend).unwrap();
@@ -877,7 +877,7 @@ mod tests {
                     .collect::<Vec<_>>(),
                 values
                     .iter()
-                    .map(|value| (value * 0.5).to_bits())
+                    .map(|value| (value + value).to_bits())
                     .collect::<Vec<_>>()
             );
         }
