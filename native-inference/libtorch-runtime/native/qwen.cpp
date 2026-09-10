@@ -1,4 +1,5 @@
 #include "runtime.hpp"
+#include "convolution_projection.hpp"
 #include <array>
 #include <cmath>
 #include <limits>
@@ -123,7 +124,13 @@ private:
         for (int64_t layer = 0; layer < 3; ++layer) {
             check_cancel();
             const auto prefix = aligner ? "audio.encoder.conv" + std::to_string(layer + 1) : "enc.conv." + std::to_string(layer);
-            value = at::gelu(convolution(*weights, value, prefix, {2, 2}, {1, 1}), "none");
+            // Keep all acoustic chunks on the GPU, but avoid gfx1103 MIOpen
+            // convolution solvers that fault for the thirty-second batch shape.
+            auto convolved = runtime->backend == "libtorch_rocm"
+                ? projected_convolution(value, weights->get(prefix + ".weight"), weights->optional(prefix + ".bias"),
+                                        {2, 2}, {1, 1}, [this] { check_cancel(); })
+                : convolution(*weights, value, prefix, {2, 2}, {1, 1});
+            value = at::gelu(convolved, "none");
             runtime->checkpoint(prefix + ".gelu");
         }
         value = value.permute({0, 3, 1, 2}).contiguous().reshape({chunks * chunk_rows, -1}).narrow(0, 0, valid_rows);
