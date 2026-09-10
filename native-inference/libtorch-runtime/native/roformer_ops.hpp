@@ -19,9 +19,23 @@ inline at::Tensor interleaved_roformer_rotation(const at::Tensor& input, const a
 // oneDNN SDPA supports dense head-interleaved tensors. Preserve the layout
 // produced by rotation/QKV conversion instead of copying every operand to BHLD;
 // the returned interleaved layout also avoids repacking before the output GEMM.
+template<class Checkpoint>
+inline at::Tensor layout_preserving_roformer_attention(const at::Tensor& query, const at::Tensor& key,
+                                                      const at::Tensor& value, double scale, Checkpoint&& checkpoint) {
+    auto query_half = query.to(at::kHalf);
+    checkpoint("query_conversion");
+    auto key_half = key.to(at::kHalf);
+    checkpoint("key_conversion");
+    auto value_half = value.to(at::kHalf);
+    checkpoint("value_conversion");
+    auto attended = at::scaled_dot_product_attention(query_half, key_half, value_half, {}, 0.0, false, scale);
+    checkpoint("sdpa");
+    auto output = attended.to(at::kFloat);
+    checkpoint("attention_output_conversion");
+    return output;
+}
 inline at::Tensor layout_preserving_roformer_attention(const at::Tensor& query, const at::Tensor& key,
                                                       const at::Tensor& value, double scale) {
-    return at::scaled_dot_product_attention(query.to(at::kHalf), key.to(at::kHalf), value.to(at::kHalf),
-        {}, 0.0, false, scale).to(at::kFloat);
+    return layout_preserving_roformer_attention(query, key, value, scale, [](const char*) {});
 }
 } // namespace uta::torch_native

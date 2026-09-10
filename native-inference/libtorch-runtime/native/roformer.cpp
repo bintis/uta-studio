@@ -7,6 +7,7 @@
 #endif
 #include <cmath>
 #include <numeric>
+#include <iostream>
 #include <stdexcept>
 
 namespace uta::torch_native {
@@ -235,12 +236,17 @@ private:
             key = rotate(key, polar ? cache.key_cosine : cache.cosine, polar ? cache.key_sine : cache.sine);
         }
         runtime->checkpoint(prefix + ".rotary");
+        if (runtime->trace_synchronization)
+            std::cerr << "[uta-libtorch-layout] " << prefix << " query=" << query.strides()
+                      << " key=" << key.strides() << " value=" << value.strides() << std::endl;
         const double scale = 1.0 / std::sqrt(static_cast<double>(head_dimension));
         auto attended = runtime->precision == "mixed_attention"
             ? (runtime->backend == "libtorch_rocm"
                 ? partitioned_fused_attention(query, key, value, scale, [this] { check_cancel(); })
                 : runtime->backend == "libtorch_xpu"
-                    ? layout_preserving_roformer_attention(query, key, value, scale)
+                    ? layout_preserving_roformer_attention(query, key, value, scale, [&](const char* stage) {
+                        if (runtime->trace_synchronization) runtime->checkpoint(prefix + '.' + stage);
+                    })
                     : fused_attention(query, key, value, {}, false, false, scale))
             : dense_attention(query, key, value, {}, false, scale);
         runtime->checkpoint(prefix + ".attention");
