@@ -61,6 +61,17 @@ public:
 private:
     std::map<std::string, at::Tensor> kernels;
     at::Tensor real_kernel, imaginary_kernel, cqt_kernel, lowpass, harmonic_indices, harmonic_valid;
+    at::Tensor conv1d_gemm(const at::Tensor& input, const at::Tensor& kernel, int64_t stride, int64_t padding) const {
+        if (input.dim() != 3 || kernel.dim() != 3 || input.size(1) != kernel.size(1))
+            throw std::invalid_argument("Basic Pitch GEMM convolution shape mismatch");
+        auto padded = padding ? at::constant_pad_nd(input, {padding, padding}, 0.0) : input;
+        const auto width = kernel.size(2);
+        if (padded.size(2) < width) throw std::invalid_argument("Basic Pitch GEMM convolution kernel exceeds input");
+        auto windows = padded.unfold(2, width, stride).permute({0, 2, 1, 3}).contiguous();
+        auto matrix = windows.reshape({windows.size(0), windows.size(1), -1});
+        auto weights_matrix = kernel.reshape({kernel.size(0), -1});
+        return at::matmul(matrix, weights_matrix.transpose(0, 1)).transpose(1, 2).contiguous();
+    }
     at::Tensor frontend(const at::Tensor& audio) {
         auto signal = audio.unsqueeze(1);
         std::vector<at::Tensor> octaves;
@@ -68,11 +79,11 @@ private:
         for (int64_t octave = 0; octave < 9; ++octave) {
             check_cancel();
             if (octave) {
-                signal = at::conv1d(signal, lowpass, {}, {2}, {127});
+                signal = conv1d_gemm(signal, lowpass, 2, 127);
                 hop /= 2;
             }
             auto padded = at::reflection_pad1d(signal, {128, 128});
-            auto coefficients = at::conv1d(padded, cqt_kernel, {}, {hop});
+            auto coefficients = conv1d_gemm(padded, cqt_kernel, hop, 0);
             auto parts = coefficients.chunk(2, 1);
             octaves.push_back(parts[0].square() + parts[1].square());
         }

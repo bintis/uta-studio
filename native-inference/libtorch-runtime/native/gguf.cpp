@@ -226,6 +226,37 @@ at::Tensor Gguf::read_tensor(const std::string& name) {
     read(result.data_ptr(), info.bytes);
     return result;
 }
+namespace {
+std::string canonical_model_tensor_name(const Gguf& container, std::string name) {
+    const auto architecture = container.text("general.architecture");
+    const auto replace_all = [&](const char* from, const char* to) {
+        for (std::size_t offset = 0; (offset = name.find(from, offset)) != std::string::npos;) {
+            name.replace(offset, std::char_traits<char>::length(from), to);
+            offset += std::char_traits<char>::length(to);
+        }
+    };
+    if (architecture == "stars") {
+        for (const auto& [from, to] : std::initializer_list<std::pair<const char*, const char*>>{
+                 {"prosody_extractor_sentence", "pes"}, {"prosody_extractor_utter", "peu"},
+                 {"prosody_extractor_note", "pen"}, {"prosody_extractor_word", "pew"},
+                 {"prosody_extractor_ph", "pep"}, {"feed_forward_macaron", "ffm"},
+                 {"feed_forward", "ff"}, {"encoder_layers", "el"}, {"freq_experts", "fe"},
+                 {"cmuencoder", "ce"}, {"multihead_attn", "mha"}, {"conv_module", "cm"},
+                 {"pointwise_conv1", "pw1"}, {"pointwise_conv2", "pw2"},
+                 {"depthwise_conv", "dw"}, {"norm_ff_macaron", "nfm"}})
+            replace_all(from, to);
+    } else if (architecture == "rosvot") {
+        for (const auto& [from, to] : std::initializer_list<std::pair<const char*, const char*>>{
+                 {"feed_forward_macaron", "ffm"}, {"feed_forward", "ff"},
+                 {"encoder_layers", "el"}, {"multihead_dot_attn", "mda"},
+                 {"multihead_attn", "mha"}, {"conv_module", "cm"},
+                 {"pointwise_conv1", "pw1"}, {"pointwise_conv2", "pw2"},
+                 {"depthwise_conv", "dw"}, {"norm_ff_macaron", "nfm"}})
+            replace_all(from, to);
+    }
+    return name;
+}
+} // namespace
 
 Weights::Weights(const std::string& path, const at::Device& selected) : container(path), device(selected) {
     for (const auto& name : container.tensor_names()) {
@@ -235,9 +266,13 @@ Weights::Weights(const std::string& path, const at::Device& selected) : containe
         tensors_.emplace(name, std::move(tensor));
     }
 }
-bool Weights::has(const std::string& name) const { return tensors_.contains(name); }
+bool Weights::has(const std::string& name) const {
+    if (tensors_.contains(name)) return true;
+    return tensors_.contains(canonical_model_tensor_name(container, name));
+}
 const at::Tensor& Weights::get(const std::string& name) const {
-    const auto found = tensors_.find(name);
+    auto found = tensors_.find(name);
+    if (found == tensors_.end()) found = tensors_.find(canonical_model_tensor_name(container, name));
     if (found == tensors_.end()) throw std::runtime_error("missing native model weight: " + name);
     return found->second;
 }

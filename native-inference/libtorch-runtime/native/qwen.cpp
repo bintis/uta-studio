@@ -167,7 +167,7 @@ private:
             if (audio_indices.dim() != 1 || audio_indices.numel() != rows) throw std::invalid_argument("Qwen audio index map must cover every prompt token");
             auto indices = audio_indices.to(at::kLong);
             auto injected = audio.index_select(0, indices.clamp_min(0));
-            value = at::where((indices >= 0).unsqueeze(-1), injected, value);
+            value = at::where((indices >= 0).unsqueeze(-1), injected, value).contiguous();
         }
         auto positions = at::arange(start, start + rows, tokens.options());
         auto keys = at::arange(start + rows, tokens.options());

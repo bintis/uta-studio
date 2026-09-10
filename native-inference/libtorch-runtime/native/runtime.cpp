@@ -80,6 +80,7 @@ const std::map<std::string, Factory>& factories() {
     // enter this table together with their actual native source and tests.
     static const std::map<std::string, Factory> table{
         {"bs_roformer_leap_xe90_vocals", make_roformer},
+        {"bs_roformer_leap_xe90_instrumental", make_roformer},
         {"bs_polarformer_public_instrumental", make_roformer},
         {"melband_roformer_harmony", make_roformer},
         {"melband_roformer_denoise_aufr33", make_roformer},
@@ -191,8 +192,14 @@ at::Tensor convolution(const Weights& weights, const at::Tensor& input, const st
     throw std::invalid_argument("native convolution kernel must have rank three or four: " + prefix);
 }
 at::Tensor batch_norm(const Weights& weights, const at::Tensor& input, const std::string& prefix, double epsilon) {
-    return at::batch_norm(input, weights.get(prefix + ".weight"), weights.get(prefix + ".bias"),
-                          weights.get(prefix + ".running_mean"), weights.get(prefix + ".running_var"),
-                          false, 0.1, epsilon, true);
+    if (input.dim() < 2) throw std::invalid_argument("native batch norm input rank is invalid: " + prefix);
+    const auto channels = input.size(1);
+    std::vector<int64_t> shape(static_cast<std::size_t>(input.dim()), 1);
+    shape[1] = channels;
+    const auto mean = weights.get(prefix + ".running_mean").reshape(shape);
+    const auto variance = weights.get(prefix + ".running_var").reshape(shape);
+    const auto scale = weights.get(prefix + ".weight").reshape(shape);
+    const auto bias = weights.get(prefix + ".bias").reshape(shape);
+    return (input - mean) * at::rsqrt(variance + epsilon) * scale + bias;
 }
 } // namespace uta::torch_native
