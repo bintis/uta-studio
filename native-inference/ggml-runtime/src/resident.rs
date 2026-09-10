@@ -2,7 +2,7 @@
 //! consumers. Copy views have short-lived metadata, not an ever-growing arena.
 use crate::GgmlBackendHandle;
 use crate::ffi::{
-    BufferPtr, ContextPtr, GGML_STATUS_SUCCESS, GGML_TYPE_F32, GgmlInitParams, GgmlTensor,
+    BufferPtr, ContextPtr, GGML_STATUS_SUCCESS, GGML_TYPE_F32, GgmlInitParams,
     TensorPtr,
 };
 
@@ -136,13 +136,11 @@ fn row_range(width: usize, height: usize, start: usize, rows: usize) -> Result<u
         .and_then(|count| count.checked_mul(4))
         .ok_or_else(|| "resident matrix offset overflows".into())
 }
-fn tensor(pointer: TensorPtr) -> Result<&'static GgmlTensor, String> {
-    // SAFETY: private model callers retain each tensor's owning context.
-    unsafe { pointer.as_ref() }.ok_or_else(|| "resident copy tensor is null".into())
-}
 fn copy(backend: &GgmlBackendHandle, source: TensorPtr, target: TensorPtr) -> Result<(), String> {
-    let left = tensor(source)?;
-    let right = tensor(target)?;
+    // SAFETY: private model callers retain both contexts through this copy.
+    // These metadata borrows never escape the synchronous operation.
+    let left = unsafe { source.as_ref() }.ok_or("resident copy source is null")?;
+    let right = unsafe { target.as_ref() }.ok_or("resident copy target is null")?;
     // ggml_backend_tensor_copy requires the same layout, not merely equal
     // element count. Never pass a strided concatenation view to that API.
     if left.type_ != GGML_TYPE_F32
