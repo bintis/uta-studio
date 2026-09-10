@@ -550,6 +550,33 @@ fn cached_step_one_audio_sources(
         .collect()
 }
 
+fn ensure_original_mix_source(
+    library_source: &ResolvedAnalysisSource,
+    sources: &mut Vec<AudioSourceWireV1>,
+) {
+    if library_source.role != AudioRoleWireV1::OriginalMix {
+        return;
+    }
+    if sources
+        .iter()
+        .any(|source| source.role == AudioRoleWireV1::OriginalMix)
+    {
+        return;
+    }
+    sources.push(AudioSourceWireV1 {
+        id: "original_mix".to_string(),
+        kind: AudioSourceKindWireV1::LocalFile,
+        path: library_source.path.clone(),
+        sha256: library_source.sha256.clone(),
+        role: AudioRoleWireV1::OriginalMix,
+        primary: false,
+        timeline: SourceTimelineWireV1 {
+            timebase: CANONICAL_TIMEBASE,
+            source_start: 0,
+        },
+    });
+}
+
 pub fn compile_analyze_request(
     intent: AnalysisRequestIntent,
     effective: &EffectiveAnalysisExperience,
@@ -581,7 +608,7 @@ pub fn compile_analyze_request(
     // when the source hasn't already been given an explicit, non-default
     // role by the caller -- an explicit role is a deliberate decision this
     // function must not second-guess.
-    let mut source_path = intent.source.path;
+    let mut source_path = intent.source.path.clone();
     let mut source_role = intent.source.role;
     let mut satisfied_capabilities = Vec::new();
     let mut reused_step_one_sources = Vec::new();
@@ -613,24 +640,26 @@ pub fn compile_analyze_request(
             }
         }
     }
+    let mut audio_sources = Vec::with_capacity(reused_step_one_sources.len() + 2);
+    audio_sources.push(AudioSourceWireV1 {
+        id: "true_source".to_string(),
+        kind: AudioSourceKindWireV1::LocalFile,
+        path: source_path,
+        sha256: intent.source.sha256.clone(),
+        role: source_role,
+        primary: true,
+        timeline: SourceTimelineWireV1 {
+            timebase: CANONICAL_TIMEBASE,
+            source_start: 0,
+        },
+    });
+    audio_sources.extend(reused_step_one_sources);
+    ensure_original_mix_source(&intent.source, &mut audio_sources);
     Ok(AnalyzeRequestWireV1 {
         contract: ANALYZE_REQUEST_CONTRACT.to_string(),
         version: ANALYZE_REQUEST_VERSION,
         request_id: intent.request_id,
-        audio_sources: std::iter::once(AudioSourceWireV1 {
-            id: "true_source".to_string(),
-            kind: AudioSourceKindWireV1::LocalFile,
-            path: source_path,
-            sha256: intent.source.sha256,
-            role: source_role,
-            primary: true,
-            timeline: SourceTimelineWireV1 {
-                timebase: CANONICAL_TIMEBASE,
-                source_start: 0,
-            },
-        })
-        .chain(reused_step_one_sources)
-        .collect(),
+        audio_sources,
         lyrics,
         boundary_constraints: Vec::new(),
         musical_context: None,
@@ -1317,6 +1346,37 @@ mod tests {
             ]
         );
         assert!(sources.iter().all(|source| !source.primary));
+    }
+
+    #[test]
+    fn cached_chain_primary_still_carries_the_library_original_mix() {
+        let mix = PathBuf::from("/library/song.wav");
+        let library_source = ResolvedAnalysisSource {
+            library_file_hash: "songhash".to_string(),
+            path: mix.clone(),
+            sha256: "mix-digest".to_string(),
+            role: AudioRoleWireV1::OriginalMix,
+        };
+        let mut sources = vec![AudioSourceWireV1 {
+            id: "true_source".to_string(),
+            kind: AudioSourceKindWireV1::LocalFile,
+            path: PathBuf::from("/cache/clean.flac"),
+            sha256: "mix-digest".to_string(),
+            role: AudioRoleWireV1::CleanLeadVocal,
+            primary: true,
+            timeline: SourceTimelineWireV1 {
+                timebase: CANONICAL_TIMEBASE,
+                source_start: 0,
+            },
+        }];
+        ensure_original_mix_source(&library_source, &mut sources);
+        ensure_original_mix_source(&library_source, &mut sources);
+        assert_eq!(sources.len(), 2);
+        assert_eq!(sources[0].role, AudioRoleWireV1::CleanLeadVocal);
+        assert_eq!(sources[1].id, "original_mix");
+        assert_eq!(sources[1].role, AudioRoleWireV1::OriginalMix);
+        assert_eq!(sources[1].path, mix);
+        assert!(!sources[1].primary);
     }
 
     #[test]
