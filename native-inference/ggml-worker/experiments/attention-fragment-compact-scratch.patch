@@ -1,0 +1,13 @@
+--- a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
++++ b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
+@@ -26,8 +26,8 @@
+ // Workgroup barriers protect those common operands; score, probability and
+ // output workspaces remain subgroup-owned. Smaller groups use independent tiles.
+ shared f16vec4 operand_workspace[row_split * 128];
+-shared vec4 float_workspace[row_split * 128];
+-shared f16vec4 probability_workspace[row_split * 64];
++shared vec4 float_workspace[36];
++shared f16vec4 probability_workspace[32];
+ 
+ // Guard the optimized register bridge with actual cooperative-matrix loads.
+ // Vulkan does not guarantee a lane/component mapping, even on a named GPU.
