@@ -1,0 +1,40 @@
+--- a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
++++ b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
+@@ -158,12 +158,14 @@
+             }
+             barrier();
+         }
+-        // Q * K^T: the M=8 axis is query-owned, rather than key-owned.
++        // Interleave two independent QK chains without changing either dot-product order.
++        coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator> score_tiles[2];
+         [[unroll]] for (uint key_tile = 0; key_tile < 2; ++key_tile) {
+-            coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator> scores =
+-                coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator>(0);
+-            const uint key_row = block * 32 + key_tile * 16;
+-            [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
++            score_tiles[key_tile] = coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator>(0);
++        }
++        [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
++            [[unroll]] for (uint key_tile = 0; key_tile < 2; ++key_tile) {
++                const uint key_row = block * 32 + key_tile * 16;
+                 coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> keys;
+                 if (row_split >= 4) {
+                     coopMatLoad(keys, operand_workspace, key_tile * 256 + depth_tile * 4,
+@@ -186,13 +188,15 @@
+                     subgroupBarrier();
+                     coopMatLoad(keys, operand_workspace, operand_base, 4, gl_CooperativeMatrixLayoutColumnMajor);
+                 }
+-                scores = coopMatMulAdd(queries[depth_tile], keys, scores);
++                score_tiles[key_tile] = coopMatMulAdd(queries[depth_tile], keys, score_tiles[key_tile]);
+                 // Protect the local operand tile before another contraction overwrites it.
+                 if (row_split < 4 && (key_row + 16 > KV || (k_stride & 7) != 0)) {
+                     subgroupBarrier();
+                 }
+             }
+-            coopMatStore(scores, float_workspace, float_base + key_tile * 4,
++        }
++        [[unroll]] for (uint key_tile = 0; key_tile < 2; ++key_tile) {
++            coopMatStore(score_tiles[key_tile], float_workspace, float_base + key_tile * 4,
+                          8, gl_CooperativeMatrixLayoutRowMajor);
+         }
+         if (row_split >= 4 && row_split < 8) {
