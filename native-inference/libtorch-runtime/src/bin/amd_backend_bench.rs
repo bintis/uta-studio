@@ -235,7 +235,7 @@ fn run_libtorch_qwen(model: uta_libtorch_runtime::Model, input: &Path) -> Result
 
 fn run_ggml_firered(loaded: GgmlLoaded, input: &Path) -> Result<String, String> {
     let samples = read_mono_f32(input, 16_000)?;
-    let cmvn = std::fs::read(firered_cmvn())?;
+    let cmvn = std::fs::read(firered_cmvn()).map_err(|error| format!("read FireRed CMVN: {error}"))?;
     let model = uta_ggml_runtime::firered::FireRed::load(loaded.runtime, &loaded.device, &loaded.model_path)?;
     let mut windows = 0usize;
     for chunk in samples.chunks(uta_ggml_runtime::firered::MAX_WINDOW_SAMPLES) {
@@ -249,7 +249,7 @@ fn run_ggml_firered(loaded: GgmlLoaded, input: &Path) -> Result<String, String> 
 
 fn run_libtorch_firered(model: uta_libtorch_runtime::Model, input: &Path) -> Result<String, String> {
     let samples = read_mono_f32(input, 16_000)?;
-    let cmvn = std::fs::read(firered_cmvn())?;
+    let cmvn = std::fs::read(firered_cmvn()).map_err(|error| format!("read FireRed CMVN: {error}"))?;
     let mut windows = 0usize;
     for chunk in samples.chunks(uta_ggml_runtime::firered::MAX_WINDOW_SAMPLES) {
         if chunk.len() < uta_ggml_runtime::firered::MIN_WINDOW_SAMPLES { break; }
@@ -263,23 +263,23 @@ fn run_libtorch_firered(model: uta_libtorch_runtime::Model, input: &Path) -> Res
 
 fn run_ggml_stars(loaded: GgmlLoaded, input: &Path) -> Result<String, String> {
     let shared = uta_ggml_runtime::stars::prepare_wav_inputs(input, &constant_f0())?;
-    let words = stars_words();
+    let words = stars_words_ggml();
     let model = uta_ggml_runtime::stars::Stars::load(loaded.runtime, &loaded.device, &loaded.model_path)?;
-    let output = model.infer_transcript(&shared, &words, 0, true, simple_phonemes, |_, _| {})?;
+    let output = model.infer_transcript(&shared, &words, 0, true, simple_phonemes_ggml, |_, _| {})?;
     Ok(format!("{} valid frames, {} notes", output.valid_frames, output.notes.len()))
 }
 
 fn run_libtorch_stars(model: uta_libtorch_runtime::Model, input: &Path) -> Result<String, String> {
     let shared = uta_libtorch_runtime::stars::prepare_wav_inputs(input, &constant_f0())?;
-    let words = stars_words();
+    let words = stars_words_libtorch();
     let route = uta_libtorch_runtime::stars::Stars::from_model(model);
-    let output = route.infer_transcript(&shared, &words, 0, true, simple_phonemes, |_, _| {})?;
+    let output = route.infer_transcript(&shared, &words, 0, true, simple_phonemes_libtorch, |_, _| {})?;
     Ok(format!("{} valid frames, {} notes", output.valid_frames, output.notes.len()))
 }
 
 fn run_ggml_rosvot(loaded: GgmlLoaded, input: &Path) -> Result<String, String> {
     let shared = uta_ggml_runtime::rosvot::prepare_wav_inputs(input, &constant_f0())?;
-    let words = rosvot_words();
+    let words = rosvot_words_ggml();
     let model = uta_ggml_runtime::rosvot::Rosvot::load(loaded.runtime, &loaded.device, &loaded.model_path)?;
     let output = model.infer_transcript(&shared, &words, 0, |_, _| {})?;
     Ok(format!("{} valid frames, {} notes", output.valid_frames, output.notes.len()))
@@ -287,7 +287,7 @@ fn run_ggml_rosvot(loaded: GgmlLoaded, input: &Path) -> Result<String, String> {
 
 fn run_libtorch_rosvot(model: uta_libtorch_runtime::Model, input: &Path) -> Result<String, String> {
     let shared = uta_libtorch_runtime::rosvot::prepare_wav_inputs(input, &constant_f0())?;
-    let words = rosvot_words();
+    let words = rosvot_words_libtorch();
     let route = uta_libtorch_runtime::rosvot::Rosvot::from_model(model);
     let output = route.infer_transcript(&shared, &words, 0, |_, _| {})?;
     Ok(format!("{} valid frames, {} notes", output.valid_frames, output.notes.len()))
@@ -295,21 +295,42 @@ fn run_libtorch_rosvot(model: uta_libtorch_runtime::Model, input: &Path) -> Resu
 
 fn constant_f0() -> Vec<f32> { vec![220.0; 3_100] }
 
-fn stars_words() -> Vec<uta_libtorch_runtime::stars::TranscriptWord> {
+fn stars_words_ggml() -> Vec<uta_ggml_runtime::stars::TranscriptWord> {
+    (0..15).map(|index| uta_ggml_runtime::stars::TranscriptWord {
+        id: format!("word-{index}"), text: "你".to_string(),
+        start_micros: index * 2_000_000, duration_micros: 1_800_000,
+    }).collect()
+}
+
+fn stars_words_libtorch() -> Vec<uta_libtorch_runtime::stars::TranscriptWord> {
     (0..15).map(|index| uta_libtorch_runtime::stars::TranscriptWord {
         id: format!("word-{index}"), text: "你".to_string(),
         start_micros: index * 2_000_000, duration_micros: 1_800_000,
     }).collect()
 }
 
-fn rosvot_words() -> Vec<uta_libtorch_runtime::rosvot::TranscriptWord> {
+fn rosvot_words_ggml() -> Vec<uta_ggml_runtime::rosvot::TranscriptWord> {
+    (0..15).map(|index| uta_ggml_runtime::rosvot::TranscriptWord {
+        id: format!("word-{index}"), text: "你".to_string(),
+        start_micros: index * 2_000_000, duration_micros: 1_800_000,
+    }).collect()
+}
+
+fn rosvot_words_libtorch() -> Vec<uta_libtorch_runtime::rosvot::TranscriptWord> {
     (0..15).map(|index| uta_libtorch_runtime::rosvot::TranscriptWord {
         id: format!("word-{index}"), text: "你".to_string(),
         start_micros: index * 2_000_000, duration_micros: 1_800_000,
     }).collect()
 }
 
-fn simple_phonemes(words: &[String]) -> Result<uta_libtorch_runtime::stars::PhonemeInput, String> {
+fn simple_phonemes_ggml(words: &[String]) -> Result<uta_ggml_runtime::stars::PhonemeInput, String> {
+    Ok(uta_ggml_runtime::stars::PhonemeInput {
+        phone_ids: vec![1; words.len()],
+        phone_to_word: (0..words.len()).map(|index| index as i64).collect(),
+    })
+}
+
+fn simple_phonemes_libtorch(words: &[String]) -> Result<uta_libtorch_runtime::stars::PhonemeInput, String> {
     Ok(uta_libtorch_runtime::stars::PhonemeInput {
         phone_ids: vec![1; words.len()],
         phone_to_word: (0..words.len()).map(|index| index as i64).collect(),
