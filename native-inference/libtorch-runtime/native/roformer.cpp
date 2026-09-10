@@ -1,5 +1,6 @@
 #include "runtime.hpp"
 #include "projection.hpp"
+#include "attention_partition.hpp"
 #include <cmath>
 #include <numeric>
 #include <stdexcept>
@@ -216,7 +217,9 @@ private:
         runtime->checkpoint(prefix + ".rotary");
         const double scale = 1.0 / std::sqrt(static_cast<double>(head_dimension));
         auto attended = runtime->precision == "mixed_attention"
-            ? fused_attention(query, key, value, {}, false, false, scale)
+            ? (runtime->backend == "libtorch_rocm"
+                ? partitioned_fused_attention(query, key, value, scale, [this] { check_cancel(); })
+                : fused_attention(query, key, value, {}, false, false, scale))
             : dense_attention(query, key, value, {}, false, scale);
         runtime->checkpoint(prefix + ".attention");
         auto gates = at::sigmoid(project(normalized, weights->get(name(prefix, "gates_w", "gate.weight")),
