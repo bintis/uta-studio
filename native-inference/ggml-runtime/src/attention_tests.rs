@@ -1,6 +1,7 @@
 //! Explicit device tests, never part of an ordinary CPU-only `cargo test`.
 //! Each invocation loads one library set; GGML's plugin registry is process-global.
 
+mod floating;
 mod gemm;
 mod query_owned;
 
@@ -112,6 +113,48 @@ fn run_shape_with_score_gain(
     timed_calls: usize,
     score_gain: f32,
 ) {
+    run_shape_with_storage(
+        backend,
+        s,
+        key_heads,
+        timed_calls,
+        score_gain,
+        KvStorage::default(),
+    );
+}
+
+#[derive(Clone, Copy, Default)]
+struct KvStorage {
+    key_float: bool,
+    value_float: bool,
+}
+
+fn reference_storage(bits: &[u16], float_storage: bool) -> Vec<f32> {
+    bits.iter()
+        .enumerate()
+        .map(|(index, &bits)| {
+            if bits & 0x7c00 == 0x7c00 {
+                return f32::NAN; // Keep padding poisoned in either storage type.
+            }
+            let value = fixture_value(bits);
+            if float_storage {
+                // Exercise genuinely F32 inputs, not only exactly representable halves.
+                value * 1.000_13 + 0.000_013 * ((index % 7) as f32 - 3.0)
+            } else {
+                value
+            }
+        })
+        .collect()
+}
+
+fn run_shape_with_storage(
+    backend: &GgmlBackendHandle,
+    s: Shape,
+    key_heads: usize,
+    timed_calls: usize,
+    score_gain: f32,
+    storage_types: KvStorage,
+) {
     assert!(score_gain.is_finite() && score_gain > 0.0);
     assert!(key_heads > 0 && s.heads % key_heads == 0);
     let key_shape = Shape {
@@ -119,6 +162,18 @@ fn run_shape_with_score_gain(
         ..s
     };
     let head_ratio = s.heads / key_heads;
+    let key_type = if storage_types.key_float {
+        GGML_TYPE_F32
+    } else {
+        GGML_TYPE_F16
+    };
+    let value_type = if storage_types.value_float {
+        GGML_TYPE_F32
+    } else {
+        GGML_TYPE_F16
+    };
+    let key_bytes = if storage_types.key_float { 4 } else { 2 };
+    let value_bytes = if storage_types.value_float { 4 } else { 2 };
     let api = &backend.runtime.model_api;
     // SAFETY: all shapes below are positive bounded fixtures. Every tensor and
     // graph belongs to this live metadata arena; the allocated backend buffer is
@@ -158,7 +213,7 @@ fn run_shape_with_score_gain(
         );
         let k_parent = (api.ggml_new_tensor_4d)(
             context,
-            GGML_TYPE_F16,
+            key_type,
             row as i64,
             s.keys as i64,
             key_heads as i64,
@@ -166,13 +221,13 @@ fn run_shape_with_score_gain(
         );
         let v_parent = (api.ggml_new_tensor_4d)(
             context,
-            GGML_TYPE_F16,
+            value_type,
             row as i64,
             s.keys as i64,
             key_heads as i64,
             s.batches as i64,
         );
-        let kv_view = |parent| {
+        let kv_view = |parent, element_bytes| {
             (api.ggml_view_4d)(
                 context,
                 parent,
@@ -180,14 +235,14 @@ fn run_shape_with_score_gain(
                 s.keys as i64,
                 key_heads as i64,
                 s.batches as i64,
-                row * 2,
-                row * s.keys * 2,
-                row * s.keys * key_heads * 2,
+                row * element_bytes,
+                row * s.keys * element_bytes,
+                row * s.keys * key_heads * element_bytes,
                 0,
             )
         };
-        let k = kv_view(k_parent);
-        let v = kv_view(v_parent);
+        let k = kv_view(k_parent, key_bytes);
+        let v = kv_view(v_parent, value_bytes);
         let mask_rows = s.queries.div_ceil(16) * 16;
         let mask = if s.masked {
             (api.ggml_new_tensor_4d)(
@@ -240,8 +295,20 @@ fn run_shape_with_score_gain(
             }
         }
         (api.ggml_backend_tensor_set)(q_parent, queries.as_ptr().cast(), 0, queries.len() * 4);
-        (api.ggml_backend_tensor_set)(k_parent, keys.as_ptr().cast(), 0, keys.len() * 2);
-        (api.ggml_backend_tensor_set)(v_parent, values.as_ptr().cast(), 0, values.len() * 2);
+        let key_reference = reference_storage(&keys, storage_types.key_float);
+        let value_reference = reference_storage(&values, storage_types.value_float);
+        let key_pointer = if storage_types.key_float {
+            key_reference.as_ptr().cast()
+        } else {
+            keys.as_ptr().cast()
+        };
+        let value_pointer = if storage_types.value_float {
+            value_reference.as_ptr().cast()
+        } else {
+            values.as_ptr().cast()
+        };
+        (api.ggml_backend_tensor_set)(k_parent, key_pointer, 0, keys.len() * key_bytes);
+        (api.ggml_backend_tensor_set)(v_parent, value_pointer, 0, values.len() * value_bytes);
         if s.masked {
             let masks: Vec<u16> = (0..mask_rows * s.keys)
                 .map(|i| if i % s.keys > i / s.keys { 0xfc00 } else { 0 })
@@ -299,9 +366,10 @@ fn run_shape_with_score_gain(
                             (0..s.d)
                                 .map(|d| {
                                     f64::from(queries[s.q_index(b, h, t, d)])
-                                        * f64::from(fixture_value(
-                                            keys[key_shape.kv_index(b, h / head_ratio, key, d)],
-                                        ))
+                                        * f64::from(
+                                            key_reference
+                                                [key_shape.kv_index(b, h / head_ratio, key, d)],
+                                        )
                                 })
                                 .sum::<f64>()
                                 * f64::from(scale)
@@ -316,9 +384,9 @@ fn run_shape_with_score_gain(
                             .iter()
                             .enumerate()
                             .map(|(key, p)| {
-                                p * f64::from(fixture_value(
-                                    values[key_shape.kv_index(b, h / head_ratio, key, d)],
-                                ))
+                                p * f64::from(
+                                    value_reference[key_shape.kv_index(b, h / head_ratio, key, d)],
+                                )
                             })
                             .sum::<f64>()
                             / sum;
@@ -341,6 +409,8 @@ fn run_shape_with_score_gain(
                 "heads": s.heads, "batches": s.batches, "padding": s.padding,
                 "key_heads": key_heads,
                 "score_gain": score_gain,
+                "key_storage": if storage_types.key_float { "f32" } else { "f16" },
+                "value_storage": if storage_types.value_float { "f32" } else { "f16" },
                 "masked": s.masked, "warmup_calls": warmup_calls, "host_compute_seconds": seconds,
                 "matmul_flops": 4_u64 * s.queries as u64 * s.keys as u64 * s.d as u64
                     * s.heads as u64 * s.batches as u64,
