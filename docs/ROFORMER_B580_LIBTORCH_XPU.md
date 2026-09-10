@@ -1,8 +1,9 @@
 # Isolated native LibTorch XPU comparison on B580
 
-Measured on 2026-09-10. This is a synthetic operator comparison using current XE90
+Measured on 2026-09-10. The original comparison below uses synthetic XE90
 projection and attention shapes, not a run of the XE90 model or an audio-quality
-qualification. Application libraries, configured models, settings, launchers and
+qualification. The final section separately records the subsequent authorized
+native RoFormer model optimization. Application libraries, configured models, settings, launchers and
 production backend declarations were not modified by this experiment.
 
 ## Executed implementation
@@ -190,8 +191,69 @@ The source README contains build and run instructions. Keep the compiled
 executables and dependencies in `test-artifacts/libtorch-xpu-isolated`; nothing
 has been installed as the application's backend.
 
-The evidence supports implementing a further isolated native XPU model/block
+The original evidence supports implementing a further isolated native XPU model/block
 comparison. It does not establish whole-model speedup, end-to-end audio parity,
 AOT compilation benefits, long-track behavior, Windows support, or release
 readiness. Do not multiply the single-operator ratios into an unmeasured model
 speedup or silently migrate the application based on this result.
+
+## Native RoFormer optimization — in progress (2026-09-10 UTC)
+
+The user authorized optimizing LibTorch RoFormer on B580 toward **60 seconds for
+the existing 354.88-second song**, informed by GGML's layout/attention work.
+The historical native `mixed_attention` full-song operation
+`20260910T190148-7ab9294967f8` completed 38 chunks in **112.060496322 seconds**,
+excluding runtime/weight load and destruction. It is not a matched new control.
+New evidence: `test-artifacts/libtorch-roformer-speed/`. No installed library,
+model, audio source, precision policy, full attention context, chunk, overlap,
+serial chunk execution, cancellation or completion synchronization is changed.
+No Vulkan Super or hardware-counter stress group is resumed.
+
+Separate committed changes:
+
+- `a1924e7`: monotonic timestamps on the existing opt-in synchronization trace.
+  With tracing off there is no timestamp or added synchronization overhead.
+  Consecutive complete timestamps include intervening dispatch/copy/host work;
+  they are **not GPU-only kernel timings**.
+- `9898de9`: XPU ordinary RoPE uses complex views and one native complex multiply,
+  with cached FP32 complex phases. PolarFormer keeps its distinct softplus and
+  phase geometry; CPU/ROCm retain their existing arithmetic.
+- `fa51ee0`: XPU RoFormer SDPA retains head-interleaved FP16 operands rather than
+  forcing BHLD copies. FP32 projection/norm/residual and the existing FP16 SDPA
+  input/output rounding remain unchanged; math-SDPA fallback stays disabled.
+- `b7cc13f`: XPU RoFormer uses native fused FP32 RMS normalization with the same
+  explicit `1e-12` epsilon. Other model families/backends are unchanged.
+
+Executed verification so far:
+
+- CPU primitive checks and the ABI fixture pass; the focused Rust library suite
+  passes **54 tests** (`20260910T192101-a75e7436412b`). Builds retain pre-existing
+  dead-code warnings from shared Rust DSP/diagnostic modules.
+- XPU rotation compares every element on both full XE90 axes, 79,349,760 values
+  each, plus packed/strided, singleton and tail shapes. Maximum error against the
+  decomposed FP32 formula is `1.19209e-7`; against the complete FP64 arithmetic
+  oracle it is below `8.94e-8`. Input values are preserved. Synchronized ABBA
+  samples measure roughly **14–15 ms to 2.2 ms per rotation**, not whole attention
+  or whole-model time (`20260910T191337-d3e4b3773350`).
+- The layout check compares all 79,349,760 attention values on each full axis
+  **exactly** with the packed native path, and also checks a complete small FP64
+  attention oracle (`20260910T191702-1a5cf21cd13d`). This is layout equivalence,
+  not exact FP32 attention; the small rounded-input oracle's maximum difference
+  is `0.000399998`, NMSE `4.18043e-8` from FP16 SDPA output rounding/arithmetic.
+- The 12-second real-audio control, rotation-only and rotation+layout traces each
+  complete the model's two default chunks. All 1,058,400 audio samples are finite
+  and compared. Rotation+layout versus control has maximum absolute difference
+  `4.97698783875e-6`, SNR **112.6107 dB**, not bitwise equality. Diagnostic rotation
+  intervals fall from about 31/30 ms to 6/5 ms (time/frequency); this synchronized
+  trace is not normal-throughput acceptance. `bounded-comparison.json` retains
+  both independent changes' results.
+- The first new control invocation used a nonexistent top-level model path and
+  failed before model loading/inference (`20260910T190918-03d97127c817`). Its
+  record remains. The explicitly corrected generation path completed under
+  `20260910T190950-d415828a2e64`; no failed GPU inference was automatically retried.
+
+At 19:20–19:21 UTC, pre-run observations found another `uta-ggml-worker` using
+B580 (total GPU busy 96–98%). New performance runs were deferred rather than
+competing with or terminating that client. Fused-normalization XPU checks,
+other RoFormer geometries, and matched full-song timing/output checks remain
+pending. No 60-second, production-readiness or later host-stability claim.

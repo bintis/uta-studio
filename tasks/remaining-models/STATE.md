@@ -425,6 +425,27 @@ readiness, fused-SDPA availability or later host stability is established. See
 [LibTorch execution](../../docs/design/runtime/LIBTORCH_EXECUTION.md) for details and next checks.
 Super whole-task scheduling remains incomplete and is not qualified by these results.
 
+## LibTorch RoFormer speed optimization — IN_PROGRESS (2026-09-10 UTC)
+
+The user authorized optimizing the native XPU RoFormer family toward 60 seconds
+for the existing 354.88-second song. Historical native XE90 inference completed
+in 112.060496322 seconds / 38 chunks; this is not a matched new control.
+`9898de9` fuses ordinary XPU rotary arithmetic through complex views; `fa51ee0`
+retains head-interleaved SDPA operands; `b7cc13f` fuses RoFormer FP32 RMS norm.
+Precision policy, complete context, default chunk/overlap, synchronization,
+cancellation and installed assets are preserved. No Vulkan Super/counter stress
+resumption or production promotion.
+
+CPU primitive/ABI checks and 54 Rust library tests pass. Full-axis XPU primitive
+checks pass for rotation and attention layout; the latter compares every output
+exactly with native packed SDPA. A complete 12-second real-audio rotation+layout
+comparison has maximum sample difference 4.97698783875e-6 and SNR 112.6107 dB.
+These are bounded numerical and synchronized diagnostic results, not full-song
+performance. Other B580 worker activity (96–98% total busy at 19:20–19:21 UTC)
+paused new performance runs; fused-normalization XPU, other RoFormer geometries
+and the matched whole-song pair remain. Details and operation evidence:
+[Native XPU comparison](../../docs/ROFORMER_B580_LIBTORCH_XPU.md#native-roformer-optimization--in-progress-2026-09-10-utc).
+
 ## Next actions
 
 1. Install the STARS and ROSVOT GGUF generations into the managed store with their manifests and
