@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -135,10 +136,32 @@ void projection_residual(const at::Device& device, int64_t rows, int64_t contrac
     auto unfused = at::linear(input, weight, bias) + residual;
     std::cout << "projection_residual_shape=" << rows << ',' << contraction << ',' << columns
               << " strided=" << strided << " bias=" << with_bias << std::endl;
-    const auto tolerance = 2e-6 * std::max(1.0, reference.abs().max().item<double>());
-    compare(unfused, reference, "unfused-projection-residual-double-oracle", tolerance);
-    compare(actual, reference, "projection-residual-double-oracle", tolerance);
-    compare(actual, unfused, "projection-residual-unfused", tolerance);
+    // Cancellation can make output-relative NMSE large for an ordinary FP32
+    // dot product. Bound each error by gamma times the sum of absolute terms,
+    // including product rounding, bias and residual. Both paths use one bound.
+    const double unit_roundoff = std::numeric_limits<float>::epsilon() / 2.0;
+    const double accumulated_roundoff = (2 * contraction + 2) * unit_roundoff;
+    auto absolute_terms = at::linear(input.to(at::kCPU).to(at::kDouble).abs(),
+        weight.to(at::kCPU).to(at::kDouble).abs(),
+        with_bias ? bias.to(at::kCPU).to(at::kDouble).abs() : at::Tensor())
+        + residual.to(at::kCPU).to(at::kDouble).abs();
+    auto roundoff_bound = absolute_terms * (accumulated_roundoff / (1.0 - accumulated_roundoff));
+    auto assess = [&](const at::Tensor& candidate, const char* label) {
+        auto value = candidate.to(at::kCPU).to(at::kDouble);
+        auto difference = value - reference;
+        std::cout << "comparison=" << label << " elements=" << value.numel()
+                  << " max_abs=" << difference.abs().max().item<double>()
+                  << " nmse=" << difference.square().sum().item<double>() / std::max(reference.square().sum().item<double>(), 1e-30)
+                  << " max_fraction_of_fp32_bound=" << (difference.abs() / roundoff_bound.clamp_min(std::numeric_limits<double>::min())).max().item<double>()
+                  << std::endl;
+        if (value.sizes() != reference.sizes() || !at::isfinite(value).all().item<bool>()
+            || (difference.abs() > roundoff_bound).any().item<bool>())
+            throw std::runtime_error(std::string(label) + " exceeds FP32 forward-error bound");
+    };
+    assess(unfused, "unfused-projection-residual-double-oracle");
+    assess(actual, "projection-residual-double-oracle");
+    std::cout << "comparison=projection-residual-unfused max_abs="
+              << (actual.to(at::kCPU) - unfused.to(at::kCPU)).abs().max().item<float>() << std::endl;
     if (actual.scalar_type() != at::kFloat || !at::equal(input, original) || !at::equal(weight, original_weight)
         || !at::equal(residual, original_residual) || (with_bias && !at::equal(bias, original_bias)))
         throw std::runtime_error("projection residual output type or inputs changed");
