@@ -9,6 +9,7 @@ members = [
   "fusion-agent-adapter",
   "native-inference/audio-reuse",
   "native-inference/ggml-runtime",
+  "native-inference/libtorch-runtime",
   "native-inference/ggml-worker",
   "native-inference/gpu-probes",
   "studio-diagnostics",
