@@ -380,6 +380,28 @@ GPU experiments stay paused after the user's restart report; no automatic repeat
 run. Whole-pipeline performance/output qualification for the corrected design is incomplete.
 No production promotion.
 
+## Native LibTorch XPU — bounded tests resumed (2026-09-10 UTC)
+
+The user explicitly resumed XPU tests; this does not resume the interrupted Vulkan Super run or
+hardware-counter pressure groups. Existing AMD evidence was inspected first. Current native
+factories contain eighteen resources; this is not an eighteen-resource qualification claim.
+
+`5a46dfc` adds native Rust complete-tensor diagnostics; its focused host test/release build passed.
+An initial XPU loader failure for private `libsycl.so.9` was corrected by `912c9f9` using inherited
+private RPATH, without system changes. The corrected XPU ABI/synthetic FCPE test passed
+(`20260910T172427-1d4e46c7699f`). Real read-only FCPE weights on explicit XPU device 0 then completed
+201/97/201-frame synthetic inputs. All **179,640 activation pairs** were finite in full CPU/XPU
+comparison: max absolute error **6.29370333627e-10**, NMSE at most **1.58845205696e-11**. Repeated
+XPU input after the other shape was not bit-identical (max difference **1.23691279441e-10**).
+
+Evidence: `test-artifacts/libtorch-models/xpu-resume/fcpe-comparison.json`, CPU operation
+`20260910T172609-fe134b3ec34c`, XPU operation `20260910T172724-e05fc4d00416`. Earlier loader and
+request-preparation failures remain preserved. Host/GPU observations included other UI/test work.
+No controlled speedup, full audio/voicing quality, all-model XPU readiness, fused-SDPA availability
+or later host stability is established. See
+[LibTorch execution](../../docs/design/runtime/LIBTORCH_EXECUTION.md) for details and next checks.
+Super whole-task scheduling remains incomplete and is not qualified by these results.
+
 ## Next actions
 
 1. Install the STARS and ROSVOT GGUF generations into the managed store with their manifests and

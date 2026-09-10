@@ -4,7 +4,7 @@
 
 Authorized on 2026-09-10: implement independent native LibTorch execution for all seventeen current catalog resources, retaining GGML as a separate backend. This authorization supersedes the former single-GGML model-computation restriction for this work only. Native-only inference, the Studio/Analysis Engine/Runtime Manager process boundaries, read-only source media, and explicit device selection remain unchanged.
 
-Status: **implementation in progress; no LibTorch whole-model GPU result or production qualification yet**. Original unrelated working-tree changes are preserved. Development evidence is under `test-artifacts/libtorch-models/` and the operation recorder.
+Status: **implementation in progress; bounded native model-plan GPU evidence exists, but no complete-pipeline or production qualification**. Original unrelated working-tree changes are preserved. Development evidence is under `test-artifacts/libtorch-models/` and the operation recorder.
 
 The motivation is `docs/ROFORMER_B580_LIBTORCH_XPU.md`: native ATen/oneDNN outperformed GGML Vulkan for the tested projection and full-context attention operators. Those measurements are not whole-model speedups and do not establish audio parity. No multiplication of operator ratios is used to predict production throughput.
 
@@ -61,6 +61,52 @@ Each actual native execution is committed and recorded before launch through `to
 Record model load, frontend preparation/upload, synchronized native computation, final readback/postprocessing and whole worker wall time separately. Warmups are separate from measured runs. Compare synchronized time with synchronized time, not GPU-event time with process wall time. Retain every measured sample, failed invocation and contention observation.
 
 Full output checks include all finite values, sample/frame count, timing/order and mandatory conditioning. Numerical comparisons use waveform residual/reconstruction and complete activation/logit vectors where available, plus discrete voicing/note/token/alignment differences. A same-device GGML comparison is a useful implementation comparison, not automatically checkpoint truth; existing checkpoint/reference fixtures remain important, particularly FireRed FP32 and RMVPE low-confidence frames.
+
+## Bounded XPU resumption (2026-09-10 UTC)
+
+The user's explicit request to resume XPU testing authorized this separate lane; it did not resume
+Vulkan Super crash reproduction or hardware-counter stress groups. Existing AMD strict results
+(`test-artifacts/libtorch-models/amd/final-strict-18.jsonl`) were inspected first: 17/18 resource
+routes completed, with a recorded ROCm/MIOpen RMVPE GRU failure. Subsequent parallel AMD work is not
+requalified by this XPU run. Current native factories list eighteen resources, including both LEAP
+XE90 outputs; the earlier seventeen-resource plan is not an acceptance count.
+
+- `5a46dfc` adds `native_tensor_check`: Rust owns explicit backend/device/precision selection and
+  ordered model calls; complete typed outputs, shapes and timing metadata are saved in new
+  diagnostic directories. It has no Python inference, hidden CPU/GGML fallback or model-store
+  mutation. Its focused host test and release build passed (`20260910T171947-8a16a5b71d86`).
+- The first rebuilt XPU contract invocation (`20260910T172119-cb27d811ef7b`) exited 127 in ELF loading:
+  private `libsycl.so.9` was present, but RUNPATH did not cover indirect dependencies. No model test
+  was entered. `912c9f9` applies inherited private RPATH for XPU, as already used for ROCm. The failed
+  build remains in `xpu-resume/runtime-build`; the corrected independent build is
+  `xpu-resume/linked-runtime-build` (`20260910T172237-5475b5576ad9`). No system library was changed.
+- The corrected native ABI/synthetic FCPE plan passed on **`libtorch_xpu`, device 0, strict**
+  (`20260910T172427-1d4e46c7699f`): complete fifteen-value comparison, F32/F16 stored weights,
+  cancellation, ownership after runtime release, output shape and error handling.
+- Read-only real FCPE weights then executed 201/97/201-frame synthetic mel inputs in one retained
+  model, with identical first/repeated inputs. Explicit CPU reference:
+  `20260910T172609-fe134b3ec34c`; XPU: `20260910T172724-e05fc4d00416`.
+- **All 179,640 CPU/XPU activation pairs were finite and compared**, not sampled. Per-window NMSE:
+  `1.57628370956e-11`, `1.18181985167e-11`, `1.58845205696e-11`; maximum absolute error across the
+  pair: `6.29370333627e-10`. XPU first/repeated outputs were **not bit-identical**: maximum difference
+  `1.23691279441e-10`, NMSE `1.02478977560e-12`. No exact-determinism or perceptual claim follows.
+- Observations retain the target's Intel Level Zero driver and xe PCI device `0000:07:00.0`.
+  Before real-weight XPU execution, host CPU busy was about 17%, B580 busy about 12%; other UI/test
+  processes remained active. There was no exclusivity assertion, process termination or idle poll.
+  Upload, synchronized compute and readback are separate host timings; cold/shape compilation and
+  one repeated call do not constitute a controlled speed benchmark.
+
+Evidence: `test-artifacts/libtorch-models/xpu-resume/`, especially `fcpe-comparison.json`
+(`20260910T172812-7e4b12c40817`), full output files and per-run observations. An initial request-file
+preparation did not forward undeclared recorder stdin and generated nothing; its attempted CPU
+reference exited before model loading (`20260910T172455-20e45cf6434e`). The corrected generator is
+recorded in argv (`20260910T172546-f9404a29aa2d`); both failed/setup records remain intact.
+
+This verifies bounded native FCPE plans, not real-audio pitch/voicing parity, all eighteen XPU
+resources, fused attention availability, Super scheduling or production readiness. The historical
+OpenCL-dependent fused-SDPA failure was not rerun or repaired here. Next work uses the same native
+runner for model-specific real-audio/conditioning checks and explicit attention dependency diagnosis,
+not automatic stress retries. Successful exit does not establish later host stability.
 
 ## Source references
 

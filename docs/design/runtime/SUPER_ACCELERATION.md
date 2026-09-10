@@ -348,8 +348,10 @@ Cross-song reuse and Studio publication timing remain separate batch/end-to-end 
 
 The concurrently authorized independent LibTorch work is preserved. Shared host DSP entry points
 must not call GGML model graphs; scheduler routing must respect the selected backend and precision.
-GPU experiments remain paused, saved pre-correction binaries remain unsuitable, and no production
-promotion or corrected end-to-end performance claim is made.
+Vulkan Super/full-pipeline experiments remain paused, saved pre-correction binaries remain
+unsuitable, and no production promotion or corrected end-to-end performance claim is made. A later
+explicit request resumed separate bounded native LibTorch XPU tests, recorded in
+[LibTorch execution](LIBTORCH_EXECUTION.md); these do not qualify Super scheduling.
 
 ## Correction verification
 

@@ -25,8 +25,8 @@ The user's clarified goal is **whole-model task scheduling across GPUs**, based 
 loading order and predicted total execution time, not splitting one model's chunks across cards.
 Keep actual model hot loading, exact-format audio decode reuse, shared separation outputs and
 useful final-consumer device residency. The earlier chunk-splitting measurements do not qualify
-this corrected design. Task-level orchestration remains incomplete and GPU validation is paused
-after the reported restart. Existing synchronization, resource lifetimes and cleanup remain;
+this corrected design. Task-level orchestration remains incomplete and Vulkan Super validation
+remains paused after the reported restart. Existing synchronization, resource lifetimes and cleanup remain;
 process success and available VRAM do not establish host safety. See
 [Super acceleration](design/runtime/SUPER_ACCELERATION.md) and the task index.
 
@@ -35,6 +35,12 @@ real Qwen window progress and joined task context; it also reuses FCPE/GRU graph
 handoffs and Qwen incremental arenas. Read-only weighted CPU fixtures compared 470,520 finite
 RMVPE/FCPE values bit-for-bit across differing windows. This is bounded CPU numerical evidence,
 not automatic dual-GPU scheduling, GPU qualification or a measured whole-analysis speedup.
+
+A later explicit request resumed separate LibTorch XPU testing. The native ABI fixture and bounded
+real-weight FCPE tensor calls completed; 179,640 full CPU/XPU activation pairs were finite, with
+maximum absolute error 6.29370333627e-10. Repeated XPU outputs were not bit-identical. This does not
+qualify real-audio voicing, all models, Super scheduling or speedup; see
+[LibTorch execution](design/runtime/LIBTORCH_EXECUTION.md).
 
 ## Current executable models
 

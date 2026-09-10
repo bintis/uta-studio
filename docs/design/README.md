@@ -60,6 +60,7 @@ Older linked specifications may contain historical model examples. The current e
 ### Runtime and API contracts
 
 - `docs/design/runtime/SUPER_ACCELERATION.md` — active opt-in multi-GPU scheduling, preloading and per-analysis residency work; not a completed acceleration claim.
+- `docs/design/runtime/LIBTORCH_EXECUTION.md` — separately authorized native LibTorch implementation alongside GGML and bounded AMD/XPU evidence; not production routing readiness.
 
 - `docs/design/runtime/NATIVE_RUNTIME_LOCK_SPEC_v1.0.json` — native runtime identity/lock specification.
 - `docs/design/api/API_CONTRACT_CONCLUSIONS_v1.0.md` — durable API reuse/extension conclusions.
