@@ -334,7 +334,8 @@ precision and avoiding recurrence of GPU power loss. `8483b41` removes the
 experimental switch, projection scope and tests; IEEE projection metadata stays.
 No installed runtime was replaced. Historical evidence remains, but TF32 is not
 a current candidate or a production mode. Current library tests passed **55**
-before this removal; affected checks must run again after changes.
+before this removal and again afterward (`20260910T202405-573055382379`), along
+with the CPU ABI check. Later C++ changes also pass their focused CPU checks.
 
 The family series completed XE90 vocals and instrumental control/candidate
 executions on 12-second audio; complete waveform analysis is pending. The
@@ -343,11 +344,80 @@ executions on 12-second audio; complete waveform analysis is pending. The
 Its candidate and three mel-band pairs have not run. `family-results.json`
 records exact scope. Do not claim family-wide acceptance.
 
-**Next:** diagnose conversion/SDPA stages (`5fa0499`, compiled profile build but
-not executed), fuse ordinary rotary FP32 arithmetic with the already-required
-FP16 output rounding if numerically equivalent, and inspect exact-GELU matmul
-fusion. Preserve full context, defaults, precision policy, cancellation and sync.
-Use bounded serial native runs under recorder/observer; no clock/power changes,
-hardware-counter stress, automatic retries, or removal of safety to chase speed.
+### Further precision-preserving fusions — bounded results
+
+The finer trace (`5fa0499`) executed in `conversion-profile/`, operation
+`20260910T202432-c127b7bd6e79`. Median synchronized intervals include about
+5.12/4.81 ms for time/frequency rotary, 1.65/1.66 ms query conversion,
+1.57/1.57 ms key conversion, 2.08/2.07 ms value conversion, 12.43/1.88 ms SDPA,
+and 1.44/1.35 ms attention-output conversion. These are diagnostic host-complete
+intervals, not GPU-only or normal-throughput timings. First-use compilation
+intervals are retained separately in `conversion-profile-summary.json`.
+
+Further independent source changes:
+
+- `e2674d9`: complex-FP32 rotary multiplication writes directly to the half
+  storage already required by mixed attention. Input and cached phases stay
+  FP32. Strict attention, PolarFormer and other backends retain their preceding
+  rotary path. Every output on both 79,349,760-element axes equals the previous
+  FP32 rotation then half conversion **exactly**. Isolated synchronized calls
+  are about **3.6–3.8 ms → 1.54 ms**; two control samples reach about 7.55 ms.
+  Evidence: `writeback-small-check/`, `writeback-full-axis-check/`, operation
+  `20260910T203144-74d6ec03443c`. This is not whole-song speed.
+- `d8fa55c`: defer half SDPA output promotion into the existing FP32 gate
+  multiply. Complete small strided/singleton checks and gated native attention
+  match explicit FP32 promotion exactly (`gating-small-check/`).
+- `6382318` / `45db8e1`: use registered native `mkldnn::_linear_pointwise` for
+  FP32 FFN input projection plus **erf GELU**, not tanh approximation. The
+  wheel-matched `Linear.cpp` and `FusionUtils.cpp` confirm the native post-op;
+  `_addmm_activation` itself still executes separate GELU on this XPU wheel.
+  Verbose XPU checks/model execution confirm `attr-post-ops:eltwise_gelu_erf`
+  with F32 operands. The first build rejected an implicit empty `c10::List`;
+  the explicit-construction correction is separately committed and recorded.
+- `dafc2a7`: native `_linear_pointwise.binary` combines attention-output and
+  FFN-output projection with the FP32 residual add. Bias retains its original
+  order. Inputs remain read-only; explicit matrix views avoid rank mismatch in
+  the binary post-op. All small XPU residual results match ordinary FP32
+  projection + addition exactly, including bias/no-bias and strided cases.
+  CPU/ROCm model execution is unchanged. Evidence: `residual-small-check/` and
+  `residual-profile/`; native verbose records the binary-add post-op.
+
+All new helpers have CPU checks; final CPU ABI execution passes
+(`20260910T205424-9b536ed69fad`). Projection oracle details matter: the initial
+unit-bounded absolute tolerance rejected CPU oneDNN GELU at max `2.54537e-6`,
+NMSE `7.8212e-14`; the ordinary CPU path measured `1.4151e-6` / `3.30314e-14`.
+Both new GELU paths now use the same magnitude-scaled `2e-6 * max(1, peak)` bound
+and `1e-12` NMSE bound. Small XPU fused versus ordinary GELU differences are at
+most `4.76837e-7`. A cancellation-heavy 1536-wide residual fixture rejected even
+ordinary FP32 under the generic NMSE threshold (`2.90822e-12`). Its two paths
+therefore use the standard per-element FP32 forward-error bound
+`gamma(2*K+2) * (abs(X)*abs(W)^T + abs(bias) + abs(residual))`, with unit roundoff
+from the float type; max error/NMSE and bound fractions are still reported.
+These changes affect only the new projection oracle tests, not runtime
+precision or existing rotary/normalization checks. Failed CPU records remain.
+Neither FP32 fusion nor a passed roundoff bound means bit-identical arithmetic.
+
+Complete two-chunk real-audio comparisons (1,058,400 finite samples each):
+
+| Change versus predecessor | Max absolute sample difference | SNR |
+| --- | ---: | ---: |
+| Rotary writeback | 2.384185791e-7 | 143.23614 dB |
+| Attention gating | 2.384185791e-7 | 143.22494 dB |
+| Erf GELU post-op | 7.688999176e-6 | 111.75044 dB |
+| Residual post-op | 2.384185791e-7 | 143.22851 dB |
+| All four versus `conversion-profile` | 7.688999176e-6 | 111.75176 dB |
+
+See `precision-fusion-comparisons.json` and `residual-comparison.json`. These are
+complete waveform comparisons, not listening qualification. GELU/residual model
+diagnostics also enable oneDNN verbose logging, so their total times must not be
+compared with ordinary throughput. No installed assets are changed.
+
+**Next:** fresh full-song `profile-build` control versus `residual-build`, with
+tracing and oneDNN verbose off, warm runs zero, original source/model/defaults.
+New whole-song speed is not yet measured; the prior accepted result remains
+72.54 seconds. Preserve precision, full context, cancellation and synchronization.
+Runs remain bounded and serial; no clock/power changes, counter stress, automatic
+retry or removal of safety. Kernel journal reading was denied by permissions
+(`20260910T205622-b1bff200266f`); boot IDs do not prove absence of GPU resets.
 The prior power-loss cause is unresolved. No 60-second, perceptual qualification
 or production-readiness claim.

@@ -485,7 +485,8 @@ the TF32 attribute but actual reduced-precision hardware execution was not
 proven. The user explicitly **retired TF32**; `8483b41` removes its build switch,
 projection helper and dedicated tests. Historical artifacts remain; no more TF32
 experiments. The Rust metadata forwarding check brings the library suite to
-55 passing tests before retirement; rerun affected checks after current changes.
+55 passing tests; the suite and CPU ABI/primitive checks passed again after
+retirement (`20260910T202405-573055382379`).
 
 Family 12-second regression completed XE90 vocals and instrumental control /
 current IEEE-projection candidate executions. Original PolarFormer control
@@ -494,8 +495,25 @@ and the three mel-band pairs remain unexecuted. This is not family-wide acceptan
 
 Current authorization: optimize speed **while preserving the existing precision
 policy**, full context/chunk/overlap, serial execution, cancellation and sync.
-Investigate rotary-output conversion fusion, exact FFN GELU fusion and finer
-attention-stage timing (`5fa0499`, profile build compiled, not yet executed).
+Four further XPU changes are now committed and bounded-tested: `e2674d9` merges
+ordinary FP32 rotary with existing half writeback; `d8fa55c` promotes SDPA output
+inside FP32 gating; `6382318`/`45db8e1` fuses FP32 projection + erf GELU; `dafc2a7`
+fuses output projection + FP32 residual. No TF32 allowance or in-place input
+mutation. CPU primitives/ABI pass. XPU writeback matches every element exactly
+on both 79,349,760-element axes (about 3.6–3.8 ms → 1.54 ms per isolated call;
+some control samples are slower). Gating checks match explicit promotion exactly.
+Native oneDNN verbose output confirms erf-GELU and binary-add matmul post-ops.
+Every two-chunk XE90 waveform sample was compared: all four fusions versus
+`conversion-profile` have max difference `7.688999176e-6`, SNR **111.75176 dB**;
+not bit-identical or listening-qualified. Evidence: `precision-fusion-comparisons.json`,
+`residual-comparison.json`. Small projection oracle bounds are documented in the
+comparison document; failed CPU attempts remain recorded, not erased.
+
+Next is a **fresh full-song pair**, `profile-build` versus `residual-build`, with
+tracing/oneDNN verbose disabled and no warm runs. New whole-song speed remains
+unmeasured; 72.54 seconds is still the last accepted full-song optimization result.
+Kernel journal review is unavailable due to permissions
+(`20260910T205622-b1bff200266f`); do not claim absence of GPU reset from boot IDs.
 Do not alter GPU clocks/power settings or resume counter stress tests. Prior
 power-loss cause remains unresolved; process success does not prove later host
 stability. Observe bounded runs and inspect anomalies rather than automatically
