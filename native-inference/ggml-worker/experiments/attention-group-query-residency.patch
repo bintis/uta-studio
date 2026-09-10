@@ -1,0 +1,45 @@
+--- a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
++++ b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
+@@ -26,6 +26,7 @@
+ // Workgroup barriers protect those common operands; score, probability and
+ // output workspaces remain subgroup-owned. Smaller groups use independent tiles.
+ shared f16vec4 operand_workspace[row_split >= 4 ? row_split * 128 : 512];
++shared f16vec4 query_workspace[row_split * 128];
+ shared vec4 float_workspace[row_split * 64];
+ shared f16vec4 probability_workspace[row_split * 64];
+ 
+@@ -65,14 +66,9 @@
+             query = vec4(query_data[address], query_data[address + 1],
+                          query_data[address + 2], query_data[address + 3]);
+         }
+-        operand_workspace[operand_base + index] = f16vec4(query * p.scale);
++        query_workspace[operand_base + index] = f16vec4(query * p.scale);
+     }
+     subgroupBarrier();
+-    coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseA> queries[4];
+-    [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
+-        coopMatLoad(queries[depth_tile], operand_workspace,
+-                    operand_base + depth_tile * 4, 16, gl_CooperativeMatrixLayoutRowMajor);
+-    }
+     if (row_split >= 1) {
+         barrier(); // all four Q fragments must be loaded before shared K overwrites them
+     } else {
+@@ -111,6 +107,9 @@
+             const uint key_row = block * 32 + key_tile * 16;
+             [[unroll]] for (uint depth_tile = 0; depth_tile < 4; ++depth_tile) {
+                 coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> keys;
++                coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseA> query;
++                coopMatLoad(query, query_workspace, operand_base + depth_tile * 4,
++                            16, gl_CooperativeMatrixLayoutRowMajor);
+                 if (row_split >= 1) {
+                     coopMatLoad(keys, operand_workspace, key_tile * 256 + depth_tile * 4,
+                                 16, gl_CooperativeMatrixLayoutColumnMajor);
+@@ -132,7 +131,7 @@
+                     subgroupBarrier();
+                     coopMatLoad(keys, operand_workspace, operand_base, 4, gl_CooperativeMatrixLayoutColumnMajor);
+                 }
+-                scores = coopMatMulAdd(queries[depth_tile], keys, scores);
++                scores = coopMatMulAdd(query, keys, scores);
+                 // Protect the local operand tile before another contraction overwrites it.
+                 if (row_split < 1 && (key_row + 16 > KV || (k_stride & 7) != 0)) {
+                     subgroupBarrier();
