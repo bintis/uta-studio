@@ -1,0 +1,111 @@
+diff --git a/src/ggml-vulkan/ggml-vulkan.cpp b/src/ggml-vulkan/ggml-vulkan.cpp
+--- a/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -3852,7 +3852,14 @@
+     // Measured H64 path: four native subgroups each own eight complete query rows.
+     // Keep explicit tile/staging diagnostics on the existing implementation.
+     const char * query_owned = std::getenv("UTA_STUDIO_GGML_FA_QUERY_OWNED");
+-    if (intel_m8_h64 && n_rows > 32 && result.subgroup_size == 32 &&
++    // F32 storage already rounds to F16 operands in the cooperative path.
++    // Stage it directly in the fused kernel instead of adding a graph-wide cast.
++    const bool query_owned_storage =
++        (k_type == GGML_TYPE_F16 || k_type == GGML_TYPE_F32) &&
++        (v_type == GGML_TYPE_F16 || v_type == GGML_TYPE_F32);
++    if (device->architecture == vk_device_architecture::INTEL_XE2 &&
++        fa_m == 8 && hsk == 64 && hsv == 64 && f32acc && query_owned_storage &&
++        n_rows > 32 && result.subgroup_size == 32 &&
+         std::getenv("UTA_STUDIO_GGML_FA_QUERY_ROWS") == nullptr &&
+         std::getenv("UTA_STUDIO_GGML_FA_STAGE_KV") == nullptr &&
+         (query_owned == nullptr || std::strcmp(query_owned, "0") != 0)) {
+diff --git a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
+--- a/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
++++ b/src/ggml-vulkan/vulkan-shaders/flash_attn_cm1_query_owned.comp
+@@ -21,6 +21,40 @@
+ layout(binding = 2) readonly buffer Value { float16_t value_data[]; };
+ layout(binding = 2) readonly buffer ValueVectors { f16vec4 value_vectors[]; };
+ layout(binding = 3) readonly buffer Mask { float16_t mask_data[]; };
++layout(binding = 1) readonly buffer FloatKey { float float_key_data[]; };
++layout(binding = 1) readonly buffer FloatKeyVectors { vec4 float_key_vectors[]; };
++layout(binding = 2) readonly buffer FloatValue { float float_value_data[]; };
++layout(binding = 2) readonly buffer FloatValueVectors { vec4 float_value_vectors[]; };
++
++// Storage precision is independent of the cooperative F16 operand precision.
++// Specialization removes the unused input family; no conversion tensor is stored.
++f16vec4 load_key_vector(uint address) {
++    if (FaTypeK == FA_TYPE_F32) {
++        if ((address & 3) == 0) {
++            return f16vec4(float_key_vectors[address / 4]);
++        }
++        return f16vec4(float_key_data[address], float_key_data[address + 1],
++                       float_key_data[address + 2], float_key_data[address + 3]);
++    }
++    if ((address & 3) == 0) {
++        return key_vectors[address / 4];
++    }
++    return f16vec4(key_data[address], key_data[address + 1], key_data[address + 2], key_data[address + 3]);
++}
++
++f16vec4 load_value_vector(uint address) {
++    if (FaTypeV == FA_TYPE_F32) {
++        if ((address & 3) == 0) {
++            return f16vec4(float_value_vectors[address / 4]);
++        }
++        return f16vec4(float_value_data[address], float_value_data[address + 1],
++                       float_value_data[address + 2], float_value_data[address + 3]);
++    }
++    if ((address & 3) == 0) {
++        return value_vectors[address / 4];
++    }
++    return f16vec4(value_data[address], value_data[address + 1], value_data[address + 2], value_data[address + 3]);
++}
+ 
+ // Four subgroups reuse their initial Q storage as one shared K/V tile.
+ // Workgroup barriers protect those common operands; score, probability and
+@@ -46,8 +80,11 @@
+     const uint float_base = group * 128;
+     const uint probability_base = group * 64;
+     const uint query_base = (iq2 * p.nb02 + iq3 * p.nb03) / 4;
+-    const uint key_base = (ik2 * p.nb12 + ik3 * p.nb13) / 2;
+-    const uint value_base = (iv2 * p.nb22 + iv3 * p.nb23) / 2;
++    const uint key_base = (ik2 * p.nb12 + ik3 * p.nb13) / (FaTypeK == FA_TYPE_F32 ? 4 : 2);
++    const uint value_base = (iv2 * p.nb22 + iv3 * p.nb23) / (FaTypeV == FA_TYPE_F32 ? 4 : 2);
++    // The host expresses F32 row strides in vec4 blocks, F16 in scalars.
++    const uint key_row_stride = k_stride * (FaTypeK == FA_TYPE_F32 ? 4 : 1);
++    const uint value_row_stride = v_stride * (FaTypeV == FA_TYPE_F32 ? 4 : 1);
+     uint mask_base = 0;
+     if (p.nem2 != 1 || p.nem3 != 1) {
+         mask_base = ((iq3 % p.nem3) * p.nem2 + (iq2 % p.nem2)) * p.nem1 * KV;
+@@ -91,14 +128,10 @@
+             // One coalesced 32x64 K tile serves all 32 queries in the workgroup.
+             [[unroll]] for (uint index = gl_LocalInvocationID.x; index < 512; index += WorkGroupSize) {
+                 const uint row = block * 32 + index / 16;
+-                const uint address = key_base + row * k_stride + (index % 16) * 4;
++                const uint address = key_base + row * key_row_stride + (index % 16) * 4;
+                 f16vec4 values = f16vec4(0);
+                 if (row < KV) {
+-                    if ((address & 3) == 0) {
+-                        values = key_vectors[address / 4];
+-                    } else {
+-                        values = f16vec4(key_data[address], key_data[address + 1], key_data[address + 2], key_data[address + 3]);
+-                    }
++                    values = load_key_vector(address);
+                 }
+                 operand_workspace[index] = values;
+             }
+@@ -201,14 +234,10 @@
+         if (row_split == 4) {
+             [[unroll]] for (uint index = gl_LocalInvocationID.x; index < 512; index += WorkGroupSize) {
+                 const uint row = block * 32 + index / 16;
+-                const uint address = value_base + row * v_stride + (index % 16) * 4;
++                const uint address = value_base + row * value_row_stride + (index % 16) * 4;
+                 f16vec4 values = f16vec4(0);
+                 if (row < KV) {
+-                    if ((address & 3) == 0) {
+-                        values = value_vectors[address / 4];
+-                    } else {
+-                        values = f16vec4(value_data[address], value_data[address + 1], value_data[address + 2], value_data[address + 3]);
+-                    }
++                    values = load_value_vector(address);
+                 }
+                 operand_workspace[index] = values;
+             }
