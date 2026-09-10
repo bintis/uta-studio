@@ -234,13 +234,16 @@ the post-measurement modification phase on 2026-09-09.
 
 ## Full-pipeline debug regression (2026-09-10)
 
-**RUNNING; completion not yet established.** This is the full-song Analysis Engine request in
+**COMPLETED with `ok_degraded`; not production qualification.** This is the full-song Analysis Engine request in
 `test-artifacts/ggml-pipeline-validation/request.json`, not the separate seventeen-model sweep.
 The current execution is recorded by operation `20260910T065356-cfaece833c9e`, with live logs and
 samples in `test-artifacts/ggml-pipeline-validation/debug-execution-observation/` and outputs in
 `test-artifacts/ggml-pipeline-validation/fullsong-debug/`. It started on boot
-`e56ad005-bfa7-47ea-9891-9b96928ffd25`; worker launch and Vulkan debug output are observed.
-A missing `result.json` remains an unknown completion, never a pass or proof of no launch.
+`e56ad005-bfa7-47ea-9891-9b96928ffd25` and completed with exit code 0 after **796.2355 seconds**.
+Both observer and recorder completion files exist. The boot was unchanged through the recorded
+07:10:25 UTC post-run observation, not a guarantee of future host stability. The observer reports
+3,688 process samples, 741 host samples, zero read/observer errors, and only xe device `0000:07:00.0`.
+A missing completion record in any other run still means unknown, never a pass or proof of no launch.
 
 - Logging implementation `7e08a69` forwards worker stderr without truncating the live stream,
   logs protocol frames, and enables CLI lifecycle diagnostics with `UTA_STUDIO_DEBUG=1`.
@@ -264,8 +267,31 @@ A missing `result.json` remains an unknown completion, never a pass or proof of 
   then created the isolated output directory before the explicit execution above. No GPU
   failure has been automatically retried; all original evidence is retained.
 
-Next: inspect the execution/observer completion and actual artifacts, retain any degraded
-reasons, and update this section. Do not infer `production_ready` or post-exit host stability.
+Verification and limits:
+
+- `debug-summary.json` records parsed, finite output JSON and verified artifact references,
+  file sizes and FLAC signatures, without hash verification (operation
+  `20260910T070854-b1e1bd5ca53a`). The chart has **616 notes** (362 pitched, 254 spoken),
+  pitch evidence has **35,489 frames**, alignment **628 items**, GAME **704 notes**,
+  ROSVOT **574 notes**, and singing analysis **21,875 candidates**. Chart inspection operations:
+  `20260910T071111-84c4ac06860b`, `20260910T071149-7f4378ba5928`.
+- All five published/intermediate FLACs decoded fully with FFmpeg: guide vocals, lead vocal,
+  instrumental, denoise and dereverb; all are FLAC, 44.1 kHz, stereo, exactly **354.880 s**
+  (`20260910T070910-0c5f5ca227ae`). This is decode/timeline evidence, not listening qualification.
+- `debug-trace-summary.json` records **21,278,804 stderr lines / 2,269,804,206 bytes**,
+  twelve matching worker ready/done/successful-exit records, 970 progress frames, 14 output
+  frames, no worker/node failures and no malformed debug records
+  (`20260910T071020-492d4127ed0b`). Source/user media and installed models were not changed.
+- This Japanese request executed **twelve models**. Existing `firered_language_applicable`
+  and `stars_g2p_language_applicable` conditions skip FireRed and STARS for Japanese;
+  they have no execution/artifact evidence from this run despite their workflow declarations.
+  Do not describe this as all seventeen models passing or as coverage of those two routes.
+- Final quality reasons are `lead_isolation_uncertain`,
+  `instrumental_vocal_leakage_uncertain`, and `vocal_topology_ambiguous`. They are retained,
+  not suppressed or promoted to clean quality acceptance.
+
+The authorized full-song debug execution and artifact verification are complete. Broader
+per-model/linguistic/perceptual qualification and the explicit release pass remain unchanged.
 
 ## Next actions
 

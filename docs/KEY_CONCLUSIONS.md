@@ -132,6 +132,23 @@ Model backend alignment itself is closed. What remains is qualification, not mig
 6. Removal of retired model-specific artifact/schema code not intentionally retained for compatibility reads.
 7. Intel B580 final smoke, then explicit release-pass checks and packaging.
 
+## Full-pipeline debug observation (2026-09-10)
+
+The 354.880-second Japanese full-song request completed on Intel B580 with exit 0 in
+796.2355 seconds under Vulkan/worker debug logging. Twelve executed workers each emitted
+ready/done and exited successfully; the 616-note chart, 35,489-frame pitch evidence,
+628 alignment items and five fully decodable exact-duration FLACs were verified. The
+2,269,804,206-byte live stderr log fixes the prior in-memory-only diagnostic blind spot.
+Evidence is in `test-artifacts/ggml-pipeline-validation/debug-execution-observation/`,
+`debug-summary.json`, and `debug-trace-summary.json`; detailed provenance is in
+[`STATE.md`](../tasks/remaining-models/STATE.md#full-pipeline-debug-regression-2026-09-10).
+
+This result is **`ok_degraded`**, retaining lead-isolation, instrumental-leakage and vocal-topology
+uncertainty. Existing language applicability conditions skipped FireRed/STARS for Japanese;
+this is not a seventeen-model sweep. Same-boot completion/post-run observation does not prove
+future host stability, debug wall time is not normal throughput, and production readiness is
+unchanged. The earlier zero-output full-song run still has unknown completion.
+
 ## Operation recording
 
 Each independent change and subsequent execution is committed and recorded before launch with `tools/record-operation.py`, per `docs/ROFORMER_OPERATION_RECORDING.md`. A process exit alone does not establish post-exit host stability, and a missing completion record means the result is unknown.
