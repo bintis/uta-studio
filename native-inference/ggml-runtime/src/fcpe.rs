@@ -835,6 +835,55 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "explicit native CPU reference with a read-only FCPE GGUF"]
+    fn native_weighted_fcpe_matches_ordinary_after_different_sequential_inputs() {
+        let directory = std::env::var("UTA_STUDIO_GGML_TEST_LIBRARY_DIR").unwrap();
+        let path = std::env::var("UTA_STUDIO_GGML_TEST_MODEL_PATH").unwrap();
+        let runtime = GgmlRuntime::load(Path::new(&directory)).unwrap();
+        let device = runtime
+            .devices()
+            .unwrap()
+            .into_iter()
+            .find(|device| device.kind == crate::DeviceKind::Cpu)
+            .unwrap();
+        let model = Fcpe::load(runtime, &device, Path::new(&path)).unwrap();
+        let mut graph = None;
+        for index in 0..3 {
+            let mel = (0..MEL_BINS * WINDOW_FRAMES)
+                .map(|sample| -4.0 + (sample % 31) as f32 * 0.02 - index as f32)
+                .collect::<Vec<_>>();
+            let ordinary = {
+                let _scope = crate::acceleration::Scope::enter(false);
+                model.run_window(&mel, &mut None).unwrap()
+            };
+            let scope = crate::acceleration::Scope::enter(true);
+            let cached = model.run_window(&mel, &mut graph).unwrap();
+            assert_eq!(scope.graph_hits(), usize::from(index > 0));
+            assert!(
+                ordinary
+                    .iter()
+                    .chain(&cached)
+                    .all(|value| value.is_finite())
+            );
+            assert_eq!(
+                ordinary
+                    .iter()
+                    .map(|value| value.to_bits())
+                    .collect::<Vec<_>>(),
+                cached
+                    .iter()
+                    .map(|value| value.to_bits())
+                    .collect::<Vec<_>>()
+            );
+            eprintln!(
+                "FCPE weighted CPU parity: input={index}, compared_values={}",
+                ordinary.len()
+            );
+        }
+        drop(graph);
+    }
+
+    #[test]
     #[ignore = "requires an explicit packaged GGML library directory; uses only native CPU tensors"]
     fn native_fixed_graph_refreshes_inputs_and_keeps_synchronous_readback() {
         let directory = std::env::var("UTA_STUDIO_GGML_TEST_LIBRARY_DIR").unwrap();

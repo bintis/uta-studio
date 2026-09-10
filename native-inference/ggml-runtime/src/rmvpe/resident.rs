@@ -165,6 +165,67 @@ fn chunk_plan(frames: usize) -> Vec<(usize, usize)> {
 mod tests {
     use super::*;
     #[test]
+    #[ignore = "explicit native CPU reference with a read-only RMVPE GGUF"]
+    fn native_weighted_rmvpe_matches_ordinary_across_inputs_and_short_tails() {
+        let directory = std::env::var("UTA_STUDIO_GGML_TEST_LIBRARY_DIR").unwrap();
+        let path = std::env::var("UTA_STUDIO_GGML_TEST_MODEL_PATH").unwrap();
+        let runtime = GgmlRuntime::load(Path::new(&directory)).unwrap();
+        let device = runtime
+            .devices()
+            .unwrap()
+            .into_iter()
+            .find(|device| device.kind == crate::DeviceKind::Cpu)
+            .unwrap();
+        let model = Rmvpe::load(runtime, &device, Path::new(&path)).unwrap();
+        for (index, frames) in [
+            GRU_CHUNK_FRAMES * 2,
+            GRU_CHUNK_FRAMES + GRU_CHUNK_FRAMES / 2,
+            GRU_CHUNK_FRAMES * 2,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mel = (0..MEL_BINS * frames)
+                .map(|sample| -4.0 + (sample % 31) as f32 * 0.02 - index as f32)
+                .collect::<Vec<_>>();
+            let ordinary = {
+                let _scope = crate::acceleration::Scope::enter(false);
+                model.run_window(&mel, frames).unwrap()
+            };
+            let scope = crate::acceleration::Scope::enter(true);
+            let retained = model.run_window(&mel, frames).unwrap();
+            assert!(
+                scope.resident_copy_bytes() > 0,
+                "must consume real retained intermediates, not skip optional allocation"
+            );
+            if frames == GRU_CHUNK_FRAMES * 2 {
+                assert!(scope.graph_hits() >= 2);
+            }
+            assert!(
+                ordinary
+                    .iter()
+                    .chain(&retained)
+                    .all(|value| value.is_finite())
+            );
+            assert_eq!(
+                ordinary
+                    .iter()
+                    .map(|value| value.to_bits())
+                    .collect::<Vec<_>>(),
+                retained
+                    .iter()
+                    .map(|value| value.to_bits())
+                    .collect::<Vec<_>>()
+            );
+            eprintln!(
+                "RMVPE weighted CPU parity: frames={frames}, compared_values={}, resident_copy_bytes={}",
+                ordinary.len(),
+                scope.resident_copy_bytes()
+            );
+        }
+    }
+
+    #[test]
     fn resident_chunk_plan_preserves_both_directions_and_the_short_tail() {
         let frames = GRU_CHUNK_FRAMES * 2 + GRU_CHUNK_FRAMES / 2;
         let chunks = chunk_plan(frames);

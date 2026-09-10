@@ -2,8 +2,7 @@
 //! consumers. Copy views have short-lived metadata, not an ever-growing arena.
 use crate::GgmlBackendHandle;
 use crate::ffi::{
-    BufferPtr, ContextPtr, GGML_STATUS_SUCCESS, GGML_TYPE_F32, GgmlInitParams,
-    TensorPtr,
+    BufferPtr, ContextPtr, GGML_STATUS_SUCCESS, GGML_TYPE_F32, GgmlInitParams, TensorPtr,
 };
 
 pub(crate) struct Matrix<'backend> {
