@@ -12,6 +12,7 @@ inline at::Tensor fused_roformer_projection_gelu(const at::Tensor& input, const 
         std::string_view, c10::List<std::optional<at::Scalar>>, std::optional<std::string_view>);
     static const auto operation = c10::Dispatcher::singleton()
         .findSchemaOrThrow("mkldnn::_linear_pointwise", "").typed<Projection>();
-    return operation.call(input, weight, bias, "gelu", {}, std::string_view("none"));
+    return operation.call(input, weight, bias, "gelu",
+        c10::List<std::optional<at::Scalar>>{}, std::string_view("none"));
 }
 } // namespace uta::torch_native
