@@ -86,7 +86,6 @@ pub(super) fn publish_candidate_artifacts(
     output_root: &Path,
     request_singing_analysis: bool,
     request_vocal_chart: bool,
-    preserve_continuous_pitch: bool,
     fingerprint: &str,
     fusion_decision: Option<&FusionDecisionProvenance>,
     singing: Option<&SingingStagesOutput>,
@@ -146,12 +145,7 @@ pub(super) fn publish_candidate_artifacts(
             ));
         }
         let candidate_track = quantized_candidate_track.unwrap_or(&singing.track);
-        let chart = finalize_candidate_vocal_chart(
-            candidate_track,
-            fingerprint,
-            preserve_continuous_pitch,
-            quantization,
-        )?;
+        let chart = finalize_candidate_vocal_chart(candidate_track, fingerprint, quantization)?;
         artifacts.candidate_vocal_chart = Some(write_json_artifact(
             output_root,
             Path::new("candidate/vocal-chart.json"),

@@ -19,7 +19,6 @@ pub type CandidateVocalChart = VocalChart;
 pub fn finalize_candidate_vocal_chart(
     track: &CanonicalSingingTrack,
     execution_fingerprint: &str,
-    preserve_continuous_pitch: bool,
     quantization: Option<&QuantizationReport>,
 ) -> EngineResult<CandidateVocalChart> {
     if track.schema_version != 1 || execution_fingerprint.trim().is_empty() {
@@ -39,10 +38,9 @@ pub fn finalize_candidate_vocal_chart(
         }
     }
 
-    // Compute the exact pitched ranges that finalization will emit (including
-    // continuous-pitch merging). Spoken placeholders must be placed around
-    // these ranges, not around the raw forced-alignment words, because a
-    // selected note may legitimately cross a word edge.
+    // Finalization is a projection, not another note decoder. Preserve every
+    // selected duration state, including same-pitch reattacks and hard cuts.
+    // Place lyric placeholders around those ranges; a real note may cross a word.
     let mut emitted_notes = Vec::<(String, TimeRange, usize)>::new();
     for (word_index, word) in track.words.iter().enumerate() {
         let mut candidates = notes_by_word
@@ -50,19 +48,11 @@ pub fn finalize_candidate_vocal_chart(
             .cloned()
             .unwrap_or_default();
         candidates.sort_by_key(|note| (note.range.start, note.range.end, note.id.as_str()));
-        if preserve_continuous_pitch {
-            emitted_notes.extend(
-                merge_continuous_pitch_runs(&candidates)
-                    .into_iter()
-                    .map(|note| (note.id, note.range, word_index)),
-            );
-        } else {
-            emitted_notes.extend(
-                candidates
-                    .into_iter()
-                    .map(|note| (note.id.clone(), note.range, word_index)),
-            );
-        }
+        emitted_notes.extend(
+            candidates
+                .into_iter()
+                .map(|note| (note.id.clone(), note.range, word_index)),
+        );
     }
     emitted_notes.sort_by_key(|(_, range, _)| (range.start, range.end));
 
@@ -110,7 +100,6 @@ pub fn finalize_candidate_vocal_chart(
             word_index,
             word,
             candidates,
-            preserve_continuous_pitch,
             spoken_range,
             join_before,
         )?;
@@ -159,60 +148,11 @@ pub fn finalize_candidate_vocal_chart(
     Ok(chart)
 }
 
-/// Two independently-measured fragments this close together, at the exact
-/// same MIDI pitch, are frame-boundary rounding between the boundary
-/// experts, not a real gap -- confirmed against real Japanese pop vocal
-/// runs where a single held syllable was over-segmented into a dozen
-/// back-to-back same-pitch candidates a few milliseconds apart. A real
-/// silence, breath, or consonant-driven cut leaves a gap well past this.
-const CONTINUOUS_PITCH_MERGE_GAP: crate::contract::CanonicalTime = 20_000;
-
-/// One or more `CanonicalNote` fragments at a continuously held pitch,
-/// collapsed into the single note a singer actually sang. This is what
-/// `preserve_continuous_pitch` requests: without it, boundary detection's
-/// raw over-segmentation (vibrato and frame jitter routinely split one
-/// sustained pitch into several near-identical short candidates) publishes
-/// straight through to the Candidate chart.
-struct MergedNote {
-    id: String,
-    range: TimeRange,
-    midi_note: u8,
-    center_offset_cents: f32,
-}
-
-fn merge_continuous_pitch_runs(candidates: &[&CanonicalNote]) -> Vec<MergedNote> {
-    let mut merged: Vec<MergedNote> = Vec::new();
-    for note in candidates {
-        if let Some(last) = merged.last_mut()
-            && last.midi_note == note.midi_note
-            && note.range.start.saturating_sub(last.range.end) <= CONTINUOUS_PITCH_MERGE_GAP
-        {
-            let previous_duration = (last.range.end - last.range.start) as f64;
-            let next_duration = (note.range.end - note.range.start) as f64;
-            last.center_offset_cents = ((last.center_offset_cents as f64 * previous_duration
-                + note.center_offset_cents as f64 * next_duration)
-                / (previous_duration + next_duration))
-                as f32;
-            last.range = TimeRange::new(last.range.start, last.range.end.max(note.range.end))
-                .expect("merging two positive-duration ranges keeps a positive-duration range");
-            continue;
-        }
-        merged.push(MergedNote {
-            id: note.id.clone(),
-            range: note.range,
-            midi_note: note.midi_note,
-            center_offset_cents: note.center_offset_cents,
-        });
-    }
-    merged
-}
-
 fn append_word_notes(
     output: &mut Vec<VocalNote>,
     word_index: usize,
     word: &CanonicalWordBoundary,
     mut candidates: Vec<&CanonicalNote>,
-    preserve_continuous_pitch: bool,
     spoken_range: Option<TimeRange>,
     join_before: LyricJoin,
 ) -> EngineResult<()> {
@@ -247,21 +187,7 @@ fn append_word_notes(
             return Err(invalid("Candidate note has an invalid range"));
         }
     }
-    let notes: Vec<MergedNote> = if preserve_continuous_pitch {
-        merge_continuous_pitch_runs(&candidates)
-    } else {
-        candidates
-            .into_iter()
-            .map(|note| MergedNote {
-                id: note.id.clone(),
-                range: note.range,
-                midi_note: note.midi_note,
-                center_offset_cents: note.center_offset_cents,
-            })
-            .collect()
-    };
-
-    for (index, note) in notes.into_iter().enumerate() {
+    for (index, note) in candidates.into_iter().enumerate() {
         let lyrics = if index == 0 {
             vec![LyricToken::Text(LyricTextToken {
                 id: lyric_id.clone(),
@@ -276,7 +202,7 @@ fn append_word_notes(
             }]
         };
         output.push(VocalNote {
-            id: note.id,
+            id: note.id.clone(),
             start: note.range.start,
             duration: note.range.end - note.range.start,
             pitch: Some(NotePitch {
@@ -441,7 +367,7 @@ mod tests {
     #[test]
     fn finalization_emits_strict_utz_candidate_without_continuous_geometry() {
         let track = track();
-        let chart = finalize_candidate_vocal_chart(&track, &"a".repeat(64), true, None).unwrap();
+        let chart = finalize_candidate_vocal_chart(&track, &"a".repeat(64), None).unwrap();
         chart.validate().unwrap();
         assert_eq!(chart.format, utz::VOCAL_CHART_FORMAT);
         assert_eq!(chart.tracks[0].phrases[0].notes[0].id, "note-1");
@@ -455,52 +381,33 @@ mod tests {
     }
 
     #[test]
-    fn explicit_continuous_pitch_setting_only_changes_geometry_when_fragments_exist_to_merge() {
-        // The single-note fixture has nothing to merge, so both settings
-        // must still agree -- `preserve_continuous_pitch` never invents
-        // geometry, it only collapses genuine over-segmentation.
-        let track = track();
-        let preserved =
-            finalize_candidate_vocal_chart(&track, &"b".repeat(64), true, None).unwrap();
-        let omitted = finalize_candidate_vocal_chart(&track, &"b".repeat(64), false, None).unwrap();
-        assert_eq!(preserved, omitted);
-    }
+    fn projection_preserves_same_pitch_reattacks_and_selected_geometry() {
+        // A shared word and touching equal MIDI pitches do not authorize a
+        // merge. Only the evidence decoder may decide that this is one hold.
+        for gap in [0, 10, 20_000] {
+            let mut track = track();
+            track.notes[0].range = TimeRange::new(100_001, 300_002).unwrap();
+            track.notes[0].center_offset_cents = -10.0;
+            let mut next = track.notes[0].clone();
+            next.id = "reattack".to_string();
+            next.range = TimeRange::new(300_002 + gap, 500_003).unwrap();
+            next.center_offset_cents = 10.0;
+            track.notes.push(next);
 
-    #[test]
-    fn continuous_pitch_setting_merges_touching_same_pitch_fragments_into_one_note() {
-        // Real repro this exists for: boundary detection over-segments one
-        // sustained pitch (vibrato/frame jitter) into several back-to-back
-        // same-MIDI candidates a few milliseconds apart. `preserve_continuous_pitch`
-        // should collapse those into the single note a singer actually held.
-        let mut track = track();
-        track.notes[0].range = TimeRange::new(100_001, 300_002).unwrap();
-        track.notes[0].center_offset_cents = -10.0;
-        let mut fragment = track.notes[0].clone();
-        fragment.id = "note-2".to_string();
-        fragment.range = TimeRange::new(300_012, 500_003).unwrap(); // 10us gap: rounding, not a real one.
-        fragment.center_offset_cents = 10.0;
-        track.notes.push(fragment);
-
-        let merged = finalize_candidate_vocal_chart(&track, &"f".repeat(64), true, None).unwrap();
-        let merged_notes = &merged.tracks[0].phrases[0].notes;
-        assert_eq!(merged_notes.len(), 1);
-        assert_eq!(merged_notes[0].id, "note-1");
-        assert_eq!(merged_notes[0].start, 100_001);
-        assert_eq!(merged_notes[0].duration, 500_003 - 100_001);
-        // Duration-weighted average of two equal-length fragments at -10/+10.
-        assert_eq!(merged_notes[0].pitch.unwrap().cents, 0);
-        merged.validate().unwrap();
-
-        let unmerged =
-            finalize_candidate_vocal_chart(&track, &"f".repeat(64), false, None).unwrap();
-        let unmerged_notes = &unmerged.tracks[0].phrases[0].notes;
-        assert_eq!(
-            unmerged_notes
-                .iter()
-                .map(|note| note.id.as_str())
-                .collect::<Vec<_>>(),
-            ["note-1", "note-2"]
-        );
+            let chart = finalize_candidate_vocal_chart(&track, &"f".repeat(64), None).unwrap();
+            let notes = &chart.tracks[0].phrases[0].notes;
+            assert_eq!(notes.len(), track.notes.len());
+            for (actual, selected) in notes.iter().zip(&track.notes) {
+                assert_eq!(actual.id, selected.id);
+                assert_eq!(actual.start, selected.range.start);
+                assert_eq!(actual.duration, selected.range.end - selected.range.start);
+                assert_eq!(
+                    actual.pitch.unwrap().cents,
+                    selected.center_offset_cents as i8
+                );
+            }
+            chart.validate().unwrap();
+        }
     }
 
     #[test]
@@ -512,7 +419,7 @@ mod tests {
         far_same_pitch.range = TimeRange::new(400_000, 500_003).unwrap(); // ~100ms real gap.
         track.notes.push(far_same_pitch);
 
-        let chart = finalize_candidate_vocal_chart(&track, &"g".repeat(64), true, None).unwrap();
+        let chart = finalize_candidate_vocal_chart(&track, &"g".repeat(64), None).unwrap();
         assert_eq!(chart.tracks[0].phrases[0].notes.len(), 2);
     }
 
@@ -520,7 +427,7 @@ mod tests {
     fn unpitched_aligned_words_are_retained_as_spoken_notes() {
         let mut track = track();
         track.notes.clear();
-        let chart = finalize_candidate_vocal_chart(&track, &"c".repeat(64), true, None).unwrap();
+        let chart = finalize_candidate_vocal_chart(&track, &"c".repeat(64), None).unwrap();
         let note = &chart.tracks[0].phrases[0].notes[0];
         assert_eq!(note.vocal_mode, VocalMode::Spoken);
         assert!(note.pitch.is_none());
@@ -545,13 +452,9 @@ mod tests {
 
     #[test]
     fn spoken_placeholder_uses_gap_after_a_cross_word_pitched_note() {
-        let chart = finalize_candidate_vocal_chart(
-            &cross_word_track(1_500_000),
-            &"h".repeat(64),
-            true,
-            None,
-        )
-        .unwrap();
+        let chart =
+            finalize_candidate_vocal_chart(&cross_word_track(1_500_000), &"h".repeat(64), None)
+                .unwrap();
 
         chart.validate().unwrap();
         let notes = &chart.tracks[0].phrases[0].notes;
@@ -565,7 +468,7 @@ mod tests {
     fn fully_covered_word_attaches_to_real_note_without_overlap() {
         let mut track = cross_word_track(2_000_000);
         track.notes[0].range = TimeRange::new(0, 2_000_000).unwrap();
-        let chart = finalize_candidate_vocal_chart(&track, &"i".repeat(64), true, None).unwrap();
+        let chart = finalize_candidate_vocal_chart(&track, &"i".repeat(64), None).unwrap();
 
         chart.validate().unwrap();
         let notes = &chart.tracks[0].phrases[0].notes;
@@ -588,7 +491,7 @@ mod tests {
         continuation.midi_note = 71;
         track.notes.push(continuation);
 
-        let chart = finalize_candidate_vocal_chart(&track, &"e".repeat(64), true, None).unwrap();
+        let chart = finalize_candidate_vocal_chart(&track, &"e".repeat(64), None).unwrap();
         let notes = &chart.tracks[0].phrases[0].notes;
         assert_eq!(
             notes
@@ -621,7 +524,7 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(&root).unwrap();
-        let chart = finalize_candidate_vocal_chart(&track(), &"d".repeat(64), true, None).unwrap();
+        let chart = finalize_candidate_vocal_chart(&track(), &"d".repeat(64), None).unwrap();
         let reference = write_json_artifact(
             &root,
             Path::new("candidate/vocal-chart.json"),

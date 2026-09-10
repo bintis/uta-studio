@@ -1682,7 +1682,6 @@ impl AnalysisEngine {
             &output_root,
             request.requested_artifacts.singing_analysis,
             has_capability(&plan, "finalize.vocal_chart"),
-            request.analysis.preserve_continuous_pitch,
             &fingerprint,
             fusion_decision.as_ref(),
             singing.as_ref(),

@@ -232,7 +232,6 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
         &root,
         true,
         true,
-        true,
         &fingerprint,
         Some(&decision_provenance),
         Some(&singing),
@@ -283,7 +282,6 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
     let mut quantized_artifacts = AnalysisArtifacts::default();
     publish_candidate_artifacts(
         &quantized_root,
-        true,
         true,
         true,
         &fingerprint,
@@ -387,7 +385,6 @@ fn cancelled_candidate_publication_writes_no_artifact() {
     let mut artifacts = AnalysisArtifacts::default();
     let error = publish_candidate_artifacts(
         &root,
-        true,
         true,
         true,
         &"8".repeat(64),
