@@ -10,11 +10,11 @@ use uta_analysis_engine::artifact::{
     parse_basic_pitch_evidence, parse_fcpe_pitch, parse_game_evidence, parse_transcript_artifact,
     write_json_artifact,
 };
+use uta_analysis_engine::candidate_pipeline::FusionDecisionMode;
 use uta_analysis_engine::candidate_pipeline::{
     execute_candidate_graph_stage, execute_singing_fusion_stage_with_timed_notes,
     fuse_alignment_stage, fuse_transcript_stage,
 };
-use uta_analysis_engine::candidate_pipeline::FusionDecisionMode;
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, Box<dyn Error>> {
     Ok(serde_json::from_slice(&std::fs::read(path)?)?)

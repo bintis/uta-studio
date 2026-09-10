@@ -231,7 +231,11 @@ fn acoustic() -> AcousticEvidence {
         frames: (0..100)
             .map(|index| AcousticEvidenceFrame {
                 start: index * 10_000,
-                rms: if index == 9 || index == 49 { 0.10 } else { 0.20 },
+                rms: if index == 9 || index == 49 {
+                    0.10
+                } else {
+                    0.20
+                },
                 spectral_flux: (index > 0).then_some(if index == 10 || index == 50 {
                     0.3
                 } else {

@@ -297,21 +297,32 @@ mod tests {
         wide.rmvpe_voiced_ratio = Some(1.0);
         wide.rmvpe_pitch_mad_cents = Some(0.0);
         wide.acoustic = Some(AcousticCandidateFeatures {
-            frame_count: 200, mean_rms: 0.2, mean_periodicity: 0.9,
-            fundamental_center_hz: Some(440.0), onset_supported: Some(false),
+            frame_count: 200,
+            mean_rms: 0.2,
+            mean_periodicity: 0.9,
+            fundamental_center_hz: Some(440.0),
+            onset_supported: Some(false),
             ..AcousticCandidateFeatures::default()
         });
         wide.basic_pitch = Some(BasicPitchCandidateFeatures {
-            onset_activation: 0.0, note_activation: 0.9, contour_activation: 0.8,
-            contour_class: 42, onset_supported: false,
+            onset_activation: 0.0,
+            note_activation: 0.9,
+            contour_activation: 0.8,
+            contour_class: 42,
+            onset_supported: false,
         });
-        let split = (0..8).map(|index| {
-            let mut note = wide.clone();
-            note.id = format!("fragment-{index}");
-            note.range = range(index as f64 * 0.25, (index + 1) as f64 * 0.25);
-            note
-        }).collect::<Vec<_>>();
-        let sum = split.iter().map(|note| note.emission_utility().unwrap()).sum::<f32>();
+        let split = (0..8)
+            .map(|index| {
+                let mut note = wide.clone();
+                note.id = format!("fragment-{index}");
+                note.range = range(index as f64 * 0.25, (index + 1) as f64 * 0.25);
+                note
+            })
+            .collect::<Vec<_>>();
+        let sum = split
+            .iter()
+            .map(|note| note.emission_utility().unwrap())
+            .sum::<f32>();
         assert!((wide.emission_utility().unwrap() - sum - 7.0 * 0.45).abs() < 1.0e-5);
         let mut pool = split;
         pool.push(wide);
@@ -325,7 +336,10 @@ mod tests {
         let ordinary = candidate("ordinary", 0.0, 0.25, 69);
         let mut labeled = ordinary.clone();
         labeled.boundary_kind = BoundaryEvidenceKind::AcousticOnset;
-        assert_eq!(ordinary.emission_utility().unwrap(), labeled.emission_utility().unwrap());
+        assert_eq!(
+            ordinary.emission_utility().unwrap(),
+            labeled.emission_utility().unwrap()
+        );
     }
 
     #[test]

@@ -346,9 +346,10 @@ fn summarize_acoustic(
     // tiny spectral redraws can double a very small previous value. Require a
     // second attack cue before this local boundary receives onset support.
     let onset_supported = onset_index.checked_sub(1).and_then(|previous| {
-        onset_flux
-            .zip(preceding_flux)
-            .map(|_| acoustic_attack_score(&evidence.frames[previous], &evidence.frames[onset_index]).is_some())
+        onset_flux.zip(preceding_flux).map(|_| {
+            acoustic_attack_score(&evidence.frames[previous], &evidence.frames[onset_index])
+                .is_some()
+        })
     });
     Ok(AcousticCandidateFeatures {
         frame_count,
@@ -669,10 +670,10 @@ fn acoustic_attack_score(
     let rms_rise = current.rms / previous.rms.max(1.0e-6);
     let energy_attack = rms_rise >= 1.08;
     let voiced_reentry = previous.periodicity < 0.55 && current.periodicity >= 0.65;
-    let periodicity_attack = current.periodicity >= 0.6
-        && current.periodicity - previous.periodicity >= 0.08;
-    let transition_attack = current.periodicity >= 0.6
-        && current.voicing_transition_activation >= 0.12;
+    let periodicity_attack =
+        current.periodicity >= 0.6 && current.periodicity - previous.periodicity >= 0.08;
+    let transition_attack =
+        current.periodicity >= 0.6 && current.voicing_transition_activation >= 0.12;
     if !(energy_attack || voiced_reentry || periodicity_attack || transition_attack) {
         return None;
     }
