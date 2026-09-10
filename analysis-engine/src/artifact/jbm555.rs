@@ -84,12 +84,12 @@ impl Jbm555Evidence {
             self.mix_audio_identity.as_str(),
             self.vocal_audio_identity.as_str(),
             self.separator_model_generation.as_str(),
-            self.vocal_preparation_generation.as_str(),
         ];
         if self.schema_version != 1
             || self.model_id != JBM555_MODEL_ID
             || self.source_duration == 0
             || identities.iter().any(|identity| !valid_identity(identity))
+            || !valid_dependency_text(&self.vocal_preparation_generation)
             || !matches!(self.backend.as_str(), "ggml_cpu" | "ggml_vulkan")
             || self.frontend_profile != JBM555_FRONTEND_PROFILE
             || self.decode_profile != JBM555_DECODE_PROFILE
@@ -218,7 +218,13 @@ pub fn parse_jbm555_evidence(
 }
 
 fn valid_identity(value: &str) -> bool {
-    !value.trim().is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
+    value.len() <= 256 && valid_dependency_text(value)
+}
+
+fn valid_dependency_text(value: &str) -> bool {
+    // A preparation chain contains several complete model@generation entries.
+    // Keep its provenance intact rather than treating it as one atomic identity.
+    !value.trim().is_empty() && !value.chars().any(char::is_control)
 }
 
 fn invalid(message: impl Into<String>) -> EngineError {
@@ -302,6 +308,38 @@ mod tests {
             first_identity,
             changed_vocal.input_dependency_identity().unwrap()
         );
+    }
+
+    #[test]
+    fn complete_cleanup_chain_preserves_all_preparation_generations() {
+        let mut evidence = evidence();
+        evidence.vocal_preparation_generation = [
+            "melband_roformer_harmony",
+            "melband_roformer_denoise_aufr33",
+            "melband_roformer_dereverb_anvuew",
+        ]
+        .map(|model| format!("{model}@{}", "a".repeat(64)))
+        .join("+");
+        assert!(evidence.vocal_preparation_generation.len() > 256);
+        let normalized = evidence
+            .timed_note_evidence(expected_inputs(&evidence))
+            .unwrap();
+        assert!(normalized.provenance.depends_on.contains(&format!(
+            "preparation:{}",
+            evidence.vocal_preparation_generation
+        )));
+        assert!(
+            evidence
+                .validate_expected_inputs(Jbm555ExpectedInputs {
+                    vocal_preparation_generation: "another-preparation",
+                    ..expected_inputs(&evidence)
+                })
+                .is_err()
+        );
+        for invalid in ["", " ", "generation\nother"] {
+            evidence.vocal_preparation_generation = invalid.to_string();
+            assert!(evidence.validate().is_err());
+        }
     }
 
     #[test]
