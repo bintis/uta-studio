@@ -1,4 +1,24 @@
 #[test]
+fn super_acceleration_switch_saves_before_updating_visible_state() {
+    let mut config = app_core::AppConfig::default();
+    let result = super::rows::toggle_turbo_acceleration(&mut config, |_| {
+        Err("isolated save failure".to_string())
+    });
+    assert!(result.is_err());
+    assert_eq!(config.turbo_acceleration, None);
+    super::rows::toggle_turbo_acceleration(&mut config, |proposed| {
+        assert_eq!(proposed.turbo_acceleration, Some(true));
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(config.turbo_acceleration, Some(true));
+    super::rows::toggle_turbo_acceleration(&mut config, |_| Ok(())).unwrap();
+    assert_eq!(config.turbo_acceleration, Some(false));
+    assert!(include_str!("models.rs").contains("SettingsCommand::ToggleTurboAcceleration"));
+    assert!(!include_str!("analysis.rs").contains("SettingsCommand::ToggleTurboAcceleration"));
+}
+
+#[test]
 fn primary_settings_pages_use_shared_contained_groups() {
     let general = include_str!("general.rs");
     let storage = include_str!("storage.rs");

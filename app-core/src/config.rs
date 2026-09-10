@@ -50,10 +50,10 @@ pub struct AppConfig {
     /// experimental lane; GPU selections never authorize CPU fallback.
     #[serde(default)]
     pub default_device_class: Option<String>,
-    /// Uses every enumerated GPU instead of one, and overlaps work that the
-    /// analysis graph does not order. A chunked model splits its chunks across
-    /// the available GPUs in proportion to their measured throughput, and
-    /// independent graph nodes run at the same time on different GPUs.
+    /// Super acceleration: opt-in multi-GPU chunk scheduling, next-model
+    /// preloading within the available device-memory budget, and per-analysis
+    /// reuse of decoded audio and useful intermediates. Each exact request
+    /// snapshots this value; changing it never changes a queued/running job.
     ///
     /// This changes only which hardware runs an already-pinned route. It never
     /// selects a different model, backend or precision, and it does not make

@@ -92,6 +92,7 @@ pub(crate) enum SettingsCommand {
     ToggleModelRuntimeSelect(String),
     SetModelBackend(String, Option<String>),
     SetModelDevice(String, Option<String>),
+    ToggleTurboAcceleration,
     SetAnalysisQuality(app_core::AnalysisQualityProfile),
     TogglePreserveContinuousPitch,
     ToggleAnalysisQuantization,

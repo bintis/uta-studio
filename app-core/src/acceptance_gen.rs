@@ -65,6 +65,7 @@ fn generate_acceptance_request() {
     };
 
     let intent = AnalysisRequestIntent {
+        turbo_acceleration: false,
         request_id,
         source,
         lyrics: StudioLyricsContext::default(),

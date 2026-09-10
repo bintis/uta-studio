@@ -597,6 +597,9 @@ impl RequestedArtifacts {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutionPolicy {
+    /// Opt-in multi-GPU scheduling and per-analysis resource reuse.
+    #[serde(default)]
+    pub turbo_acceleration: bool,
     #[serde(default)]
     pub runtime_policy: RuntimePolicy,
     /// Explicit global model backend selection. `None` uses each model's
@@ -622,6 +625,7 @@ impl Default for ExecutionPolicy {
     fn default() -> Self {
         Self {
             runtime_policy: RuntimePolicy::Production,
+            turbo_acceleration: false,
             requested_backend: None,
             model_backend_overrides: BTreeMap::new(),
             requested_device: None,
@@ -671,6 +675,21 @@ fn invalid(message: impl Into<String>) -> EngineError {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn super_acceleration_is_explicit_and_round_trips_without_changing_device_policy() {
+        let mut request = valid_request(AudioRole::OriginalMix);
+        assert!(!request.execution_policy.turbo_acceleration);
+        request.execution_policy.turbo_acceleration = true;
+        let decoded: AnalyzeRequest =
+            serde_json::from_str(&serde_json::to_string(&request).unwrap()).unwrap();
+        assert!(decoded.execution_policy.turbo_acceleration);
+        assert_eq!(
+            decoded.execution_policy.runtime_policy,
+            RuntimePolicy::Production
+        );
+        assert_eq!(decoded.execution_policy.requested_device, None);
+    }
 
     pub(crate) fn valid_request(role: AudioRole) -> AnalyzeRequest {
         AnalyzeRequest {

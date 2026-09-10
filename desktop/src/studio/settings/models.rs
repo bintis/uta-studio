@@ -25,6 +25,15 @@ pub(crate) fn spawn_model_settings(
         "MODEL RUNTIME ROUTING",
         "Choose a device and Runtime Manager route per installed model. These controls do not select workflow outputs.",
         |group| {
+            spawn_switch_setting_row(
+                group,
+                font.clone(),
+                theme,
+                "Super acceleration",
+                "Use available GPUs together, preload the next model when memory permits, and reuse audio/intermediates within an analysis. Applies to future requests only; existing charts and running jobs are unchanged. Extra residency uses more memory, and device numerics may differ.",
+                session.config.turbo_acceleration.unwrap_or(false),
+                UiAction::from(SettingsCommand::ToggleTurboAcceleration),
+            );
             if let Some(snapshot) = session.model_settings_job.current.as_ref() {
                 spawn_model_backend_settings(
                     group,

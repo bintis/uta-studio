@@ -149,6 +149,8 @@ fn project_lyrics_context_for_request(
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AnalysisRequestIntent {
+    #[serde(default)]
+    pub turbo_acceleration: bool,
     pub request_id: String,
     pub source: ResolvedAnalysisSource,
     #[serde(default)]
@@ -169,6 +171,8 @@ pub struct AnalysisRequestIntent {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EngineRunDraft {
+    #[serde(default)]
+    pub turbo_acceleration: bool,
     pub file_hash: String,
     pub request_id: String,
     #[serde(default)]
@@ -210,6 +214,7 @@ pub fn preview_and_queue_engine_run(
     let config = crate::config::AppConfig::load();
     let preview = preview_engine_run(
         EngineRunDraft {
+            turbo_acceleration: config.turbo_acceleration.unwrap_or(false),
             file_hash: file_hash.to_string(),
             request_id: automatic_request_id(),
             lyrics: StudioLyricsContext::default(),
@@ -239,6 +244,7 @@ pub fn preview_and_stage_engine_run(
     let config = crate::config::AppConfig::load();
     let preview = preview_engine_run(
         EngineRunDraft {
+            turbo_acceleration: config.turbo_acceleration.unwrap_or(false),
             file_hash: file_hash.to_string(),
             request_id: automatic_request_id(),
             lyrics: StudioLyricsContext::default(),
@@ -288,6 +294,7 @@ pub fn preview_engine_run(
     let mut request = compile_analyze_request(
         AnalysisRequestIntent {
             request_id: draft.request_id,
+            turbo_acceleration: draft.turbo_acceleration,
             source: source.clone(),
             lyrics,
             target_override: draft.target_override,
@@ -681,6 +688,7 @@ pub fn compile_analyze_request(
         },
         requested_artifacts,
         execution_policy: ExecutionPolicyWire {
+            turbo_acceleration: intent.turbo_acceleration,
             runtime_policy: RuntimePolicyWire::Production,
             requested_backend: match intent.compute_backend.as_deref() {
                 None | Some("auto") => None,
@@ -1201,6 +1209,10 @@ fn studio_lyrics_from_wire(lyrics: &LyricsWire) -> StudioLyricsContext {
 }
 
 #[cfg(test)]
+#[path = "analysis_engine_adapter/turbo_tests.rs"]
+mod turbo_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::analysis_experience::{
@@ -1401,6 +1413,7 @@ mod tests {
             let request = compile_analyze_request(
                 AnalysisRequestIntent {
                     request_id: format!("test-{}", target.as_str()),
+                    turbo_acceleration: false,
                     source: ResolvedAnalysisSource {
                         library_file_hash: "library".to_string(),
                         path: path.clone(),
@@ -1470,6 +1483,7 @@ mod tests {
         let request = compile_analyze_request(
             AnalysisRequestIntent {
                 request_id: "multi-output".to_string(),
+                turbo_acceleration: false,
                 source: ResolvedAnalysisSource {
                     library_file_hash: "library".to_string(),
                     path: std::env::temp_dir().join("source.flac"),
@@ -1503,6 +1517,7 @@ mod tests {
         let error = compile_analyze_request(
             AnalysisRequestIntent {
                 request_id: "empty-output-sheet".to_string(),
+                turbo_acceleration: false,
                 source: ResolvedAnalysisSource {
                     library_file_hash: "library".to_string(),
                     path: std::env::temp_dir().join("source.flac"),
@@ -1535,6 +1550,7 @@ mod tests {
             let request = compile_analyze_request(
                 AnalysisRequestIntent {
                     request_id: format!("backend-{configured}"),
+                    turbo_acceleration: false,
                     source: ResolvedAnalysisSource {
                         library_file_hash: "library".to_string(),
                         path: std::env::temp_dir().join("source.flac"),
@@ -1568,6 +1584,7 @@ mod tests {
         let request = compile_analyze_request(
             AnalysisRequestIntent {
                 request_id: "model-backends".to_string(),
+                turbo_acceleration: false,
                 source: ResolvedAnalysisSource {
                     library_file_hash: "library".to_string(),
                     path: std::env::temp_dir().join("source.flac"),
@@ -1617,6 +1634,7 @@ mod tests {
         let request = compile_analyze_request(
             AnalysisRequestIntent {
                 request_id: "known-candidate".to_string(),
+                turbo_acceleration: false,
                 source: ResolvedAnalysisSource {
                     library_file_hash: "library".to_string(),
                     path: std::env::temp_dir().join("source.flac"),
@@ -1663,6 +1681,7 @@ mod tests {
         let request = compile_analyze_request(
             AnalysisRequestIntent {
                 request_id: "candidate-without-pitch-artifact".to_string(),
+                turbo_acceleration: false,
                 source: ResolvedAnalysisSource {
                     library_file_hash: "library".to_string(),
                     path: std::env::temp_dir().join("source.flac"),
@@ -1717,6 +1736,7 @@ mod tests {
         let request = compile_analyze_request(
             AnalysisRequestIntent {
                 request_id: "exact-preview-1".to_string(),
+                turbo_acceleration: false,
                 source: source.clone(),
                 lyrics: StudioLyricsContext::default(),
                 target_override: Some(AnalysisDefaultTarget::Transcript),

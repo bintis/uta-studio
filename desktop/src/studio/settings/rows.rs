@@ -371,6 +371,17 @@ pub(crate) fn spawn_source_file_row(
         });
 }
 
+pub(crate) fn toggle_turbo_acceleration(
+    config: &mut AppConfig,
+    save: impl FnOnce(&AppConfig) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut proposed = config.clone();
+    proposed.turbo_acceleration = Some(!config.turbo_acceleration.unwrap_or(false));
+    save(&proposed)?;
+    *config = proposed;
+    Ok(())
+}
+
 pub(crate) fn save_config_error(config: &AppConfig) -> Option<String> {
     config
         .save()

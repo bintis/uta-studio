@@ -83,14 +83,14 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "load_config",
         "read",
         true,
-        "Load persisted settings"
+        "Load persisted settings, including super acceleration"
     ),
     capability!(
         "config",
         "save_config",
         "mutation",
         false,
-        "Persist settings"
+        "Persist settings, including super acceleration for subsequent exact analysis requests"
     ),
     capability!(
         "models",

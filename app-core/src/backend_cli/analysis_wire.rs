@@ -262,6 +262,8 @@ pub struct RequestedArtifactsWire {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionPolicyWire {
     #[serde(default)]
+    pub turbo_acceleration: bool,
+    #[serde(default)]
     pub runtime_policy: RuntimePolicyWire,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requested_backend: Option<super::NativeBackendWire>,
@@ -306,6 +308,7 @@ pub struct AnalyzeRequestWire {
 fn production_execution_policy() -> ExecutionPolicyWire {
     ExecutionPolicyWire {
         runtime_policy: RuntimePolicyWire::Production,
+        turbo_acceleration: false,
         requested_backend: None,
         model_backend_overrides: BTreeMap::new(),
         requested_device: None,

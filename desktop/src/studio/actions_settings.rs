@@ -314,6 +314,16 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
             }
             invalidated.invalidate(UiDirtyRegion::Settings);
         }
+        UiCommand::Settings(SettingsCommand::ToggleTurboAcceleration) => {
+            studio.shell.notice = Some(match toggle_turbo_acceleration(
+                &mut studio.shell.config,
+                AppConfig::save,
+            ) {
+                Ok(()) => "Super acceleration preference saved for future analysis requests. Queued/running jobs and existing charts are unchanged.".to_string(),
+                Err(error) => format!("Could not save super acceleration: {error}. The setting was not changed."),
+            });
+            invalidated.invalidate(UiDirtyRegion::Settings);
+        }
         UiCommand::Settings(SettingsCommand::SetAnalysisQuality(quality)) => {
             studio.shell.config.analysis_experience.quality_profile = *quality;
             studio.shell.notice = save_config_error(&studio.shell.config);
