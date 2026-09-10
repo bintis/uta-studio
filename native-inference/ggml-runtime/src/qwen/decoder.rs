@@ -306,6 +306,10 @@ impl Qwen {
             && let Some(resident) = &encoded.resident
         {
             resident.inject(run.context, embedding_override, offset)?;
+            self.reused_audio_bytes
+                .set(self.reused_audio_bytes.get().saturating_add(
+                    (encoded.rows * encoded.width * std::mem::size_of::<f32>()) as u64,
+                ));
         }
         set_f32(api, attention_mask_input, &attention_values)?;
         set_i32(api, selected_input, &selected)?;
@@ -960,6 +964,11 @@ impl DecoderSession<'_> {
             && let Some(resident) = &encoded.resident
         {
             resident.inject(run.context, embedding_override, offset)?;
+            self.model
+                .reused_audio_bytes
+                .set(self.model.reused_audio_bytes.get().saturating_add(
+                    (encoded.rows * encoded.width * std::mem::size_of::<f32>()) as u64,
+                ));
         }
         set_f32(api, attention_mask_input, &attention_values)?;
         set_i32(api, selected_input, &selected_value)?;

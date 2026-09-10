@@ -84,6 +84,12 @@ pub fn infer(
     );
     let forced_language = request.language.as_deref().and_then(qwen_language_name);
     let transcription = qwen.transcribe_wav(wav, DEFAULT_MAX_NEW_TOKENS, forced_language)?;
+    let (retained, reused) = qwen.audio_residency_bytes();
+    if retained > 0 {
+        crate::audio_cache::diagnostic(&format!(
+            "Qwen device-resident audio bytes: retained={retained}, reused={reused}"
+        ));
+    }
     progress(1, 1);
     let evidence = evidence(request, transcription, runtime_manifest_digest, backend)?;
     write_evidence(destination, &evidence)

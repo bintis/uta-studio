@@ -22,6 +22,8 @@ pub struct Qwen {
     pub(crate) backend: GgmlBackendHandle,
     pub(crate) weight_context: ContextPtr,
     pub(crate) retain_intermediates: bool,
+    pub(crate) retained_audio_bytes: std::cell::Cell<u64>,
+    pub(crate) reused_audio_bytes: std::cell::Cell<u64>,
     weight_buffer: BufferPtr,
 }
 
@@ -54,6 +56,8 @@ impl Qwen {
             weight_context: std::ptr::null_mut(),
             weight_buffer: std::ptr::null_mut(),
             retain_intermediates: false,
+            retained_audio_bytes: std::cell::Cell::new(0),
+            reused_audio_bytes: std::cell::Cell::new(0),
         };
         model.load_weights(model_path)?;
         Ok(model)
@@ -61,6 +65,13 @@ impl Qwen {
 
     pub fn retain_audio_intermediates(&mut self, enabled: bool) {
         self.retain_intermediates = enabled;
+    }
+
+    pub fn audio_residency_bytes(&self) -> (u64, u64) {
+        (
+            self.retained_audio_bytes.get(),
+            self.reused_audio_bytes.get(),
+        )
     }
 
     pub(crate) fn api(&self) -> &ModelApi {

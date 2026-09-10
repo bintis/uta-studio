@@ -138,7 +138,14 @@ impl Qwen {
                 self.config.encoder_output_dim,
                 geometry.valid_rows,
             ) {
-                Ok(audio) => Some(std::rc::Rc::new(audio)),
+                Ok(audio) => {
+                    self.retained_audio_bytes.set(
+                        self.retained_audio_bytes
+                            .get()
+                            .saturating_add((expected * std::mem::size_of::<f32>()) as u64),
+                    );
+                    Some(std::rc::Rc::new(audio))
+                }
                 Err(error) => {
                     eprintln!("[super acceleration] resident audio allocation skipped: {error}");
                     None

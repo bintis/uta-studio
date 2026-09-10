@@ -47,7 +47,7 @@ fn run_task(
     } else {
         None
     };
-    let _audio_cache = audio_cache::Scope::enter(config);
+    let _audio_cache = audio_cache::Scope::enter(config, task_id);
     let outputs = engine::run(
         task_id,
         model_id,

@@ -6,9 +6,11 @@ use std::path::{Path, PathBuf};
 
 thread_local! { static DIRECTORY: RefCell<Option<PathBuf>> = const { RefCell::new(None) }; }
 
-pub struct Scope(Option<PathBuf>);
+thread_local! { static TASK: RefCell<Option<String>> = const { RefCell::new(None) }; }
+
+pub struct Scope(Option<PathBuf>, Option<String>);
 impl Scope {
-    pub fn enter(config: &serde_json::Value) -> Self {
+    pub fn enter(config: &serde_json::Value, task_id: &str) -> Self {
         let directory = (config
             .get("turbo_acceleration")
             .and_then(serde_json::Value::as_bool)
@@ -20,7 +22,10 @@ impl Scope {
                 .map(PathBuf::from)
         })
         .flatten();
-        Self(DIRECTORY.with(|current| current.replace(directory)))
+        Self(
+            DIRECTORY.with(|current| current.replace(directory)),
+            TASK.with(|current| current.replace(Some(task_id.to_string()))),
+        )
     }
 }
 impl Drop for Scope {
@@ -28,7 +33,22 @@ impl Drop for Scope {
         DIRECTORY.with(|current| {
             current.replace(self.0.take());
         });
+        TASK.with(|current| {
+            current.replace(self.1.take());
+        });
     }
+}
+
+pub fn diagnostic(message: &str) {
+    eprintln!("[super acceleration] {message}");
+    TASK.with(|task| {
+        if let Some(task_id) = task.borrow().as_deref() {
+            let _ = crate::protocol::emit(crate::protocol::WorkerFrame::Diagnostic {
+                task_id,
+                message,
+            });
+        }
+    });
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -113,13 +133,24 @@ fn restore_from(
 pub fn restore(source: &Path, rate: &str, channels: &str, target: &Path) -> bool {
     DIRECTORY.with(|directory| {
         let directory = directory.borrow();
-        let Some(directory) = directory.as_deref() else { return false; };
+        let Some(directory) = directory.as_deref() else {
+            return false;
+        };
         match restore_from(directory, source, rate, channels, target) {
             Ok(hit) => {
-                if hit { eprintln!("[super acceleration] decoded audio cache hit: {} rate={rate} channels={channels}", source.display()); }
+                if hit {
+                    let message = format!(
+                        "Decoded audio cache hit: {} rate={rate} channels={channels}",
+                        source.display()
+                    );
+                    diagnostic(&message);
+                }
                 hit
             }
-            Err(error) => { eprintln!("[super acceleration] audio cache reuse skipped: {error}"); false }
+            Err(error) => {
+                eprintln!("[super acceleration] audio cache reuse skipped: {error}");
+                false
+            }
         }
     })
 }
@@ -215,6 +246,7 @@ mod tests {
         let fixture = Fixture::new();
         let _scope = Scope::enter(
             &serde_json::json!({"turbo_acceleration":false,"audio_cache_directory":fixture.0}),
+            "fixture",
         );
         assert!(DIRECTORY.with(|directory| directory.borrow().is_none()));
     }
