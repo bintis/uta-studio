@@ -502,9 +502,9 @@ impl SegmentCandidate {
 
     pub fn emission_utility(&self) -> Result<f32, String> {
         self.validate()?;
-        // Covered duration is linear and uncapped. Every semantic state pays a
-        // fixed complexity cost, so splitting equal evidence cannot manufacture
-        // utility merely by increasing the note count.
+        // Occupancy/pitch observations are rates integrated over covered time.
+        // Repeating the same observation in shorter states must not multiply
+        // its reward. Only boundary-local evidence can pay the state cost.
         let duration_seconds = self.range.end.saturating_sub(self.range.start) as f32 / 1_000_000.0;
         let mut utility = duration_seconds - 0.45;
         // Pitch proposals for the same duration geometry remain peers. A pitch
@@ -525,9 +525,9 @@ impl SegmentCandidate {
         if let Some(cents) = best_f0_agreement {
             let absolute = cents.abs();
             if absolute <= 50.0 {
-                utility += 0.15;
+                utility += duration_seconds * 0.15;
             } else if absolute >= 600.0 {
-                utility -= 0.1;
+                utility -= duration_seconds * 0.1;
             }
         }
         let event_support = note_event_support(self);
@@ -542,15 +542,15 @@ impl SegmentCandidate {
         // Acoustic fundamental is independent, target-relative pitch evidence.
         // It may support a peer proposal but never confers authority based on
         // which expert supplied the candidate's boundary geometry.
-        utility += acoustic_fundamental_support(self);
+        utility += duration_seconds * acoustic_fundamental_support(self);
         if let Some(basic_pitch) = &self.basic_pitch {
             // These are source-local occupancy/contour activations. They are used as
             // fixed versioned features and never compared to another model's score.
             if basic_pitch.note_activation >= 0.5 {
-                utility += 0.1;
+                utility += duration_seconds * 0.1;
             }
             if basic_pitch.contour_activation >= 0.5 {
-                utility += 0.05;
+                utility += duration_seconds * 0.05;
             }
         }
         let context_support = correlation_discounted_constraint_support(&self.boundary_constraints);
@@ -571,10 +571,6 @@ fn onset_supported(candidate: &SegmentCandidate) -> bool {
             .basic_pitch
             .as_ref()
             .is_some_and(|features| features.onset_supported)
-        || matches!(
-            candidate.boundary_kind,
-            BoundaryEvidenceKind::BasicPitchOnset | BoundaryEvidenceKind::AcousticOnset
-        )
 }
 
 /// Duration-dependent independent support for a semantic note event. A short

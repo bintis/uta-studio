@@ -290,6 +290,45 @@ mod tests {
     }
 
     #[test]
+    fn sustained_observation_reward_is_partition_invariant() {
+        let mut wide = candidate("held", 0.0, 2.0, 69);
+        wide.rmvpe_center_hz = Some(440.0);
+        wide.rmvpe_cents_difference = Some(0.0);
+        wide.rmvpe_voiced_ratio = Some(1.0);
+        wide.rmvpe_pitch_mad_cents = Some(0.0);
+        wide.acoustic = Some(AcousticCandidateFeatures {
+            frame_count: 200, mean_rms: 0.2, mean_periodicity: 0.9,
+            fundamental_center_hz: Some(440.0), onset_supported: Some(false),
+            ..AcousticCandidateFeatures::default()
+        });
+        wide.basic_pitch = Some(BasicPitchCandidateFeatures {
+            onset_activation: 0.0, note_activation: 0.9, contour_activation: 0.8,
+            contour_class: 42, onset_supported: false,
+        });
+        let split = (0..8).map(|index| {
+            let mut note = wide.clone();
+            note.id = format!("fragment-{index}");
+            note.range = range(index as f64 * 0.25, (index + 1) as f64 * 0.25);
+            note
+        }).collect::<Vec<_>>();
+        let sum = split.iter().map(|note| note.emission_utility().unwrap()).sum::<f32>();
+        assert!((wide.emission_utility().unwrap() - sum - 7.0 * 0.45).abs() < 1.0e-5);
+        let mut pool = split;
+        pool.push(wide);
+        let decoded = decode_candidate_graph(&pool).unwrap();
+        assert_eq!(decoded.len(), 1);
+        assert_eq!(decoded[0].id, "held");
+    }
+
+    #[test]
+    fn onset_label_alone_is_not_measured_attack_evidence() {
+        let ordinary = candidate("ordinary", 0.0, 0.25, 69);
+        let mut labeled = ordinary.clone();
+        labeled.boundary_kind = BoundaryEvidenceKind::AcousticOnset;
+        assert_eq!(ordinary.emission_utility().unwrap(), labeled.emission_utility().unwrap());
+    }
+
+    #[test]
     fn final_candidate_path_rejects_overlap_for_every_selector() {
         let first = candidate("a", 0.0, 0.75, 69);
         let overlapping = candidate("b", 0.5, 1.0, 71);
