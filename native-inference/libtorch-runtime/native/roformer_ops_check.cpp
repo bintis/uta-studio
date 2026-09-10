@@ -57,12 +57,17 @@ void run(const at::Device& device, int64_t batch, int64_t length, int64_t width,
     // Complete FP64 arithmetic over exactly the same FP32 phase/input values.
     compare(actual, decomposed(input.to(at::kCPU).to(at::kDouble),
         cosine.to(at::kCPU).to(at::kDouble), sine.to(at::kCPU).to(at::kDouble)), "double-oracle");
+    auto phase_original = phase.clone();
+    auto rounded = uta::torch_native::interleaved_roformer_rotation_half(input, phase);
+    compare(rounded, actual.to(at::kHalf), "fused-half-writeback", 0.0, 0.0);
+    if (rounded.scalar_type() != at::kHalf || !at::equal(phase, phase_original))
+        throw std::runtime_error("rotation output type or phase changed");
     if (!at::equal(input, original)) throw std::runtime_error("rotation modified its input");
     if (!timing) return;
-    for (const auto& kind : {std::string("decomposed"), std::string("complex"), std::string("complex") , std::string("decomposed")}) {
-        auto invoke = [&] { return kind == "complex"
-            ? uta::torch_native::interleaved_roformer_rotation(input, phase)
-            : decomposed(input, cosine, sine); };
+    for (const auto& kind : {std::string("float_then_half"), std::string("fused_half"), std::string("fused_half"), std::string("float_then_half")}) {
+        auto invoke = [&] { return kind == "fused_half"
+            ? uta::torch_native::interleaved_roformer_rotation_half(input, phase)
+            : uta::torch_native::interleaved_roformer_rotation(input, phase).to(at::kHalf); };
         for (int warm = 0; warm < 2; ++warm) { actual = invoke(); synchronize(device); }
         for (int sample = 0; sample < 4; ++sample) {
             synchronize(device);
@@ -133,12 +138,21 @@ int main(int argc, char** argv) {
         const at::Device device(argc > 1 ? argv[1] : "cpu");
         c10::DeviceGuard guard(device);
         at::globalContext().setFloat32Precision(at::Float32Backend::GENERIC, at::Float32Op::ALL, at::Float32Precision::IEEE);
-        const bool full = argc > 2 && std::string(argv[2]) == "full";
+        at::globalContext().setAllowTF32OneDNN(false);
+        const bool rotary_only = argc > 2 && std::string(argv[2]) == "rotary";
+        const bool full = (argc > 2 && std::string(argv[2]) == "full")
+            || (rotary_only && argc > 3 && std::string(argv[3]) == "full");
         for (const auto packed : {false, true}) {
             run(device, 3, 17, 64, packed, false);
             run(device, 17, 3, 64, packed, false);
             run(device, 1, 1, 2, packed, false);
             run(device, 2, 65, 128, packed, false);
+        }
+        if (rotary_only) {
+            if (full) { run(device, 90, 1722, 64, false, true); run(device, 1722, 90, 64, false, true); }
+            synchronize(device);
+            std::cout << "RoFormer rotary checks passed on " << device << std::endl;
+            return 0;
         }
         for (const auto width : {8, 16, 256, 384, 516})
             for (const auto amplitude : {0.0, 1e-9, 1.0, 1e12})

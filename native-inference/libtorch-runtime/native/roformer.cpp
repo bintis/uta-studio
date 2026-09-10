@@ -221,8 +221,10 @@ private:
         auto value = qkv[2].reshape({batch, length, heads, head_dimension}).transpose(1, 2);
         const auto& cache = positions(length, time);
         if (!polar && runtime->backend == "libtorch_xpu") {
-            query = interleaved_roformer_rotation(query, cache.complex_phase);
-            key = interleaved_roformer_rotation(key, cache.complex_phase);
+            auto rotation = runtime->precision == "mixed_attention"
+                ? interleaved_roformer_rotation_half : interleaved_roformer_rotation;
+            query = rotation(query, cache.complex_phase);
+            key = rotation(key, cache.complex_phase);
         } else {
             query = rotate(query, cache.cosine, cache.sine);
             key = rotate(key, polar ? cache.key_cosine : cache.cosine, polar ? cache.key_sine : cache.sine);

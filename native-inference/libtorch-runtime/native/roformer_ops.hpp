@@ -16,6 +16,17 @@ inline at::Tensor interleaved_roformer_rotation(const at::Tensor& input, const a
     auto paired = at::view_as_complex(input.unflatten(-1, {input.size(-1) / 2, 2}));
     return at::view_as_real(paired * phase).flatten(-2);
 }
+// Same complex-FP32 arithmetic, but store directly through the FP16 rounding
+// already required by mixed attention. This removes an FP32 output tensor and
+// a separate conversion pass; neither input nor the FP32 phase is downcast.
+inline at::Tensor interleaved_roformer_rotation_half(const at::Tensor& input, const at::Tensor& phase) {
+    auto paired = at::view_as_complex(input.unflatten(-1, {input.size(-1) / 2, 2}));
+    auto output = at::empty_like(input.transpose(-3, -2), input.options().dtype(at::kHalf),
+        at::MemoryFormat::Contiguous).transpose(-3, -2);
+    auto complex_output = at::view_as_complex(output.unflatten(-1, {input.size(-1) / 2, 2}));
+    at::mul_out(complex_output, paired, phase);
+    return output;
+}
 // oneDNN SDPA supports dense head-interleaved tensors. Preserve the layout
 // produced by rotation/QKV conversion instead of copying every operand to BHLD;
 // the returned interleaved layout also avoids repacking before the output GEMM.
