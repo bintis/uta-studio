@@ -356,8 +356,37 @@ The user authorized promoting the native LibTorch XPU implementation to a produc
   digests and the machine's driver environment. The runtime recipe is
   `native-inference/libtorch-runtime/runtime-recipe.json`.
 
-The 12-second production verification of this route is recorded in the section below and in
-`tasks/remaining-models/STATE.md`.
+### Production verification on the 12-second excerpt (2026-09-11)
+
+**12-second production verification (2026-09-11, `test-artifacts/libtorch-xpu-production-12s/`):**
+the real `uta-analyze analyze` production request (balanced profile, full candidate chart, no lyrics,
+`requested_backend: libtorch_xpu`) over the 12.000-second excerpt of 崔子格 - 卜卦 completed end to end
+**outside the development shell**, with the Engine applying the installed runtime's declared process
+environment to the worker. Operation `20260911T125308-42836a546e2e`: status `ok_degraded`
+(`alignment_unresolved_words:5`), every resource resolved and executed as `runtime libtorch_xpu /
+backend libtorch_xpu / device xpu` (Leap XE90 vocals, Qwen3 ASR, Qwen3 forced aligner, RMVPE), and it
+published the candidate chart, pitch evidence, singing analysis, transcript, alignment and both
+12.000 s / 44.1 kHz stereo FLAC stems. Typed evidence carries `backend: libtorch_xpu`. A warm-cache
+repeat (`20260911T125817-c6ced5c7c4ff`) and the pinned GGML Vulkan reference on the same request
+(`20260911T125624-62b05f34f2f4`, inside the dev shell) produced the identical transcript, the same
+23/5 alignment items, the same 872/1201 voiced frames and the same empty candidate note track;
+pitch differs from GGML by at most 0.155 Hz / 0.003 confidence and between the two LibTorch runs by
+6.1e-5 Hz. Engine wall (per-node lifecycle, including worker spawn and weight load) was 55.8 s cold /
+54.3 s warm on LibTorch versus 48.5 s on GGML: separation was faster (6.4 s vs 9.1 s) while the Qwen
+and RMVPE nodes were slower on this short slice. Other user processes (a parallel AMD ROCm session)
+were active, so this is a functional pass, not a controlled benchmark; whole-model parity, listening
+quality, host stability after exit and Nix packaging of the runtime are not established. Five
+diagnostic operations preceded the pass (missing `libz.so.1`, a compute-runtime abort under
+`ZE_ENABLE_ALT_DRIVERS`, the Engine's existing-output-directory requirement, oneDNN writing to stdout
+with the OpenCL loader unresolved, and a 32-bit OpenCL loader); each fix is a separate commit
+(`f0062fc`, `e6884b2`, `ccaacee`). Details: `summary.json` in the evidence root.
+
+Environment findings that shaped the route: the Intel Level Zero loader must discover the GPU driver
+through the process library search path (`LD_LIBRARY_PATH` declared in the runtime manifest and
+applied by the Engine; `ZE_ENABLE_ALT_DRIVERS` aborted inside the compute runtime), oneDNN opens the
+OpenCL ICD loader by name at run time and prints its verbose error report to stdout (the worker now
+claims its protocol stream before loading native code), and the packaged GGML libraries still need
+the shell library path for `libstdc++` when the development binaries run outside `bash dev.sh`.
 
 ## Source references
 
