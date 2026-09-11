@@ -12,6 +12,22 @@ pub struct PublishedOutput {
     pub media_type: &'static str,
 }
 
+/// The validated native runtime one task executes on. The worker never
+/// substitutes one route for the other: the task's explicit backend decides.
+enum Route {
+    Ggml(runtime::ValidatedRuntime),
+    Libtorch(crate::libtorch::Runtime),
+}
+
+impl Route {
+    fn manifest_content_digest(&self) -> &str {
+        match self {
+            Self::Ggml(runtime) => &runtime.manifest_content_digest,
+            Self::Libtorch(runtime) => runtime.manifest_content_digest(),
+        }
+    }
+}
+
 fn cleanup_inputs(primary: &Path, secondary: Option<&Path>) {
     let _ = std::fs::remove_file(primary);
     if let Some(secondary) = secondary {
@@ -241,7 +257,13 @@ fn validate_semantics(model_id: &str, config: &serde_json::Value) -> Result<(), 
         ("ggml_cpu", _) => {
             return Err("experimental GGML CPU execution must be selected explicitly".to_string());
         }
-        _ => return Err(format!("unsupported GGML execution backend: {backend}")),
+        ("libtorch_xpu", None | Some("gpu")) => {}
+        ("libtorch_xpu", Some(other)) => {
+            return Err(format!(
+                "LibTorch XPU executes only on the discrete Intel GPU; device class {other} has no native route and CPU is not a fallback"
+            ));
+        }
+        _ => return Err(format!("unsupported native execution backend: {backend}")),
     }
     let semantic = config
         .get("semantic_output")
@@ -316,7 +338,7 @@ struct RawRmvpeFrame {
     voiced: bool,
 }
 
-fn write_raw_rmvpe_evidence(
+pub(crate) fn write_raw_rmvpe_evidence(
     frames: Vec<uta_ggml_runtime::rmvpe::PitchFrame>,
     destination: &Path,
 ) -> Result<(), String> {
@@ -356,7 +378,7 @@ struct RawFcpeFrame {
     hz: Option<f32>,
 }
 
-fn write_raw_fcpe_evidence(
+pub(crate) fn write_raw_fcpe_evidence(
     frames: Vec<uta_ggml_runtime::fcpe::PitchFrame>,
     destination: &Path,
 ) -> Result<(), String> {
@@ -398,7 +420,7 @@ struct RawBasicPitchFrame {
     contour_score: f32,
 }
 
-fn write_raw_basic_pitch_evidence(
+pub(crate) fn write_raw_basic_pitch_evidence(
     frames: Vec<uta_ggml_runtime::basic_pitch::ActivationFrame>,
     destination: &Path,
 ) -> Result<(), String> {
@@ -626,7 +648,7 @@ fn publish_basic_pitch_evidence(
     if destination.exists() {
         return Err("Basic Pitch evidence target already exists".to_string());
     }
-    if !matches!(backend, "ggml_cpu" | "ggml_vulkan") {
+    if !matches!(backend, "ggml_cpu" | "ggml_vulkan" | "libtorch_xpu") {
         return Err("Basic Pitch evidence backend is invalid".to_string());
     }
     let metadata = engine_output
@@ -713,8 +735,13 @@ pub fn run(
     mut progress: impl FnMut(f32, &'static str, Option<(u64, u64)>),
 ) -> Result<Vec<PublishedOutput>, String> {
     validate_semantics(model_id, config)?;
-    progress(0.02, "Validating pinned GGML Vulkan runtime", None);
-    let validated_runtime = runtime::validate_runtime(model_id)?;
+    let route = if crate::libtorch::selected(config) {
+        progress(0.02, "Validating installed LibTorch XPU runtime", None);
+        Route::Libtorch(crate::libtorch::Runtime::locate(model_id)?)
+    } else {
+        progress(0.02, "Validating pinned GGML Vulkan runtime", None);
+        Route::Ggml(runtime::validate_runtime(model_id)?)
+    };
     progress(0.05, "Validating GGUF model structure", None);
     let model = runtime::validate_model(model_id, &model_path(config)?, config)?;
     let model_size = model
@@ -772,26 +799,14 @@ pub fn run(
         cleanup_inputs(&input, secondary_input.as_deref());
         return Err("GGML engine output target already exists".to_string());
     }
-    progress(0.1, "Loading GGML shared libraries from Rust", None);
-    let initialized = (|| {
-        if let Some(prepared) = prepared {
-            if !prepared.matches(model_id, &model, config) {
-                return Err("preloaded weights disagree with requested model/device".to_string());
-            }
-            Ok((prepared.runtime, prepared.device, prepared.weights))
-        } else {
-            let runtime = initialize_runtime(model_id, &validated_runtime.library_dir)?;
-            let device = execution_device(config, &runtime)?;
-            Ok((runtime, device, None))
-        }
-    })();
-    let (ggml_runtime, device, loaded) = match initialized {
-        Ok(initialized) => initialized,
-        Err(error) => {
-            cleanup_inputs(&input, secondary_input.as_deref());
-            return Err(error);
-        }
-    };
+    progress(
+        0.1,
+        match &route {
+            Route::Libtorch(_) => "Loading native LibTorch XPU library from Rust",
+            Route::Ggml(_) => "Loading GGML shared libraries from Rust",
+        },
+        None,
+    );
     let mut last_units = None;
     let mut work_error = None;
     let mut report_units = |completed: u64, total: u64| {
@@ -801,136 +816,179 @@ pub fn run(
                 total != previous_total || completed <= previous
             })
         {
-            work_error = Some("GGML work units changed identity or regressed".to_string());
+            work_error = Some("native work units changed identity or regressed".to_string());
             return;
         }
         last_units = Some((completed, total));
         progress(
             0.1 + completed as f32 / total as f32 * 0.8,
-            "Running measured Rust-to-GGML work unit",
+            "Running measured native work unit",
             Some((completed, total)),
         );
     };
-    let inference_result = if model_id == "rmvpe" {
-        let rmvpe = crate::prepared::rmvpe(loaded, ggml_runtime, &device, &model);
-        rmvpe.and_then(|rmvpe| {
-            let frames = rmvpe.process_wav(&input, &mut report_units)?;
-            write_raw_rmvpe_evidence(frames, &engine_output)
-        })
-    } else if model_id == "fcpe" {
-        let fcpe = crate::prepared::fcpe(loaded, ggml_runtime, &device, &model);
-        fcpe.and_then(|fcpe| {
-            let frames = fcpe.process_wav(&input, &mut report_units)?;
-            write_raw_fcpe_evidence(frames, &engine_output)
-        })
-    } else if model_id == "basic_pitch" {
-        let basic_pitch = crate::prepared::basic_pitch(loaded, ggml_runtime, &device, &model);
-        basic_pitch.and_then(|basic_pitch| {
-            let frames = basic_pitch.process_wav(&input, &mut report_units)?;
-            write_raw_basic_pitch_evidence(frames, &engine_output)
-        })
-    } else if game_mode {
-        crate::game::infer(
-            loaded,
-            ggml_runtime,
-            &device,
-            &model,
-            &input,
-            &validated_runtime.manifest_content_digest,
-            config,
-            &engine_output,
-            &mut report_units,
-        )
-    } else if jbm555_mode {
-        crate::jbm555::infer(
-            loaded,
-            ggml_runtime,
-            &device,
-            &model,
-            &input,
-            secondary_input
-                .as_deref()
-                .expect("JBM555 secondary input was validated before execution"),
-            config,
-            &engine_output,
-            &mut report_units,
-        )
-    } else if model_id == "stars" {
-        crate::stars::infer(
-            loaded,
-            ggml_runtime,
-            &device,
-            &model,
-            &input,
-            secondary_source.expect("STARS shared RMVPE input was validated before execution"),
-            &validated_runtime.manifest_content_digest,
-            backend_for_device(&device),
-            config,
-            &engine_output,
-            &mut report_units,
-        )
-    } else if model_id == "rosvot" {
-        crate::rosvot::infer(
-            loaded,
-            ggml_runtime,
-            &device,
-            &model,
-            &input,
-            secondary_source.expect("ROSVOT shared RMVPE input was validated before execution"),
-            &validated_runtime.manifest_content_digest,
-            backend_for_device(&device),
-            config,
-            &engine_output,
-            &mut report_units,
-        )
-    } else if model_id == "qwen3_forced_aligner_0_6b" {
-        let backend = backend_for_device(&device);
-        crate::qwen::infer(
-            loaded,
-            ggml_runtime,
-            &device,
-            &model,
-            &input,
-            &validated_runtime.manifest_content_digest,
-            backend,
-            config,
-            &engine_output,
-            &mut report_units,
-        )
-    } else if model_id == "qwen3_asr_1_7b" {
-        let backend = backend_for_device(&device);
-        crate::qwen_asr::infer(
-            loaded,
-            ggml_runtime,
-            &device,
-            &model,
-            &input,
-            &validated_runtime.manifest_content_digest,
-            backend,
-            config,
-            &engine_output,
-            &mut report_units,
-        )
-    } else if firered_mode {
-        let backend = backend_for_device(&device);
-        crate::firered::infer(
-            loaded,
-            ggml_runtime,
-            &device,
-            &model,
-            &input,
-            &validated_runtime.manifest_content_digest,
-            backend,
-            config,
-            &engine_output,
-            &mut report_units,
-        )
-    } else {
-        // Super acceleration reuses prepared weights, but a complete model
-        // invocation stays on its assigned device, including every chunk.
-        crate::prepared::roformer(loaded, ggml_runtime, &device, &model).and_then(|mut roformer| {
-            roformer.process_wav(&input, &engine_output, &mut report_units)
-        })
+    let (backend_name, inference_result): (&str, Result<(), String>) = match &route {
+        Route::Libtorch(native) => (
+            "libtorch_xpu",
+            crate::libtorch::execute(
+                native,
+                model_id,
+                &model,
+                &input,
+                secondary_input.as_deref(),
+                secondary_source,
+                config,
+                &engine_output,
+                &mut report_units,
+            ),
+        ),
+        Route::Ggml(validated_runtime) => {
+            let initialized = (|| {
+                if let Some(prepared) = prepared {
+                    if !prepared.matches(model_id, &model, config) {
+                        return Err(
+                            "preloaded weights disagree with requested model/device".to_string()
+                        );
+                    }
+                    Ok((prepared.runtime, prepared.device, prepared.weights))
+                } else {
+                    let runtime = initialize_runtime(model_id, &validated_runtime.library_dir)?;
+                    let device = execution_device(config, &runtime)?;
+                    Ok((runtime, device, None))
+                }
+            })();
+            let (ggml_runtime, device, loaded) = match initialized {
+                Ok(initialized) => initialized,
+                Err(error) => {
+                    cleanup_inputs(&input, secondary_input.as_deref());
+                    return Err(error);
+                }
+            };
+            let inference_result = if model_id == "rmvpe" {
+                let rmvpe = crate::prepared::rmvpe(loaded, ggml_runtime, &device, &model);
+                rmvpe.and_then(|rmvpe| {
+                    let frames = rmvpe.process_wav(&input, &mut report_units)?;
+                    write_raw_rmvpe_evidence(frames, &engine_output)
+                })
+            } else if model_id == "fcpe" {
+                let fcpe = crate::prepared::fcpe(loaded, ggml_runtime, &device, &model);
+                fcpe.and_then(|fcpe| {
+                    let frames = fcpe.process_wav(&input, &mut report_units)?;
+                    write_raw_fcpe_evidence(frames, &engine_output)
+                })
+            } else if model_id == "basic_pitch" {
+                let basic_pitch =
+                    crate::prepared::basic_pitch(loaded, ggml_runtime, &device, &model);
+                basic_pitch.and_then(|basic_pitch| {
+                    let frames = basic_pitch.process_wav(&input, &mut report_units)?;
+                    write_raw_basic_pitch_evidence(frames, &engine_output)
+                })
+            } else if game_mode {
+                crate::game::infer(
+                    loaded,
+                    ggml_runtime,
+                    &device,
+                    &model,
+                    &input,
+                    route.manifest_content_digest(),
+                    config,
+                    &engine_output,
+                    &mut report_units,
+                )
+            } else if jbm555_mode {
+                crate::jbm555::infer(
+                    loaded,
+                    ggml_runtime,
+                    &device,
+                    &model,
+                    &input,
+                    secondary_input
+                        .as_deref()
+                        .expect("JBM555 secondary input was validated before execution"),
+                    config,
+                    &engine_output,
+                    &mut report_units,
+                )
+            } else if model_id == "stars" {
+                crate::stars::infer(
+                    loaded,
+                    ggml_runtime,
+                    &device,
+                    &model,
+                    &input,
+                    secondary_source
+                        .expect("STARS shared RMVPE input was validated before execution"),
+                    route.manifest_content_digest(),
+                    backend_for_device(&device),
+                    config,
+                    &engine_output,
+                    &mut report_units,
+                )
+            } else if model_id == "rosvot" {
+                crate::rosvot::infer(
+                    loaded,
+                    ggml_runtime,
+                    &device,
+                    &model,
+                    &input,
+                    secondary_source
+                        .expect("ROSVOT shared RMVPE input was validated before execution"),
+                    route.manifest_content_digest(),
+                    backend_for_device(&device),
+                    config,
+                    &engine_output,
+                    &mut report_units,
+                )
+            } else if model_id == "qwen3_forced_aligner_0_6b" {
+                let backend = backend_for_device(&device);
+                crate::qwen::infer(
+                    loaded,
+                    ggml_runtime,
+                    &device,
+                    &model,
+                    &input,
+                    route.manifest_content_digest(),
+                    backend,
+                    config,
+                    &engine_output,
+                    &mut report_units,
+                )
+            } else if model_id == "qwen3_asr_1_7b" {
+                let backend = backend_for_device(&device);
+                crate::qwen_asr::infer(
+                    loaded,
+                    ggml_runtime,
+                    &device,
+                    &model,
+                    &input,
+                    route.manifest_content_digest(),
+                    backend,
+                    config,
+                    &engine_output,
+                    &mut report_units,
+                )
+            } else if firered_mode {
+                let backend = backend_for_device(&device);
+                crate::firered::infer(
+                    loaded,
+                    ggml_runtime,
+                    &device,
+                    &model,
+                    &input,
+                    route.manifest_content_digest(),
+                    backend,
+                    config,
+                    &engine_output,
+                    &mut report_units,
+                )
+            } else {
+                // Super acceleration reuses prepared weights, but a complete model
+                // invocation stays on its assigned device, including every chunk.
+                crate::prepared::roformer(loaded, ggml_runtime, &device, &model).and_then(
+                    |mut roformer| roformer.process_wav(&input, &engine_output, &mut report_units),
+                )
+            };
+            (backend_for_device(&device), inference_result)
+        }
     };
     drop(report_units);
     if let Err(error) = inference_result {
@@ -950,17 +1008,14 @@ pub fn run(
     }
 
     if json_evidence_mode {
-        let backend = match device.kind {
-            DeviceKind::Cpu => "ggml_cpu",
-            DeviceKind::DiscreteGpu | DeviceKind::IntegratedGpu => "ggml_vulkan",
-        };
+        let backend = backend_name;
         let (destination, artifact, result) = if model_id == "rmvpe" {
             progress(0.92, "Validating and publishing RMVPE pitch evidence", None);
             let destination = output_dir.join("rmvpe-pitch-evidence.json");
             let result = publish_rmvpe_evidence(
                 &engine_output,
                 &destination,
-                &validated_runtime.manifest_content_digest,
+                route.manifest_content_digest(),
                 backend,
             );
             (destination, "pitch_evidence", result)
@@ -971,7 +1026,7 @@ pub fn run(
                 &engine_output,
                 &destination,
                 model_size,
-                &validated_runtime.manifest_content_digest,
+                route.manifest_content_digest(),
                 backend,
             );
             (destination, "pitch_evidence", result)
@@ -986,7 +1041,7 @@ pub fn run(
                 &engine_output,
                 &destination,
                 model_size,
-                &validated_runtime.manifest_content_digest,
+                route.manifest_content_digest(),
                 backend,
             );
             (destination, "basic_pitch_evidence", result)
@@ -1054,7 +1109,7 @@ pub fn run(
         return result;
     }
 
-    progress(0.92, "Atomically encoding lossless GGML output", None);
+    progress(0.92, "Atomically encoding lossless native output", None);
     let dual_filenames = dual_separation_filenames(model_id);
     let destination = output_dir.join(
         dual_filenames

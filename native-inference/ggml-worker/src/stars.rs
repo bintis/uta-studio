@@ -125,7 +125,52 @@ pub fn infer(
     backend: &str,
     config: &serde_json::Value,
     destination: &Path,
+    progress: impl FnMut(u64, u64),
+) -> Result<(), String> {
+    infer_with(
+        stars_wav,
+        rmvpe_evidence,
+        runtime_manifest_digest,
+        backend,
+        config,
+        destination,
+        progress,
+        |wav, raw_f0, words, source_start_micros, include_technique, g2p| {
+            let shared = uta_ggml_runtime::stars::prepare_wav_inputs(wav, raw_f0)?;
+            let stars = crate::prepared::stars(loaded, runtime, device, stars_model)?;
+            stars.infer_transcript(
+                &shared,
+                words,
+                source_start_micros,
+                include_technique,
+                |texts| g2p.phonemize_words(texts),
+                |_, _| {},
+            )
+        },
+    )
+}
+
+/// Request parsing, shared RMVPE conditioning and evidence publication for
+/// every native STARS route. `run` receives the decoded 24 kHz WAV, the raw
+/// annotation F0 curve, the timed words and the packaged Chinese lexicon, and
+/// returns the complete STARS result.
+#[allow(clippy::too_many_arguments)]
+pub fn infer_with(
+    stars_wav: &Path,
+    rmvpe_evidence: &Path,
+    runtime_manifest_digest: &str,
+    backend: &str,
+    config: &serde_json::Value,
+    destination: &Path,
     mut progress: impl FnMut(u64, u64),
+    run: impl FnOnce(
+        &Path,
+        &[f32],
+        &[TranscriptWord],
+        u64,
+        bool,
+        &ChineseG2pAsset,
+    ) -> Result<uta_ggml_runtime::stars::StarsResult, String>,
 ) -> Result<(), String> {
     let request: Request = serde_json::from_value(config.clone())
         .map_err(|error| format!("STARS request is invalid: {error}"))?;
@@ -142,17 +187,15 @@ pub fn infer(
         .collect::<Vec<_>>();
     let raw_f0 = read_shared_rmvpe(rmvpe_evidence)?;
     progress(200, 1000);
-    let shared = uta_ggml_runtime::stars::prepare_wav_inputs(stars_wav, &raw_f0)?;
     let g2p = ChineseG2pAsset::load_embedded()?;
-    let stars = crate::prepared::stars(loaded, runtime, device, stars_model)?;
     progress(250, 1000);
-    let result = stars.infer_transcript(
-        &shared,
+    let result = run(
+        stars_wav,
+        &raw_f0,
         &words,
         request.source_start_micros,
         request.include_technique,
-        |texts| g2p.phonemize_words(texts),
-        |_, _| {},
+        &g2p,
     )?;
     progress(950, 1000);
     let frontend_generation = format!("rmvpe:{}", request.rmvpe_generation);
@@ -307,7 +350,10 @@ fn validate_evidence(evidence: &Evidence) -> Result<(), String> {
         || evidence.capability.is_some()
         || !capabilities_valid
         || evidence.upstream_commit != UPSTREAM_COMMIT
-        || !matches!(evidence.backend.as_str(), "ggml_cpu" | "ggml_vulkan")
+        || !matches!(
+            evidence.backend.as_str(),
+            "ggml_cpu" | "ggml_vulkan" | "libtorch_xpu"
+        )
         || evidence.shared_frontend_profile != FRONTEND_PROFILE
         || evidence.g2p_profile.as_deref() != Some(PROFILE)
         || evidence.frame_step_num != 128

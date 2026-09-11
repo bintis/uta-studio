@@ -92,7 +92,42 @@ pub fn infer(
     backend: &str,
     config: &serde_json::Value,
     destination: &Path,
+    progress: impl FnMut(u64, u64),
+) -> Result<(), String> {
+    infer_with(
+        rosvot_wav,
+        rmvpe_evidence,
+        runtime_manifest_digest,
+        backend,
+        config,
+        destination,
+        progress,
+        |wav, raw_f0, words, source_start_micros| {
+            let shared = uta_ggml_runtime::rosvot::prepare_wav_inputs(wav, raw_f0)?;
+            let rosvot = crate::prepared::rosvot(loaded, runtime, device, rosvot_model)?;
+            rosvot.infer_transcript(&shared, words, source_start_micros, |_, _| {})
+        },
+    )
+}
+
+/// Request parsing, shared RMVPE conditioning and evidence publication for
+/// every native ROSVOT route. `run` receives the decoded 24 kHz WAV, the raw
+/// annotation F0 curve and the timed words, and returns the complete result.
+#[allow(clippy::too_many_arguments)]
+pub fn infer_with(
+    rosvot_wav: &Path,
+    rmvpe_evidence: &Path,
+    runtime_manifest_digest: &str,
+    backend: &str,
+    config: &serde_json::Value,
+    destination: &Path,
     mut progress: impl FnMut(u64, u64),
+    run: impl FnOnce(
+        &Path,
+        &[f32],
+        &[TranscriptWord],
+        u64,
+    ) -> Result<uta_ggml_runtime::rosvot::RosvotResult, String>,
 ) -> Result<(), String> {
     let request: Request = serde_json::from_value(config.clone())
         .map_err(|error| format!("ROSVOT request is invalid: {error}"))?;
@@ -109,11 +144,8 @@ pub fn infer(
         .collect::<Vec<_>>();
     let raw_f0 = read_shared_rmvpe(rmvpe_evidence)?;
     progress(200, 1000);
-    let shared = uta_ggml_runtime::rosvot::prepare_wav_inputs(rosvot_wav, &raw_f0)?;
-    let rosvot = crate::prepared::rosvot(loaded, runtime, device, rosvot_model)?;
     progress(250, 1000);
-    let result =
-        rosvot.infer_transcript(&shared, &words, request.source_start_micros, |_, _| {})?;
+    let result = run(rosvot_wav, &raw_f0, &words, request.source_start_micros)?;
     progress(950, 1000);
     let frontend_generation = format!("rmvpe:{}", request.rmvpe_generation);
     let evidence = Evidence {
@@ -219,7 +251,10 @@ fn validate_evidence(evidence: &Evidence) -> Result<(), String> {
         || evidence.capability.as_deref() != Some("notes.rosvot")
         || !evidence.capabilities.is_empty()
         || evidence.upstream_commit != UPSTREAM_COMMIT
-        || !matches!(evidence.backend.as_str(), "ggml_cpu" | "ggml_vulkan")
+        || !matches!(
+            evidence.backend.as_str(),
+            "ggml_cpu" | "ggml_vulkan" | "libtorch_xpu"
+        )
         || evidence.shared_frontend_profile != FRONTEND_PROFILE
         || evidence.g2p_profile.is_some()
         || evidence.frame_step_num != 128

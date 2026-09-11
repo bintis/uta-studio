@@ -70,11 +70,45 @@ pub fn infer(
     destination: &Path,
     progress: impl FnMut(u64, u64),
 ) -> Result<(), String> {
+    infer_with(
+        model_path,
+        wav,
+        runtime_content_digest,
+        backend,
+        config,
+        destination,
+        progress,
+        |wav, cmvn, tokens, progress| {
+            let model = crate::prepared::firered(loaded, runtime, device, model_path)?;
+            model.transcribe_wav(wav, cmvn, tokens, progress)
+        },
+    )
+}
+
+/// Request parsing, sidecar loading and evidence publication shared by every
+/// native FireRed route. `transcribe` receives the decoded WAV plus the CMVN
+/// and token sidecar bytes and returns the complete windowed transcription.
+#[allow(clippy::too_many_arguments)]
+pub fn infer_with(
+    model_path: &Path,
+    wav: &Path,
+    runtime_content_digest: &str,
+    backend: &str,
+    config: &serde_json::Value,
+    destination: &Path,
+    mut progress: impl FnMut(u64, u64),
+    transcribe: impl FnOnce(
+        &Path,
+        &[u8],
+        &[u8],
+        &mut dyn FnMut(u64, u64),
+    ) -> Result<Transcription, String>,
+) -> Result<(), String> {
     let request: Request = serde_json::from_value(config.clone())
         .map_err(|error| format!("FireRed request is invalid: {error}"))?;
     if request.model_content_digest.trim().is_empty()
         || runtime_content_digest.trim().is_empty()
-        || !matches!(backend, "ggml_cpu" | "ggml_vulkan")
+        || !matches!(backend, "ggml_cpu" | "ggml_vulkan" | "libtorch_xpu")
     {
         return Err("FireRed execution provenance is invalid".to_string());
     }
@@ -86,8 +120,7 @@ pub fn infer(
         .map_err(|error| format!("FireRed CMVN sidecar is unavailable: {error}"))?;
     let tokens = std::fs::read(named_artifact(&request, "tokens")?)
         .map_err(|error| format!("FireRed token sidecar is unavailable: {error}"))?;
-    let model = crate::prepared::firered(loaded, runtime, device, model_path)?;
-    let transcription = model.transcribe_wav(wav, &cmvn, &tokens, progress)?;
+    let transcription = transcribe(wav, &cmvn, &tokens, &mut progress)?;
     let evidence = evidence(
         request.model_content_digest,
         runtime_content_digest,
@@ -213,7 +246,10 @@ fn validate_evidence(evidence: &Evidence) -> Result<(), String> {
         || evidence.selected_source_revision != SOURCE_REVISION
         || evidence.model_content_digest.trim().is_empty()
         || evidence.runtime_content_digest.trim().is_empty()
-        || !matches!(evidence.backend.as_str(), "ggml_cpu" | "ggml_vulkan")
+        || !matches!(
+            evidence.backend.as_str(),
+            "ggml_cpu" | "ggml_vulkan" | "libtorch_xpu"
+        )
         || evidence.contract_scope != "overlapping_windowed_230_feature_frame_sequence"
         || evidence.sample_rate != SAMPLE_RATE
         || evidence.input_samples == 0

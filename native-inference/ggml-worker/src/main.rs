@@ -6,6 +6,7 @@ mod engine;
 mod firered;
 mod game;
 mod jbm555;
+mod libtorch;
 mod pitch_input;
 mod prepared;
 mod protocol;
@@ -150,6 +151,18 @@ fn main() {
         match command {
             WorkerCommand::Quit => break,
             WorkerCommand::Prepare { model_id, config } => {
+                if libtorch::selected(&config) {
+                    // Native LibTorch sessions load their resident weights at
+                    // task time; nothing is preloaded speculatively.
+                    let _ = emit(WorkerFrame::Prepared {
+                        model_id: &model_id,
+                        status: "skipped",
+                        message: "LibTorch XPU weights load with the task; no speculative residency",
+                        device: "libtorch_xpu",
+                        free_bytes: None,
+                    });
+                    continue;
+                }
                 match prepared::Prepared::preload(&model_id, &config) {
                     Ok(model) => {
                         let _ = emit(WorkerFrame::Prepared {

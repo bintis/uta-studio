@@ -71,6 +71,7 @@ struct Diagnostics {
     decoder_seconds: f64,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn infer(
     loaded: Option<crate::prepared::Weights>,
     runtime: Arc<GgmlRuntime>,
@@ -81,30 +82,59 @@ pub fn infer(
     backend: &str,
     config: &serde_json::Value,
     destination: &Path,
+    progress: impl FnMut(u64, u64),
+) -> Result<(), String> {
+    let retain_audio = config
+        .get("turbo_acceleration")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+        && device.kind != uta_ggml_runtime::DeviceKind::Cpu;
+    infer_with(
+        wav,
+        runtime_manifest_digest,
+        backend,
+        config,
+        destination,
+        progress,
+        |wav, forced_language, progress| {
+            let mut qwen = crate::prepared::qwen(loaded, runtime, device, model_path)?;
+            qwen.retain_audio_intermediates(retain_audio);
+            let transcription =
+                qwen.transcribe_wav(wav, DEFAULT_MAX_NEW_TOKENS, forced_language, progress)?;
+            let (retained, reused) = qwen.audio_residency_bytes();
+            if retained > 0 {
+                crate::audio_cache::diagnostic(&format!(
+                    "Qwen device-resident audio bytes: retained={retained}, reused={reused}"
+                ));
+            }
+            Ok(transcription)
+        },
+    )
+}
+
+/// Request parsing and evidence publication shared by every native Qwen ASR
+/// route. `transcribe` receives the decoded WAV and the forced publisher
+/// language name and returns the complete transcription.
+pub fn infer_with(
+    wav: &Path,
+    runtime_manifest_digest: &str,
+    backend: &str,
+    config: &serde_json::Value,
+    destination: &Path,
     mut progress: impl FnMut(u64, u64),
+    transcribe: impl FnOnce(
+        &Path,
+        Option<&str>,
+        &mut dyn FnMut(u64, u64),
+    ) -> Result<Transcription, String>,
 ) -> Result<(), String> {
     let request: Request = serde_json::from_value(config.clone())
         .map_err(|error| format!("Qwen ASR request is invalid: {error}"))?;
     if request.model_content_digest.trim().is_empty() {
         return Err("Qwen ASR requires model provenance".to_string());
     }
-    let mut qwen = crate::prepared::qwen(loaded, runtime, device, model_path)?;
-    qwen.retain_audio_intermediates(
-        config
-            .get("turbo_acceleration")
-            .and_then(serde_json::Value::as_bool)
-            == Some(true)
-            && device.kind != uta_ggml_runtime::DeviceKind::Cpu,
-    );
     let forced_language = request.language.as_deref().and_then(qwen_language_name);
-    let transcription =
-        qwen.transcribe_wav(wav, DEFAULT_MAX_NEW_TOKENS, forced_language, &mut progress)?;
-    let (retained, reused) = qwen.audio_residency_bytes();
-    if retained > 0 {
-        crate::audio_cache::diagnostic(&format!(
-            "Qwen device-resident audio bytes: retained={retained}, reused={reused}"
-        ));
-    }
+    let transcription = transcribe(wav, forced_language, &mut progress)?;
     let evidence = evidence(request, transcription, runtime_manifest_digest, backend)?;
     write_evidence(destination, &evidence)
 }
@@ -215,7 +245,10 @@ fn validate_evidence(evidence: &Evidence) -> Result<(), String> {
         || evidence.source_experts != [MODEL_ID]
         || evidence.model_sha256.trim().is_empty()
         || evidence.runtime_manifest_sha256.trim().is_empty()
-        || !matches!(evidence.backend.as_str(), "ggml_cpu" | "ggml_vulkan")
+        || !matches!(
+            evidence.backend.as_str(),
+            "ggml_cpu" | "ggml_vulkan" | "libtorch_xpu"
+        )
         || evidence.language
             != evidence
                 .diagnostics

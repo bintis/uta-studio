@@ -48,7 +48,10 @@ pub fn read_shared_rmvpe(path: &Path) -> Result<Vec<f32>, String> {
         || evidence.source_model_sha256.trim().is_empty()
         || evidence.model_gguf_sha256.trim().is_empty()
         || evidence.runtime_manifest_sha256.trim().is_empty()
-        || !matches!(evidence.backend.as_str(), "ggml_cpu" | "ggml_vulkan")
+        || !matches!(
+            evidence.backend.as_str(),
+            "ggml_cpu" | "ggml_vulkan" | "libtorch_xpu"
+        )
         || evidence.timeline_step_ms != 10
         || evidence.sample_rate != 16_000
         || evidence.frames.is_empty()

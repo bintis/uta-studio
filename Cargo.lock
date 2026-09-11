@@ -6431,6 +6431,7 @@ dependencies = [
  "uta-audio-reuse",
  "uta-ggml-runtime",
  "uta-gpu-probes",
+ "uta-libtorch-runtime",
 ]
 
 [[package]]

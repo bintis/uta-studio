@@ -34,6 +34,7 @@ struct GameNoteEvidence {
     voiced: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn infer(
     loaded: Option<crate::prepared::Weights>,
     runtime: Arc<GgmlRuntime>,
@@ -45,26 +46,60 @@ pub fn infer(
     destination: &Path,
     report: &mut dyn FnMut(u64, u64),
 ) -> Result<(), String> {
+    let backend = match device.kind {
+        DeviceKind::Cpu => "ggml_cpu",
+        DeviceKind::DiscreteGpu | DeviceKind::IntegratedGpu => "ggml_vulkan",
+    };
+    infer_with(
+        model_path,
+        input_path,
+        runtime_manifest_sha256,
+        backend,
+        artifact_identity,
+        destination,
+        report,
+        |input, params, report| {
+            let model = crate::prepared::game(loaded, runtime, device, model_path)?;
+            let variant = model.config().variant.to_string();
+            let output = model.process_wav_with_progress(input, params, report)?;
+            Ok((variant, output))
+        },
+    )
+}
+
+/// Parameter parsing and evidence publication shared by every native GAME
+/// route. `run` executes the checkpoint over the decoded WAV and returns its
+/// size variant name with the complete note output.
+#[allow(clippy::too_many_arguments)]
+pub fn infer_with(
+    model_path: &Path,
+    input_path: &Path,
+    runtime_manifest_sha256: &str,
+    backend: &str,
+    artifact_identity: &Value,
+    destination: &Path,
+    report: &mut dyn FnMut(u64, u64),
+    run: impl FnOnce(
+        &Path,
+        &GameInferParams,
+        &mut dyn FnMut(u64, u64),
+    ) -> Result<(String, uta_ggml_runtime::game::GameInferOutput), String>,
+) -> Result<(), String> {
     validate_artifact_identity(artifact_identity)?;
-    let model = crate::prepared::game(loaded, runtime, device, model_path)?;
     let params = infer_params(artifact_identity)?;
-    let variant = format!("GAME-1.0.3-{}-onnx", model.config().variant);
     let model_gguf_size_bytes = model_path
         .metadata()
         .map_err(|error| format!("GAME GGUF metadata is unavailable: {error}"))?
         .len();
-    let output = model.process_wav_with_progress(input_path, &params, report)?;
+    let (variant, output) = run(input_path, &params, report)?;
     let evidence = GameEvidence {
         schema_version: 1,
         model_id: "game",
-        variant,
+        variant: format!("GAME-1.0.3-{variant}-onnx"),
         source_commit: SOURCE_COMMIT,
         model_gguf_size_bytes,
         runtime_manifest_sha256: runtime_manifest_sha256.to_string(),
-        backend: match device.kind {
-            DeviceKind::Cpu => "ggml_cpu".to_string(),
-            DeviceKind::DiscreteGpu | DeviceKind::IntegratedGpu => "ggml_vulkan".to_string(),
-        },
+        backend: backend.to_string(),
         semantic_output: "note_candidate_evidence",
         sample_rate: 44_100,
         timestep_ms: 10,

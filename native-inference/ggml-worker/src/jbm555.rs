@@ -17,7 +17,7 @@ struct Evidence<'a> {
     conversion_identity: &'a str,
     model_generation: &'a str,
     runtime_identity: &'static str,
-    backend: &'static str,
+    backend: &'a str,
     source_start: u64,
     source_duration: u64,
     mix_audio_identity: &'a str,
@@ -46,6 +46,7 @@ struct RangeEvidence {
     end: u64,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn infer(
     loaded: Option<crate::prepared::Weights>,
     runtime: Arc<GgmlRuntime>,
@@ -57,11 +58,47 @@ pub fn infer(
     destination: &Path,
     report: &mut dyn FnMut(u64, u64),
 ) -> Result<(), String> {
+    let backend = match device.kind {
+        DeviceKind::Cpu => "ggml_cpu",
+        DeviceKind::DiscreteGpu | DeviceKind::IntegratedGpu => "ggml_vulkan",
+    };
+    infer_with(
+        mix_path,
+        vocal_path,
+        "shared_ggml_vulkan",
+        backend,
+        config,
+        destination,
+        report,
+        |mix, vocal, report| {
+            let model = crate::prepared::jbm(loaded, runtime, device, model_path)?;
+            model.process_wavs(mix, vocal, report)
+        },
+    )
+}
+
+/// Timeline scoping and evidence publication shared by every native JBM555
+/// route. `run` executes the CNN over the decoded mix and prepared vocal and
+/// returns the decoded notes with the processed sample count.
+#[allow(clippy::too_many_arguments)]
+pub fn infer_with(
+    mix_path: &Path,
+    vocal_path: &Path,
+    runtime_identity: &'static str,
+    backend: &str,
+    config: &Value,
+    destination: &Path,
+    report: &mut dyn FnMut(u64, u64),
+    run: impl FnOnce(
+        &Path,
+        &Path,
+        &mut dyn FnMut(u64, u64),
+    ) -> Result<(Vec<uta_ggml_runtime::jbm555::Note>, usize), String>,
+) -> Result<(), String> {
     if config.get("semantic_output").and_then(Value::as_str) != Some("note_candidate_evidence") {
         return Err("JBM555 artifact semantic output is invalid".to_string());
     }
-    let model = crate::prepared::jbm(loaded, runtime, device, model_path)?;
-    let (notes, sample_count) = model.process_wavs(mix_path, vocal_path, report)?;
+    let (notes, sample_count) = run(mix_path, vocal_path, report)?;
     let source_start = config
         .get("source_start")
         .and_then(Value::as_u64)
@@ -97,11 +134,8 @@ pub fn infer(
         config_identity: config_text(config, "config_identity", "cectc80-public"),
         conversion_identity: config_text(config, "conversion_identity", "gguf-f32"),
         model_generation: config_text(config, "model_generation", "runtime-managed"),
-        runtime_identity: "shared_ggml_vulkan",
-        backend: match device.kind {
-            DeviceKind::Cpu => "ggml_cpu",
-            DeviceKind::DiscreteGpu | DeviceKind::IntegratedGpu => "ggml_vulkan",
-        },
+        runtime_identity,
+        backend,
         source_start,
         source_duration,
         mix_audio_identity: config_text(config, "mix_audio_identity", "task-mix"),
