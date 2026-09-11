@@ -568,6 +568,19 @@ evidence. No more GPU execution is planned in this handoff. The
 Next technical blockers are the two original model failures and further
 precision-preserving bottleneck work, not TF32 or unqualified post-op promotion.
 
+The user's 2026-09-11 CPU/XMX question was investigated **read-only**. Saved
+64.53-second-path samples show inference at **98.86% of one logical CPU**
+(6.18% of this 16-logical-CPU machine), with 11.86% mean whole-host busy and no
+compiler samples. CPU stack attribution remains unknown; do not equate busy
+submission/synchronization with transferable DSP work. STFT, packing, mask
+reconstruction, iSTFT and OLA remain on CPU; learned graph operations are on GPU.
+Historical diagnostics executed 64 FP16 native SDPA calls and matching source
+identifies the systolic-capable route, but no all-XMX coverage/occupancy evidence
+exists. First expose existing native upload/compute/readback timings and host
+frontend phases; GPU migration benefit is **not measured**. Preserve numerical
+ordering and all safety/precision scope. See the CPU/XMX review section of the
+comparison document and `cpu-accounting-review.json` / `dispatch-frontend-review.json`.
+
 Kernel journal review is unavailable due to permissions
 (`20260910T205622-b1bff200266f`); do not claim absence of GPU reset from boot IDs.
 Do not alter GPU clocks/power settings or resume counter stress tests. Prior

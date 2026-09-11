@@ -532,3 +532,78 @@ observer read errors are 0/1/2/0 in table order, with unchanged boot IDs. No mor
 GPU execution is planned for this handoff. Kernel log access remains unavailable;
 no GPU-reset absence or post-exit host-stability guarantee is made. Installed
 assets are untouched, and this is not production or release acceptance.
+
+### CPU accounting and XMX evidence review (2026-09-11)
+
+This is a **read-only review**, not another inference or hardware-counter run.
+`cpu-accounting-review.json` reprocesses the saved observer records. In the
+retained `fullsong-gating` case, PID 1648245 consumed 58.59 user + 7.29 system CPU
+seconds over 66.64134 sampled wall seconds: **98.86% of one logical CPU**, or
+**6.18% of the 16-logical-CPU machine**. Whole-host samples averaged **11.86%**,
+peaked at **15.21%**, and contained no compiler observations. The main thread
+accumulated 65.87927 runtime seconds but only 0.05414 seconds in its run queue.
+Thus the observed process-level 100% is real, not entirely compiler activity;
+it is not whole-machine saturation. A serial CPU bottleneck is still possible.
+Later contended runs likewise used about one CPU for inference, alongside
+separate compiler processes. This does not identify the user's exact UI reading
+without its PID, time interval and percentage convention.
+
+CPU time is **not** a measurement of removable DSP work. It includes native
+operator submission, first-use compilation, allocation/copies, driver activity
+and potentially active synchronization waiting. The historical two-chunk
+`gating-profile` contains **3.68939 s inside 644 synchronization-call brackets**
+out of 8.16129 s inference. Its 0.72465 s outside band-split-checkpoint-to-mask
+intervals also includes transfers, initial band-split work and other boundary
+costs; it is not an isolated CPU frontend timer. This heavily synchronized trace
+must not be scaled into a claimed whole-song saving. No CPU stack profile was
+collected, so a driver spin-wait diagnosis remains unproven.
+
+**XMX evidence is narrower than successful GPU dispatch:** the saved
+`gelu-profile/stdout.txt` has **64 executed FP16 GPU SDPA calls**, 32 per axis,
+all `ocl:micro:reusable`. The later-retired GELU experiment did not change that
+SDPA helper, but this is still its recorded diagnostic scope, not per-layer ISA
+coverage of the untraced 64.53-second run. Wheel-matched oneDNN revision
+`80afa71049cd69a3df32adcccb623b12cd7baa22`, `src/gpu/intel/sdpa/micro.cpp:169-175`,
+selects the systolic microkernel when the matrix-multiply-accumulate extension
+is available and Q is not F32; it constructs the FP16 KQ and VS GEMM problems
+with F32 accumulation. This identifies the XMX-capable route, **not measured
+DPAS instruction counts or proof that all 160 XMX units are occupied**. The
+runtime-selected flag/ISA and per-unit counters were not retained. Strict FP32
+projection logs establish GPU F32 matmul, not CPU execution or XMX acceleration;
+normalization, elementwise work and softmax are not all matrix-unit work.
+Do not re-enable TF32 merely to increase an XMX utilization label.
+
+Source inspection of `src/roformer/mod.rs`, shared `roformer/frames.rs`,
+`roformer/overlap.rs`, and `native/api.cpp` shows the actual boundary:
+
+- CPU: stereo splitting, Rust STFT, gathered feature packing, finite-mask scan,
+  band-mask accumulation/complex multiplication, Rust iSTFT and ordered track OLA.
+- GPU: learned band projections, normalization, rotary, SDPA, FFN and mask head.
+- Each chunk uploads packed F32 features and downloads the F32 mask; the native
+  CPU output is then copied again into an owned Rust `Vec`. The observed ninety
+  band projections total **4100 features × 1722 frames**, or **28,240,800 bytes**
+  per feature/mask tensor. Across 38 chunks, that is about **2.00 GiB** for these
+  two device-boundary transfers, excluding weights, host copies and other data.
+  Bytes alone do not establish transfer time or a PCIe bottleneck.
+
+GPU frontend work is a plausible next optimization, especially avoiding CPU
+packing/strided mask reconstruction and eventually retaining spectra through
+FFT/masking/iFFT. Merely moving mask multiplication while still transferring
+similarly sized spectra need not reduce PCIe traffic. CPU cache-friendly layout
+and scratch reuse may also help without changing arithmetic. The existing
+native `forward` spectrum branch is **not** a numerically qualified drop-in:
+its division placement differs from the CPU complex-mask expression, and
+mel-band `index_add_` reduction order requires review.
+
+Next measurement: retain the already-exposed native `Output.timings`
+(upload / synchronized compute / readback), currently not reported by the
+RoFormer adapter, and separate host STFT, packing, reconstruction, iSTFT, OLA
+and FFI-copy wall time without extra per-operator synchronization. A CPU stack
+profile can then distinguish useful host work from submission/waiting. Only
+unhidden critical-path time minus the added GPU/transfer cost is recoverable;
+getting 64.52598 s below 60 needs **more than 4.52598 s net saving**. No such
+saving, pure-GPU speedup or precision qualification has yet been measured.
+Evidence: `dispatch-frontend-review.json`; review operations
+`20260911T041717-2c7b8615987f`, `20260911T041948-6739ceccd05d`, and
+`20260911T042300-df63963162b0`. The initial empty inspection did not forward stdin;
+`20260911T041537-f53bfb18c28a` explicitly corrected the command without a GPU retry.
