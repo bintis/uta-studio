@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 root="$PWD/test-artifacts/editor-local-runtime"
-run="$root/audition"
+run="$root/audition-vulkan"
 mkdir -p "$run"
 runtime=$(mktemp -d)
 weston_pid=
@@ -28,13 +28,13 @@ import json,pathlib,sys
 root=pathlib.Path(sys.argv[1])
 steps=[json.loads(line) for line in (root/'editor.ndjson').read_text().splitlines()]
 steps += [{'command':'ui.editor.action.select_all'} for _ in range(24)]
-(root/'audition'/'script.ndjson').write_text(''.join(json.dumps(step)+'\n' for step in steps))
+(root/'audition-vulkan'/'script.ndjson').write_text(''.join(json.dumps(step)+'\n' for step in steps))
 PY
 # Unset build-shell library/plugin discovery. The local ELF must stand alone.
 env -u LD_LIBRARY_PATH -u GST_PLUGIN_SYSTEM_PATH_1_0 -u GST_PLUGIN_SYSTEM_PATH -u GST_PLUGIN_PATH_1_0 -u GST_PLUGIN_PATH -u GST_PLUGIN_SCANNER -u GST_PLUGIN_SCANNER_1_0 \
   GST_REGISTRY="$run/registry.bin" XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY=uta-studio-audition WINIT_UNIX_BACKEND=wayland \
-  VK_DRIVER_FILES=/nix/store/4cvv9wbvhz36a1fhd9px1rvjr8j61ycr-mesa-26.2.1/share/vulkan/icd.d/lvp_icd.x86_64.json \
-  UTA_STUDIO_DATA_PATH="$root/data" UTA_STUDIO_DEBUG_UI_SCRIPT="$run/script.ndjson" UTA_STUDIO_DEBUG_UI_SCRIPT_PACE=90 \
+  WGPU_BACKEND=vulkan VK_DRIVER_FILES=/nix/store/4cvv9wbvhz36a1fhd9px1rvjr8j61ycr-mesa-26.2.1/share/vulkan/icd.d/lvp_icd.x86_64.json \
+  UTA_STUDIO_DEBUG_WINDOW_SIZE=1500x950 UTA_STUDIO_DATA_PATH="$root/data" UTA_STUDIO_DEBUG_UI_SCRIPT="$run/script.ndjson" UTA_STUDIO_DEBUG_UI_SCRIPT_PACE=90 \
   UTA_STUDIO_DEBUG_UI_REPORT="$run/report.ndjson" UTA_STUDIO_DEBUG_SCREENSHOT_PATH="$run/editor.png" \
   timeout 100s "$PWD/target/release/uta-studio" >"$run/stdout.txt" 2>"$run/stderr.txt" &
 app_pid=$!
