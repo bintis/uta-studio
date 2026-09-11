@@ -6,16 +6,26 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, reload, util::Subscrib
 type LogFilterHandle = reload::Handle<EnvFilter, tracing_subscriber::Registry>;
 static LOG_FILTER: OnceLock<LogFilterHandle> = OnceLock::new();
 
+fn normal_log_filter(environment: &str) -> EnvFilter {
+    let defaults = EnvFilter::new(format!(
+        "info,{}",
+        crate::studio::startup::studio_log_filter()
+    ));
+    environment
+        .split(',')
+        .filter(|directive| !directive.is_empty())
+        .try_fold(defaults.clone(), |filter, directive| {
+            directive.parse::<tracing_subscriber::filter::Directive>()
+                .map(|directive| filter.add_directive(directive))
+        })
+        .unwrap_or(defaults)
+}
+
 pub(crate) fn initialize_studio_logging() {
     let filter = if std::env::var("UTA_STUDIO_DEBUG").as_deref() == Ok("1") {
         EnvFilter::new("debug")
     } else {
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-            EnvFilter::new(format!(
-                "info,{}",
-                crate::studio::startup::studio_log_filter()
-            ))
-        })
+        normal_log_filter(&std::env::var("RUST_LOG").unwrap_or_default())
     };
     let (filter, handle) = reload::Layer::new(filter);
     let result = tracing_subscriber::registry()
@@ -171,6 +181,14 @@ mod tests {
             .unwrap();
         assert!(notice.contains("failed: isolated disk error"));
         assert!(!app.world().resource::<DebugLogJob>().capture_active);
+    }
+
+    #[test]
+    fn target_filter_retains_default_desktop_and_icu_directives() {
+        let filter = normal_log_filter("uta_studio=debug").to_string();
+        assert!(filter.split(',').any(|directive| directive == "info"));
+        assert!(filter.contains("icu_provider=error"));
+        assert!(filter.contains("uta_studio=debug"));
     }
 
     #[test]
