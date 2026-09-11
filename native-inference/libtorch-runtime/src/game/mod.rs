@@ -44,7 +44,8 @@ struct SegmenterRun<'model> {
 }
 impl SegmenterRun<'_> {
     fn compute(&mut self, noise: &[i32], time: f32) -> Result<Vec<f32>, String> {
-        self.model.segmenter_logits(self.features, noise, time, self.language)
+        self.model
+            .segmenter_logits(self.features, noise, time, self.language)
     }
 }
 pub struct Game {
@@ -143,10 +144,16 @@ impl Game {
         _frames: usize,
         language: i32,
     ) -> Result<SegmenterRun<'model>, String> {
-        let generation = self.generation.lock()
+        let generation = self
+            .generation
+            .lock()
             .map_err(|_| "GAME resident feature ownership lock was poisoned".to_string())?;
         self.check_features(features, *generation, FeatureKind::Segmenter)?;
-        Ok(SegmenterRun { model: self, features, language })
+        Ok(SegmenterRun {
+            model: self,
+            features,
+            language,
+        })
     }
     pub fn segmenter_logits(
         &self,

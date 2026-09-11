@@ -1384,14 +1384,15 @@ mod tests {
                 .prepare_segmenter(&output.segmenter_embeddings, output.frames, 0)
                 .unwrap();
             for step in 0..3 {
-                let noise = noise_mod.iter().map(|value| {
-                    (value + step) % model.config().region_cycle_length as i32
-                }).collect::<Vec<_>>();
+                let noise = noise_mod
+                    .iter()
+                    .map(|value| (value + step) % model.config().region_cycle_length as i32)
+                    .collect::<Vec<_>>();
                 let time = step as f32 * 0.5;
                 let actual = prepared.compute(&noise, time).unwrap();
-                let expected = model.segmenter_logits(
-                    &output.segmenter_embeddings, &noise, time, 0,
-                ).unwrap();
+                let expected = model
+                    .segmenter_logits(&output.segmenter_embeddings, &noise, time, 0)
+                    .unwrap();
                 assert!(actual.iter().all(|value| value.is_finite()));
                 assert_eq!(actual, expected);
             }

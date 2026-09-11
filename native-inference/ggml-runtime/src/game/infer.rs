@@ -173,11 +173,8 @@ impl Game {
         let mut boundaries = known.clone();
         let mut noise_regions = vec![0_i32; frames];
 
-        let mut segmenter = self.prepare_segmenter(
-            &encoded.segmenter_embeddings,
-            frames,
-            params.language,
-        )?;
+        let mut segmenter =
+            self.prepare_segmenter(&encoded.segmenter_embeddings, frames, params.language)?;
         for step in 0..params.d3pm_steps {
             let time = if params.d3pm_steps == 1 {
                 0.0
