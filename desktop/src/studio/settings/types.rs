@@ -48,6 +48,7 @@ pub(crate) struct SetupRequest {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CacheClearScope {
     Generated,
+    Logs,
 }
 
 #[derive(Resource, Default)]
@@ -74,6 +75,10 @@ pub(crate) struct NativeDiagnostics {
 
 #[derive(Resource, Default)]
 pub(crate) struct CacheStatsJob {
+    pub(crate) log_receiver: Option<Mutex<mpsc::Receiver<Result<app_core::LogStorageStats, String>>>>,
+    pub(crate) log_current: Option<app_core::LogStorageStats>,
+    pub(crate) log_error: Option<String>,
+    pub(crate) log_refresh: bool,
     pub(crate) receiver: Option<Mutex<mpsc::Receiver<app_core::CacheStats>>>,
     pub(crate) current: Option<app_core::CacheStats>,
     pub(crate) error: Option<String>,

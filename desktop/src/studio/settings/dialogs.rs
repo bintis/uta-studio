@@ -459,6 +459,10 @@ pub(crate) fn spawn_global_cache_confirmation(
     scope: CacheClearScope,
 ) {
     let (title, description) = match scope {
+        CacheClearScope::Logs => (
+            "Clear all logs?",
+            "Application logs, analysis logs and DEBUG captures will be cleared. Songs, charts, models and settings stay untouched. Active logging can immediately create new data.",
+        ),
         CacheClearScope::Generated => (
             "Clear generated cache?",
             "Generated stems, charts, previews, and authoring variants will be removed. Indexed source songs and installed models remain untouched.",

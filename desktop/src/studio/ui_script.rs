@@ -517,7 +517,7 @@ fn parse_app(name: &str) -> Result<AppCommand, String> {
         "close_about" => AppCommand::CloseAbout,
         "toggle_fullscreen" => AppCommand::ToggleFullscreen,
         "open_log" => AppCommand::OpenLog,
-        "start_debug_logging" => AppCommand::StartDebugLogging,
+        "toggle_debug_logging" => AppCommand::ToggleDebugLogging,
         "run_diagnostics" => AppCommand::RunDiagnostics,
         "cancel_leave" => AppCommand::CancelLeave,
         "confirm_leave" => AppCommand::ConfirmLeave,
@@ -622,7 +622,11 @@ fn parse_settings(name: &str, arguments: &serde_json::Value) -> Result<SettingsC
         "adjust_ui_font_scale" => SettingsCommand::AdjustUiFontScale(integer(arguments, "delta")?),
         "toggle_auto_analyze" => SettingsCommand::ToggleAutoAnalyze,
         "restore_analysis_defaults" => SettingsCommand::RestoreAnalysisDefaults,
-        "request_clear_cache" => SettingsCommand::RequestClearCache(CacheClearScope::Generated),
+        "request_clear_cache" => SettingsCommand::RequestClearCache(match arguments.get("scope").and_then(serde_json::Value::as_str) {
+            Some("logs") => CacheClearScope::Logs,
+            Some("generated") | None => CacheClearScope::Generated,
+            Some(scope) => return Err(format!("Unknown cache cleanup scope: {scope}")),
+        }),
         "cancel_clear_cache" => SettingsCommand::CancelClearCache,
         "confirm_clear_cache" => SettingsCommand::ConfirmClearCache,
         "select_fusion_provider" => {
@@ -902,6 +906,17 @@ mod tests {
 
     fn parse(command: &str, arguments: serde_json::Value) -> UiCommand {
         parse_ui_command(command, &arguments).unwrap_or_else(|error| panic!("{command}: {error}"))
+    }
+
+    #[test]
+    fn log_cleanup_requires_its_explicit_scope_and_confirmation_command() {
+        assert_eq!(parse("ui.settings.request_clear_cache", serde_json::json!({"scope": "logs"})),
+            UiCommand::Settings(SettingsCommand::RequestClearCache(CacheClearScope::Logs)));
+        assert_eq!(parse("ui.settings.cancel_clear_cache", serde_json::json!({})),
+            UiCommand::Settings(SettingsCommand::CancelClearCache));
+        assert!(parse_ui_command("ui.settings.request_clear_cache", &serde_json::json!({"scope": "typo"})).is_err());
+        let request = UiAction::from(SettingsCommand::ConfirmClearCache).api_request();
+        assert_eq!(request.access, "destructive");
     }
 
     #[test]
