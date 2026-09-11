@@ -46,6 +46,7 @@ use crate::workflow::{FusionMode, WorkflowExecution};
 use crate::workflow_executor::{CompiledWorkflowExecutionPlan, WorkflowNodeExecutionState};
 
 mod acceleration;
+mod conditioned_models;
 mod export;
 mod light_models;
 mod output_guard;
@@ -1054,129 +1055,67 @@ impl AnalysisEngine {
             emit_degraded(reason.clone());
             degraded_reasons.push(reason);
         }
-        if (run_stars_notes || run_stars_technique)
+        let run_stars = (run_stars_notes || run_stars_technique)
             && !timed_transcript.is_empty()
-            && stars_g2p_language_applicable(request.lyrics.language.as_deref())
-        {
-            let capability = if run_stars_notes {
-                "notes.stars"
-            } else {
-                "technique.analyze"
-            };
-            let (input, _) = workflow_bound_audio(
-                plan.workflow_execution.as_ref(),
-                capability,
-                &workflow_audio,
-                &analysis_input,
-                analysis_role,
-            )?;
-            if run_stars_notes && run_stars_technique {
-                let (technique_input, _) = workflow_bound_audio(
-                    plan.workflow_execution.as_ref(),
-                    "technique.analyze",
-                    &workflow_audio,
-                    &analysis_input,
-                    analysis_role,
-                )?;
-                if technique_input != input {
-                    return Err(EngineError::new(
-                        EngineErrorCode::InvalidContract,
-                        "shared STARS note and technique execution requires one vocal input",
-                    ));
-                }
-            }
-            let model = resolved_model(&resolved, "stars")?;
-            let rmvpe_model = resolved_model(&resolved, "rmvpe")?;
-            let pitch_path = shared_rmvpe_evidence_path.ok_or_else(|| {
-                EngineError::new(
-                    EngineErrorCode::MissingRequiredInput,
-                    "STARS requires the shared RMVPE evidence artifact",
-                )
-            })?;
-            let directory = create_task_dir(&output_root, "worker/stars")?;
-            let (component, mut config) =
-                model_dispatch(model, request, "note+technique_evidence")?;
-            config["timed_transcript"] = serde_json::Value::Array(timed_transcript.clone());
-            config["source_start_micros"] = serde_json::json!(source_start);
-            config["include_notes"] = serde_json::json!(run_stars_notes);
-            config["include_technique"] = serde_json::json!(run_stars_technique);
-            config["model_content_digest"] = serde_json::json!(model.model_content_digest);
-            config["model_generation"] = serde_json::json!(model.generation);
-            config["rmvpe_model_content_digest"] =
-                serde_json::json!(rmvpe_model.model_content_digest);
-            config["rmvpe_generation"] = serde_json::json!(rmvpe_model.generation);
-            config["transcript_generation"] = serde_json::json!(transcript_generation);
-            let outputs = run_native_task_with_inputs(
-                model,
-                component,
-                &format!("{}-stars", request.request_id),
-                "stars",
-                &[input, pitch_path.to_path_buf()],
-                &directory,
-                config,
-                cancellation,
-            )?;
-            let evidence = parse_advanced_note_evidence(
-                typed_worker_output(&outputs, "stars_evidence")?,
-                "stars",
-            )?;
-            if run_stars_technique {
-                technique_evidence.push(
-                    evidence
-                        .technique_artifact(source_start, source_duration)?
-                        .ok_or_else(|| {
-                            EngineError::new(
-                                EngineErrorCode::OutputValidationFailed,
-                                "STARS omitted requested technique evidence",
-                            )
-                        })?,
-                );
-            }
-            if run_stars_notes {
+            && stars_g2p_language_applicable(request.lyrics.language.as_deref());
+        let run_conditioned_rosvot = run_rosvot && !timed_transcript.is_empty();
+        let conditioned_context = if run_stars || run_conditioned_rosvot {
+            Some(conditioned_models::ConditionedModelContext {
+                request: request.clone(),
+                plan: plan.clone(),
+                resolved: resolved.clone(),
+                workflow_audio: workflow_audio.clone(),
+                analysis_input: analysis_input.clone(),
+                analysis_role: analysis_role.to_string(),
+                output_root: output_root.clone(),
+                source_start,
+                source_duration,
+                timed_transcript,
+                transcript_generation,
+                shared_rmvpe_evidence_path: shared_rmvpe_evidence_path
+                    .ok_or_else(|| {
+                        EngineError::new(
+                            EngineErrorCode::MissingRequiredInput,
+                            "conditioned note experts require the shared RMVPE evidence artifact",
+                        )
+                    })?
+                    .to_path_buf(),
+                cancellation: cancellation.clone(),
+            })
+        } else {
+            None
+        };
+        let stars_task = if run_stars {
+            let context = conditioned_context
+                .as_ref()
+                .expect("enabled conditioned execution has context")
+                .clone();
+            Some(owner.start(request.execution_policy.turbo_acceleration, move || {
+                conditioned_models::run_stars(context, run_stars_notes, run_stars_technique)
+            })?)
+        } else {
+            None
+        };
+        let rosvot_task = if run_conditioned_rosvot {
+            let context = conditioned_context
+                .expect("enabled conditioned execution has context");
+            Some(owner.start(request.execution_policy.turbo_acceleration, move || {
+                conditioned_models::run_rosvot(context)
+            })?)
+        } else {
+            None
+        };
+        if let Some(task) = stars_task {
+            let output = task.join()?;
+            if let Some(evidence) = output.advanced_note_evidence {
                 advanced_note_evidence.push(evidence);
             }
+            if let Some(evidence) = output.technique_evidence {
+                technique_evidence.push(evidence);
+            }
         }
-        if run_rosvot && !timed_transcript.is_empty() {
-            let (input, _) = workflow_bound_audio(
-                plan.workflow_execution.as_ref(),
-                "notes.rosvot",
-                &workflow_audio,
-                &analysis_input,
-                analysis_role,
-            )?;
-            let model = resolved_model(&resolved, "rosvot")?;
-            let rmvpe_model = resolved_model(&resolved, "rmvpe")?;
-            let pitch_path = shared_rmvpe_evidence_path.ok_or_else(|| {
-                EngineError::new(
-                    EngineErrorCode::MissingRequiredInput,
-                    "ROSVOT requires the shared RMVPE evidence artifact",
-                )
-            })?;
-            let directory = create_task_dir(&output_root, "worker/rosvot")?;
-            let (component, mut config) =
-                model_dispatch(model, request, "note_candidate_evidence")?;
-            config["timed_transcript"] = serde_json::Value::Array(timed_transcript);
-            config["source_start_micros"] = serde_json::json!(source_start);
-            config["model_content_digest"] = serde_json::json!(model.model_content_digest);
-            config["model_generation"] = serde_json::json!(model.generation);
-            config["rmvpe_model_content_digest"] =
-                serde_json::json!(rmvpe_model.model_content_digest);
-            config["rmvpe_generation"] = serde_json::json!(rmvpe_model.generation);
-            config["transcript_generation"] = serde_json::json!(transcript_generation);
-            let outputs = run_native_task_with_inputs(
-                model,
-                component,
-                &format!("{}-rosvot", request.request_id),
-                "notes.rosvot",
-                &[input, pitch_path.to_path_buf()],
-                &directory,
-                config,
-                cancellation,
-            )?;
-            advanced_note_evidence.push(parse_advanced_note_evidence(
-                typed_worker_output(&outputs, "rosvot_evidence")?,
-                "rosvot",
-            )?);
+        if let Some(task) = rosvot_task {
+            advanced_note_evidence.push(task.join()?);
         }
         if cancellation.is_cancelled() {
             return Err(cancelled(request));
