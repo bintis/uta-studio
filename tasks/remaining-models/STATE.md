@@ -597,10 +597,29 @@ RoFormer is routed; query errors propagate, with no retry, fallback, concurrent
 execution or changed arithmetic/cancellation checks. The bounded candidate uses
 0.045115 CPU seconds in 1.93321 s forward wall; full-output SNR is 143.13503 dB
 against the matched packed frontend, max 2.384185791e-7 over 1,058,400 finite
-samples. Full-song CPU/waveform comparison remains pending. This is not a new
-sub-60-second, listening, family-wide or host-stability qualification. See the
-CPU optimization section of `docs/ROFORMER_B580_LIBTORCH_XPU.md`, including the
-CPU-build outer-timeout provenance and `event-bounded-comparison.json`.
+samples. The full-song pair now measures **75.73 → 11.51 process CPU seconds
+(84.80% less)**, or **98.34% → 14.25% of one logical CPU** over sampled process
+wall time. Inference is **74.58065 → 77.56927 s**, about 4% worse in this pair;
+compiler/render contention prevents clean attribution, **not proof of a speedup
+or proof that contention explains all regression**. The low-CPU path is retained,
+but its uncontended latency still needs qualification. No current-path 64.53 s
+or under-60 claim is made. Full waveform SNR is **137.84049 dB**, max
+**1.102685928e-6** over all 31,300,416 finite samples. Both exit 0, with zero
+process sample read errors and no sampled other CCS clients. Raw render-counter
+aggregates exceeding 100% are not occupancy evidence.
+
+Three more numerical-only active-family checks pass (XE90 instrumental,
+denoise, dereverb: SNR 139.99986 / 144.56970 / 144.03378 dB against retained active
+controls; 1,058,400 finite values each). Their observer errors are 1/1/0. Boots
+are unchanged, not proof of GPU-reset absence or post-exit stability. Harmony
+and PolarFormer failures were not retried. Final format-only commit `a0a3fe6`
+and 59 LibTorch + four GGML frame + four stage-profile tests pass. No installation,
+new GPU execution queue, listening or family-wide qualification. Next work must
+separate wait-marker latency from contention and optimize the GPU critical path;
+pure-GPU frontend speedup is still unmeasured. See `event-full-comparison.json`,
+`event-family-comparison.json`, and the CPU optimization section of
+`docs/ROFORMER_B580_LIBTORCH_XPU.md`, including native-build/CPU-check outer-timeout
+provenance.
 
 Kernel journal review is unavailable due to permissions
 (`20260910T205622-b1bff200266f`); do not claim absence of GPU reset from boot IDs.

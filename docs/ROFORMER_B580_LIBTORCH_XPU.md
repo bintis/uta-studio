@@ -656,12 +656,64 @@ bounded real XE90 candidate's second chunk consumes **0.045115 CPU seconds in
 First-use compilation still costs CPU; this is not zero-CPU inference.
 `event-bounded-comparison.json` compares all **1,058,400 finite samples** against
 the same packed-frontend submission control: max **2.384185791e-7**, SNR
-**143.13503 dB**; not bitwise or listening qualification. Full-song CPU/waveform
-comparison is pending; the historical selected 64.52598 s result remains the
-best qualified throughput evidence, not a new event-wait speed measurement.
+**143.13503 dB**; not bitwise or listening qualification.
+
+The complete 354.88-second / 38-chunk CPU/waveform pair is now retained:
+
+| Measurement | Original completion (`wait-control-full`) | Event completion (`event-full`) |
+| --- | ---: | ---: |
+| Inference wall | 74.580649213 s | 77.569273675 s |
+| Observed process wall | 77.062770447 s | 80.925149934 s |
+| Sampled process CPU seconds | 75.73 s | 11.51 s |
+| Process CPU, one logical CPU convention | 98.34% | 14.25% |
+| Native mask forward + completion CPU, all chunks | 67.310031 s | 3.977740 s |
+| Mean whole-host CPU busy | 19.93% | 19.08% |
+| Compiler observations | 77 | 152 |
+
+**Process CPU consumption falls 84.80%**, not whole-machine utilization by that
+amount. Accounting includes sampled process startup and frontend. Wall time is
+**about 4% worse in this pair**, not a demonstrated throughput improvement.
+Compiler activity and differing/anomalous render-counter observations prevent
+clean attribution; uncontended event-marker/wait latency remains unresolved.
+Do not explain the entire difference away as contention. The candidate is
+retained for measured CPU reduction, with latency qualification open. Historical
+64.52598 s evidence does not measure the new wait path; sub-60 remains unmet.
+
+All **31,300,416 samples** are finite and compared: max **1.102685928e-6**, RMSE
+**2.360635225e-8**, SNR **137.84049 dB**. No arithmetic/precision change was
+introduced, but outputs are not bit-identical. Both runs exit 0, with zero
+process sample read errors, no sampled other CCS clients, identical peak VRAM
+**3,800,524 KiB**, and unchanged boots. No reset-absence or post-exit stability
+claim. Aggregated render-counter ratios exceed 100% in candidate observations;
+these are not hardware occupancy. Evidence: `event-full-comparison.json`,
+operations `20260911T055454-716b6d3584a3` / `20260911T055701-35a4dedfcf29`.
+The initial missing host fields were corrected using record-level
+`interval_summary` (`20260911T060206-b62a0c91b039`), not by rerunning inference.
+
+Three additional **numerical-only** 12-second checks compare against each
+model's retained `*-normalized-active` waveform (1,058,400 finite values each):
+
+| Model | Max difference | SNR |
+| --- | ---: | ---: |
+| XE90 instrumental | 2.235174179e-8 | 139.99986 dB |
+| Mel-band denoise | 2.384185791e-7 | 144.56970 dB |
+| Mel-band dereverb | 1.788139343e-7 | 144.03378 dB |
+
+All exit 0; process observer read errors are 1/1/0, with unchanged boots.
+See `event-family-comparison.json`. Original Harmony nonfinite masks and
+PolarFormer OOM were **not retried**; family-wide and listening qualification
+remain open. Final Rust formatting (`a0a3fe6`) changes no arithmetic;
+**59 LibTorch + four GGML frame + four shared stage-profile tests** pass
+(`20260911T060708-1e4840685a25`). The separately executed CPU ABBA diagnostic
+remains ignored in ordinary suites. The initial format check exposed unformatted
+task code and used the wrong edition; the correction uses edition 2024.
+Current native routing is `0b76748` / private `event-build`; nothing installed
+and no further GPU execution queued. Next work must qualify uncontended wait
+latency and target the GPU-dominated critical path, not assume all process CPU
+time is recoverable by moving DSP onto the GPU.
 
 Operation `20260911T053717-1f58fd1f332b` exceeded the outer tool deadline while
-Nix restored missing pinned cache paths. Its already-started CPU build continued;
+Nix restored missing pinned cache paths. Its already-started native build/CPU check continued;
 no retry or termination was issued. The outer result/exit code remains unknown.
 `20260911T054059-028781ff4109` observed the child absent and retained CPU primitive
 success text; this does not recreate the missing result. Fresh model build/CPU
