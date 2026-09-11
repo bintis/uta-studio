@@ -80,6 +80,7 @@ pub fn run() {
             DefaultPlugins
                 // A reloadable subscriber is initialized before state loading so
                 // Settings can enable detailed capture without restarting.
+                .build()
                 .disable::<LogPlugin>()
                 .set(AssetPlugin {
                     // During the transition, use the canonical repository logo
