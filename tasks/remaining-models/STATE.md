@@ -666,7 +666,7 @@ Source media, installed assets and unrelated user changes remain untouched;
 no CPU/GGML inference fallback, Vulkan stress, workspace release checks or Nix
 packaging were performed. See [execution design](../../docs/design/runtime/LIBTORCH_EXECUTION.md).
 
-## All-resource LibTorch AMD ROCm 10 — BOUNDED SWEEP RESUMED (2026-09-11)
+## All-resource LibTorch AMD ROCm 10 — HALTED AFTER SECOND DISPLAY RESET (2026-09-11)
 
 **Zero of eighteen resources qualified; the full-song phase was not started.** The isolated Nix
 shell and official **ROCm 10.0.0 + PyTorch 2.13.0** packages, including the Radeon 780M `gfx1103`
@@ -712,10 +712,24 @@ the timing is not a clean performance measurement and reset recovery is not esta
 `single-chunk/flac-verification.json`, and `single-chunk/observation-summary.json`.
 
 The user subsequently authorized resuming the original twelve-second sweep; receipt:
-`20260911T110231-4ad310e0db43`. Execute all eighteen resources serially, beginning with the corrected
-Leap path. Record and inspect each model independently, without automatic retry or CPU/GGML fallback.
-The prior reset and abnormal busy evidence remain material limitations. Full-song ROCm execution
-remains unauthorized unless and until all eighteen bounded resources pass. See
+`20260911T110231-4ad310e0db43`. Three resources passed with explicit `libtorch_rocm` and no fallback:
+Leap vocals completed two chunks in 64.153 seconds at 1,823,576 KiB sampled peak GTT; the independent
+Leap instrumental checkpoint completed two in 64.035 seconds at the same sampled peak; PolarFormer
+completed in 45.717 seconds at 1,489,372 KiB. Their complete twelve-second output stems are finite and
+the residual reconstructions remain at float epsilon.
+
+The fourth resource, Denoise over the actual Leap guide-vocal output, completed five of six chunks
+then received `SIGBUS` after 34.978 seconds. It published no result. Peak sampled GTT was only
+1,807,832 KiB, so the former approximately 4 GiB allocation peak is not this failure's explanation.
+The operator again observed the AMD-connected screen go black briefly, and the final passive host
+sample records `kworker/u64:3+amdgpu-reset-dev`; AMD busy remained 76–99% throughout. Evidence:
+`bounded-resumed/observations/denoise/` and
+`bounded-resumed/diagnostics/denoise-failure-summary.json`.
+
+The resumed sweep is therefore **three passed, one failed, fourteen not run**. Denoise was not
+retried, no subsequent model was launched, and full-song execution was not started. Do not resume
+AMD ROCm model or stress execution without another explicit human decision after this second display
+reset. CPU/GGML fallback remains prohibited. See
 [LibTorch execution](../../docs/design/runtime/LIBTORCH_EXECUTION.md).
 
 ## Next actions
