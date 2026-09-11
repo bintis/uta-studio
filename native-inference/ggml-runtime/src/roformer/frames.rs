@@ -39,6 +39,27 @@ pub(super) fn prepare_model_input(
     Ok(output)
 }
 
+fn accumulate_channel_mask(
+    mask: &[f32], frequency_indices: &[usize], stem: usize,
+    stride_time: usize, channel: usize, spectrum: &mut Spectrogram,
+) {
+    let feature_count = frequency_indices.len() * 2;
+    const FRAME_STRIP: usize = 32;
+    for begin in (0..spectrum.n_frames).step_by(FRAME_STRIP) {
+        let end = (begin + FRAME_STRIP).min(spectrum.n_frames);
+        // Different frames are independent. Within each frame/frequency the
+        // original band order is retained, including overlapping mel bands.
+        for (position, stereo_frequency) in frequency_indices.iter().copied().enumerate() {
+            if stereo_frequency % 2 != channel { continue; }
+            let frequency = stereo_frequency / 2;
+            for frame in begin..end {
+                let source = frame * stride_time + stem * feature_count + position * 2;
+                spectrum.add(frequency, frame, mask[source], mask[source + 1]);
+            }
+        }
+    }
+}
+
 pub(super) fn reconstruct_stems(
     mask: &[f32],
     spectra: &[Spectrogram; 2],
@@ -69,19 +90,9 @@ pub(super) fn reconstruct_stems(
             },
         ];
         for channel in 0..2 {
-            for (frequency_position, stereo_frequency) in
-                config.frequency_indices.iter().copied().enumerate()
-            {
-                if stereo_frequency % 2 != channel {
-                    continue;
-                }
-                let raw_frequency = stereo_frequency / 2;
-                for frame in 0..frame_count {
-                    let source =
-                        frame * stride_time + stem * feature_count + frequency_position * 2;
-                    channels[channel].add(raw_frequency, frame, mask[source], mask[source + 1]);
-                }
-            }
+            accumulate_channel_mask(
+                mask, &config.frequency_indices, stem, stride_time, channel, &mut channels[channel],
+            );
             for frequency in 0..frequency_count {
                 let denominator = config.bands_per_frequency[frequency].max(1) as f32;
                 for frame in 0..frame_count {
@@ -202,6 +213,39 @@ mod tests {
             data: vec![0.0; 3 * 33 * 2], n_freq: 3, n_frames: 33,
         });
         assert!(prepare_model_input(&spectra, 33, 2, &[6]).unwrap_err().contains("frequency index"));
+    }
+
+    #[test]
+    fn tiled_mask_accumulation_preserves_order_and_storage_bits() {
+        let indices = [5, 0, 2, 5, 0, 1, 4, 0];
+        let width = indices.len() * 2;
+        let stems = 2;
+        for frames in [1, 31, 32, 33, 257, 1722] {
+            let values = [1.0e8_f32, 1.0, -1.0e8, -0.0, 1.0e-30, -1.0e-30, 0.25];
+            let mask = (0..frames * width * stems).map(|index| values[index % values.len()]).collect::<Vec<_>>();
+            let original = mask.iter().map(|value| value.to_bits()).collect::<Vec<_>>();
+            for stem in 0..stems {
+                for channel in 0..2 {
+                    let mut actual = Spectrogram { data: vec![0.0; 3 * frames * 2], n_freq: 3, n_frames: frames };
+                    let mut expected = vec![0.0_f32; actual.data.len()];
+                    // Scalar oracle visits a complete frame at a time; every
+                    // frequency keeps its original (non-associative) band sum.
+                    for frame in 0..frames {
+                        for (position, frequency) in indices.iter().copied().enumerate() {
+                            if frequency % 2 != channel { continue; }
+                            let source = frame * width * stems + stem * width + position * 2;
+                            let destination = (frequency / 2 * frames + frame) * 2;
+                            expected[destination] += mask[source];
+                            expected[destination + 1] += mask[source + 1];
+                        }
+                    }
+                    accumulate_channel_mask(&mask, &indices, stem, width * stems, channel, &mut actual);
+                    assert_eq!(actual.data.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
+                        expected.iter().map(|value| value.to_bits()).collect::<Vec<_>>());
+                }
+            }
+            assert_eq!(mask.iter().map(|value| value.to_bits()).collect::<Vec<_>>(), original);
+        }
     }
 
     #[test]
