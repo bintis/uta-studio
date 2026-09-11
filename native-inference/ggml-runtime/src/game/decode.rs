@@ -128,9 +128,9 @@ pub fn decode_gaussian_blurred_probs(
         let end = (argmax + width + 1).min(bins);
         let mut weight_sum = 0.0_f32;
         let mut value_sum = 0.0_f32;
-        for index in start..end {
-            weight_sum += row[index];
-            value_sum += row[index] * (minimum + step * index as f32);
+        for (index, &weight) in row[..end].iter().enumerate().skip(start) {
+            weight_sum += weight;
+            value_sum += weight * (minimum + step * index as f32);
         }
         values.push(value_sum / (weight_sum + 1.0e-8));
         presence.push(u8::from(row[argmax] >= threshold));

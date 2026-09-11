@@ -1,6 +1,9 @@
 //! Independent native ATen model execution. Loading this Rust crate does not
 //! link, locate, download or initialize a native runtime. The caller supplies
 //! one explicit library, backend, device and precision for each model session.
+// Shared with the GGML runtime; the resident-reuse counters it records are
+// only consumed by that crate's graph paths.
+#[allow(dead_code)]
 #[path = "../../ggml-runtime/src/acceleration.rs"]
 pub mod acceleration;
 mod ffi;

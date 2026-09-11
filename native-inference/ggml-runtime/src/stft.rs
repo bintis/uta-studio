@@ -57,9 +57,9 @@ fn hann_window(window_length: usize, fft_size: usize) -> Vec<f32> {
 fn reflect_pad(audio: &[f32], amount: usize) -> Vec<f32> {
     let length = audio.len();
     let mut padded = vec![0.0_f32; amount * 2 + length];
-    for index in 0..amount {
+    for (index, slot) in padded[..amount].iter_mut().enumerate() {
         let source = (amount - index).min(length.saturating_sub(1));
-        padded[index] = audio[source];
+        *slot = audio[source];
     }
     padded[amount..amount + length].copy_from_slice(audio);
     for index in 0..amount {
@@ -153,9 +153,9 @@ pub(crate) fn compute_istft(
     } = &mut *storage;
     let scale = 1.0 / fft_size as f32;
     for frame in 0..frame_count {
-        for frequency in 0..frequency_count {
+        for (frequency, slot) in buffer[..frequency_count].iter_mut().enumerate() {
             let (real, imaginary) = spectrogram.get(frequency, frame);
-            buffer[frequency] = Complex32::new(real, imaginary);
+            *slot = Complex32::new(real, imaginary);
         }
         for frequency in frequency_count..fft_size {
             let mirror = buffer[fft_size - frequency];

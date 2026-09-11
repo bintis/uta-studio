@@ -193,7 +193,7 @@ mod tests {
             1.5,
             -1.25,
             0.12345679,
-            -0.23456789,
+            -0.234_567_9,
             1.0e-7,
             -1.0e-7,
         ]
@@ -227,8 +227,8 @@ mod tests {
         );
         assert_eq!(decoded.stdout.len(), samples.len() * 8);
         let gain = publication["pcm_encode_gain"].as_f64().unwrap();
-        for (bytes, sample) in decoded.stdout.chunks_exact(8).zip(samples) {
-            let actual = f64::from_le_bytes(bytes.try_into().unwrap());
+        for (bytes, sample) in decoded.stdout.as_chunks::<8>().0.iter().zip(samples) {
+            let actual = f64::from_le_bytes(*bytes);
             assert!(actual.is_finite() && actual.abs() < 1.0);
             assert!((actual - f64::from(sample) * gain).abs() <= 2.0_f64.powi(-30));
         }

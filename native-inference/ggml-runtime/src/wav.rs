@@ -33,7 +33,7 @@ pub(crate) fn write_f32_wav(
     channels: u16,
     samples: &[f32],
 ) -> Result<(), String> {
-    if path.exists() || samples.is_empty() || samples.len() % channels as usize != 0 {
+    if path.exists() || samples.is_empty() || !samples.len().is_multiple_of(channels as usize) {
         return Err("inference WAV output path or sample count is invalid".to_string());
     }
     let spec = hound::WavSpec {

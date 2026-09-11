@@ -235,7 +235,7 @@ impl AnalysisEngine {
             return Err(cancelled(request));
         }
         self.validate_inputs_with_cancellation(request, cancellation)?;
-        let mut run_guard = OutputRunGuard::new(output_dir.as_ref())?;
+        let mut run_guard = OutputRunGuard::new(output_dir)?;
         let output_root = run_guard.root().to_path_buf();
         let plan = self.plan(request)?;
         Planner::ensure_required_capabilities(&plan)?;

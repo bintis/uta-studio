@@ -177,6 +177,15 @@ pub fn probe_vulkan() -> Result<VulkanProbe, String> {
     result
 }
 
+fn format_api_version(version: u32) -> String {
+    format!(
+        "{}.{}.{}",
+        vk::api_version_major(version),
+        vk::api_version_minor(version),
+        vk::api_version_patch(version)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,13 +221,4 @@ mod tests {
             Some(0)
         );
     }
-}
-
-fn format_api_version(version: u32) -> String {
-    format!(
-        "{}.{}.{}",
-        vk::api_version_major(version),
-        vk::api_version_minor(version),
-        vk::api_version_patch(version)
-    )
 }

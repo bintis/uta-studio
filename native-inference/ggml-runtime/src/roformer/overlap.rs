@@ -15,7 +15,7 @@ struct Chunks {
 
 impl Chunks {
     fn new(input: &[f32], size: usize, overlap: usize) -> Result<Self, String> {
-        if input.is_empty() || input.len() % 2 != 0 || overlap == 0 {
+        if input.is_empty() || !input.len().is_multiple_of(2) || overlap == 0 {
             return Err("RoFormer overlap-add input is invalid".to_string());
         }
         let step = size / overlap;
@@ -94,15 +94,15 @@ impl Accumulator {
         } else if offset + chunks.step >= chunks.padded.len() / 2 {
             window[chunks.size - chunks.fade..].fill(1.0);
         }
-        for frame in 0..length {
+        for (frame, &weight) in window[..length].iter().enumerate() {
             let destination = (offset + frame) * 2;
             let source = frame * 2;
             for (stem, chunk) in self.outputs.iter_mut().zip(&output) {
-                stem[destination] += chunk[source] * window[frame];
-                stem[destination + 1] += chunk[source + 1] * window[frame];
+                stem[destination] += chunk[source] * weight;
+                stem[destination + 1] += chunk[source + 1] * weight;
             }
-            self.counter[destination] += window[frame];
-            self.counter[destination + 1] += window[frame];
+            self.counter[destination] += weight;
+            self.counter[destination + 1] += weight;
         }
         Ok(())
     }

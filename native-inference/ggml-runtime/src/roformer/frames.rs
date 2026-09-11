@@ -133,9 +133,12 @@ pub(super) fn reconstruct_stems(
         profile.record("istft", mark);
         let mark = profile.mark();
         let mut interleaved = Vec::with_capacity(output_frames * 2);
-        for frame in 0..output_frames {
-            interleaved.push(reconstructed[0][frame]);
-            interleaved.push(reconstructed[1][frame]);
+        for (left, right) in reconstructed[0][..output_frames]
+            .iter()
+            .zip(&reconstructed[1][..output_frames])
+        {
+            interleaved.push(*left);
+            interleaved.push(*right);
         }
         outputs.push(interleaved);
         profile.record("interleave", mark);

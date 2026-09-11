@@ -161,6 +161,7 @@ impl Stars {
             .clone()
             .ok_or_else(|| "STARS utterance computation did not complete".to_string())
     }
+    #[allow(clippy::too_many_arguments)]
     pub fn encode_rhythm(
         &self,
         mel: &FrameFeatures,
@@ -197,6 +198,7 @@ impl Stars {
             frames,
         })
     }
+    #[allow(clippy::too_many_arguments)]
     pub fn encode_pitch(
         &self,
         mel: &FrameFeatures,

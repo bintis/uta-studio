@@ -126,7 +126,7 @@ impl Roformer {
         interleaved: &[f32],
         profile: &mut StageProfile,
     ) -> Result<Vec<Vec<f32>>, String> {
-        if interleaved.is_empty() || interleaved.len() % 2 != 0 {
+        if interleaved.is_empty() || !interleaved.len().is_multiple_of(2) {
             return Err("RoFormer chunk must contain stereo frames".to_string());
         }
         let mark = profile.mark();

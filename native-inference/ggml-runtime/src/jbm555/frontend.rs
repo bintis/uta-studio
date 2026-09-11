@@ -51,8 +51,7 @@ impl Frontend {
     }
 
     fn append_signal(&self, audio: &[f32], frames: usize, output: &mut [f32], base_channel: usize) {
-        for scale in 0..FFT_SIZES.len() {
-            let fft_size = FFT_SIZES[scale];
+        for (scale, &fft_size) in FFT_SIZES.iter().enumerate() {
             let mut buffer = vec![Complex32::default(); fft_size];
             let mut scratch = vec![Complex32::default(); self.fft[scale].get_inplace_scratch_len()];
             for frame in 0..frames {

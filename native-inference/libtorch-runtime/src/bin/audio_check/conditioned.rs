@@ -80,19 +80,6 @@ fn conditioning(request: &Request) -> Result<(Vec<f32>, Vec<Word>, usize), Strin
     }
     Ok((raw_pitch, words, unresolved))
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn real_pitch_conditioning_keeps_uv_instead_of_voicing_every_raw_estimate() {
-        let frames = vec![
-            json!({"time":0.0,"hz":440.,"voiced":true}),
-            json!({"time":0.01,"hz":220.,"voiced":false}),
-        ];
-        assert_eq!(rmvpe_curve(&frames).unwrap(), [440., 0.]);
-        assert!(rmvpe_curve(&[json!({"time":1.0,"hz":220.,"voiced":true})]).is_err());
-    }
-}
 fn note(start: usize, end: usize, logits: &[f32], midi: Option<u8>) -> Result<Value, String> {
     audio::finite(logits.iter().map(|value| f64::from(*value)))?;
     Ok(json!({"start_frame":start,"end_frame":end,"pitch_logits":logits,"midi":midi}))
@@ -199,4 +186,17 @@ pub fn stars(model: Model, wav: &Path, request: &Request) -> Result<Value, Strin
         "conditioning":{"rmvpe":request.pitch,"alignment":request.alignment,"resolved_words":words.len(),
             "unresolved_words_not_used":unresolved,"g2p":g2p::PROFILE}}),
     )
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn real_pitch_conditioning_keeps_uv_instead_of_voicing_every_raw_estimate() {
+        let frames = vec![
+            json!({"time":0.0,"hz":440.,"voiced":true}),
+            json!({"time":0.01,"hz":220.,"voiced":false}),
+        ];
+        assert_eq!(rmvpe_curve(&frames).unwrap(), [440., 0.]);
+        assert!(rmvpe_curve(&[json!({"time":1.0,"hz":220.,"voiced":true})]).is_err());
+    }
 }

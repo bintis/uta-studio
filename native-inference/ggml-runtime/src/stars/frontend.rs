@@ -134,7 +134,7 @@ pub fn rosvot_mel_prefix(mel: &[f32], frames: usize) -> Result<Vec<f32>, String>
         return Err("shared mel shape is invalid".to_string());
     }
     let mut result = Vec::with_capacity(frames * ROSVOT_MEL_BINS);
-    for row in mel.chunks_exact(MEL_BINS) {
+    for row in mel.as_chunks::<MEL_BINS>().0 {
         result.extend_from_slice(&row[..ROSVOT_MEL_BINS]);
     }
     Ok(result)
