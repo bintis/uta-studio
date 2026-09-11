@@ -691,10 +691,7 @@ fn artifact_reconciliation_needed(
         || audio_source.starts_with("artifact:")
 }
 
-fn failed_audio_status(
-    status: &mut uta_studio_audio::EditorAudioStatus,
-    error: String,
-) {
+fn failed_audio_status(status: &mut uta_studio_audio::EditorAudioStatus, error: String) {
     // Preserve the last confirmed position; errors cannot advance the clock.
     status.playing = false;
     status.error = Some(error);
