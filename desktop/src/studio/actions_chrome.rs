@@ -889,6 +889,14 @@ pub(crate) fn apply_chrome_action(
                 studio.analysis.analysis_graph_fit_active = true;
                 studio.shell.notice = None;
                 invalidated.invalidate(action.0.dirty_region());
+            } else if studio.shell.route == StudioRoute::Settings
+                && studio.dialogs.settings_returns_to_workflow
+            {
+                studio.dialogs.settings_returns_to_workflow = false;
+                // Resume the same draft, selection and viewport; do not reload it.
+                studio.shell.route = StudioRoute::ProcessingStudio;
+                studio.shell.notice = None;
+                invalidated.invalidate(action.0.dirty_region());
             } else if studio.shell.route != StudioRoute::Library {
                 studio.shell.route = StudioRoute::Library;
                 studio.shell.notice = None;

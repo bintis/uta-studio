@@ -25,6 +25,10 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
     match &action.0 {
         UiCommand::App(AppCommand::Settings) => {
             let route_changed = studio.shell.route != StudioRoute::Settings;
+            if route_changed {
+                studio.dialogs.settings_returns_to_workflow =
+                    studio.shell.route == StudioRoute::ProcessingStudio;
+            }
             studio.shell.route = StudioRoute::Settings;
             studio.shell.notice = None;
             studio.dialogs.open_settings_select = None;
@@ -49,6 +53,10 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
         }
         UiCommand::Settings(SettingsCommand::SettingsTab(tab)) => {
             let route_changed = studio.shell.route != StudioRoute::Settings;
+            if route_changed {
+                studio.dialogs.settings_returns_to_workflow =
+                    studio.shell.route == StudioRoute::ProcessingStudio;
+            }
             studio.shell.route = StudioRoute::Settings;
             studio.shell.settings_tab = *tab;
             studio.shell.notice = None;
