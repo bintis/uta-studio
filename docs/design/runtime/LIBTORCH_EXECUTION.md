@@ -27,7 +27,7 @@ The following are implementation targets, not claims that a model has already pa
 | `bs_roformer_leap_xe90_instrumental` | Independent installed XE90 instrumental checkpoint; native mask output plus vocal residual, not a second name for the vocal checkpoint. | Complete instrumental waveform, residual reconstruction and checkpoint-specific output checks. |
 | `bs_polarformer_public_instrumental` | Separate PolarFormer plan honoring its own band/position/mask geometry rather than assuming the XE90 graph; bounded overlap-add and one shared input spectrum. | Compare instrumental and vocal residual; preserve the model's actual positional transform and complex-mask convention. |
 | `melband_roformer_harmony` | Mel-band gather/project, alternating axis attention and mask estimation; reuse overlap-add/frontend work; emit lead plus residual. | Model-specific band overlaps, complex masks and exact output length; do not infer parity from XE90. |
-| `melband_roformer_denoise_aufr33` | Native mel-band RoFormer with its own dimensions/depth and chunk geometry; resident weights and fused SDPA. | Complete denoised waveform comparison and boundary checks. |
+| `melband_roformer_denoise_aufr33` | Native mel-band RoFormer with its own dimensions/depth and chunk geometry; resident weights and bounded explicit mixed attention on ROCm. | Complete denoised waveform comparison and boundary checks. |
 | `melband_roformer_dereverb_anvuew` | Native mel-band RoFormer with its own configuration and bounded chunk execution. | Complete dereverberated waveform comparison, tails and chunk seams. |
 | `rmvpe` | Native convolutions, pooling/upsampling and bidirectional GRU; sequence computation remains on device rather than dispatching each timestep from the host. | Preserve FP32 reference computation and pitch/confidence/voicing decoding, especially low-confidence onset frames. |
 | `fcpe` | Native input convolutions, four-group timeline normalization and six gated depthwise-convolution blocks; keep the complete bounded sequence on device. The current 59-tensor catalog checkpoint has no learned attention weights. | Preserve the exported output-matrix orientation; do not introduce attention absent from this checkpoint. Compare F0, confidence and every voiced decision. |
@@ -44,7 +44,7 @@ The following are implementation targets, not claims that a model has already pa
 
 ## Hardware and memory policy
 
-Inference mode disables autograd. Transfers happen at bounded model/stage boundaries, not between every native operator. Shared-weight GEMMs use layouts that permit efficient native linear/matmul dispatch; noncontiguous frequency layouts are measured including any copy. Native convolution, normalization, recurrent and attention primitives are preferred over host-expanded loops. Large full-context attention must not silently materialize a quadratic score tensor just because a fused kernel is unavailable.
+Inference mode disables autograd. Transfers happen at bounded model/stage boundaries, not between every native operator. Shared-weight GEMMs use layouts that permit efficient native linear/matmul dispatch; noncontiguous frequency layouts are measured including any copy. Native convolution, normalization, recurrent and attention primitives are preferred over host-expanded loops. Large full-context attention must not silently materialize a quadratic score tensor just because a fused kernel is unavailable. ROCm projection submissions are also bounded by contraction work, including per-band mask estimators rather than only transformer feed-forward layers.
 
 FP32 correctness-sensitive paths are kept separate from explicit mixed-precision candidates. BF16, TF32, approximate GELU and indiscriminate model-wide FP16 are not default substitutions. Backend diagnostics must make the executed device, native runtime, storage/compute choices and any supported-kernel failure visible. A faster precision setting is accepted on its own numerical/output evidence, never because another model tolerated it.
 
@@ -193,7 +193,7 @@ word timings; STARS uses a separate actual FireRed Chinese alignment branch with
 primary-provider substitution follows. Full details, exact commits/operations,
 timings and remaining integration work: [full-song results](../../LIBTORCH_XPU_FULLSONG_RESULTS.md).
 
-## AMD ROCm 10 all-resource validation — halted after second display reset 2026-09-11
+## AMD ROCm 10 all-resource validation — halted after third display reset 2026-09-11
 
 **RESUMED AT ZERO OF EIGHTEEN FOR THE ORIGINAL TWELVE-SECOND SWEEP.** The authorized isolated environment resolves the official AMD stable
 combination, **ROCm 10.0.0 + PyTorch 2.13.0**, with the Radeon 780M `device-gfx1103` package. The
@@ -202,8 +202,8 @@ ignored test evidence and did not alter the system driver, global Python, instal
 source media or prior runtime. Authorization receipt: `20260911T094255-176d942db7f9`.
 
 Native build and synthetic device contracts passed. The official experimental AOTriton setting was
-required for gfx1103 fused SDPA. Both Leap-width partitioned-attention oracle shapes then passed;
-the finite unequal-width PolarFormer result missed the existing NMSE threshold. The first real
+initially required to make gfx1103 fused SDPA execute. Both Leap-width fused-attention oracle shapes
+then passed; the finite unequal-width PolarFormer result missed the existing NMSE threshold. The first real
 resource, `bs_roformer_leap_xe90_vocals`, still failed without fallback: a synchronized attempt
 located an unspecified launch failure after first-layer frequency feed-forward at about 4.70 GiB
 sampled GTT. A separately committed row-tiled feed-forward retained complete outputs and passed six
@@ -244,14 +244,37 @@ Denoise then ran against the actual Leap guide-vocal publication. It completed f
 before `SIGBUS` at 34.978 seconds and published no result. Its sampled GTT peak was 1,807,832 KiB,
 not the former approximately 4 GiB peak. The operator observed another brief blackout/recovery of
 the AMD-connected display, while the last passive sample records `amdgpu-reset-dev`; AMD busy stayed
-76–99% through the run. Denoise was not retried and no later resource was launched. Evidence:
+76–99% through the run. No later sweep resource was launched. Evidence:
 `test-artifacts/amd-libtorch-rocm10/bounded-resumed/`.
 
-The bounded result is **three passed, one failed, fourteen not run**. Full-song execution was not
-started. Further AMD ROCm model or stress execution requires another explicit human decision after
-this second display reset. CPU/GGML fallback remains prohibited. Previous XPU results remain
-separate, and this work establishes no product routing, whole-model parity, listening quality,
-driver stability or production readiness.
+A subsequent shared-risk review found that six RoFormer, three GAME and two Qwen resources could
+select the same experimental fused SDPA family on ROCm. Commit `0fa8110` replaces all production
+ROCm mixed-attention calls with explicit GPU FP16 input rounding, bounded FP32 query-tiled
+contractions/softmax and FP16 output rounding. It preserves complete K/V context, additive and
+boolean masks, causal layout and GQA. The shell no longer enables experimental AOTriton. Three
+RoFormer geometries and direct GAME-mask, Qwen-mask/GQA and causal cases passed **6/6** against
+complete rounded-input double references; the observer sampled `amdgpu 0000:10:00.0`, about
+292,644 KiB peak GTT, exit zero and no experimental fused kernel.
+
+The authorized real Denoise retry disproved the hypothesis that AOTriton was the sole reset cause.
+Preflight AMD use was 2%; the model loaded and reported zero of six chunks, then received `SIGBUS`
+after 5.619 seconds without publishing a result. Peak sampled GTT was 1,818,668 KiB and the final
+host sample records `kworker/u64:6+amdgpu-reset-dev`. No task-owned model process remained. This is
+the third recorded AMD display-reset incident in this lane. Evidence:
+`test-artifacts/amd-libtorch-rocm10/repair-review/denoise-retry/`.
+
+Offline model inspection found that the private Denoise mask estimator bypassed projection tiling:
+for each band it could submit an `801 x 1536` by `1536 x 1536` GEMM, about 1.89 billion
+multiply-accumulates. Commit `8268ab9` routes those layers through the common projection helper,
+bounds each ROCm GEMM by rows and 268,435,456 multiply-accumulates, and adds actual-shape oracle and
+trace coverage. Its native build passed. Neither that new GPU oracle nor Denoise has been executed
+after the third reset, so the change is a built candidate rather than a verified fix.
+
+The bounded result remains **three passed, one failed, fourteen not run**. Full-song execution was
+not started. Further AMD ROCm model, oracle or stress execution requires another explicit human
+decision after this third display reset. CPU/GGML fallback remains prohibited. Previous XPU results
+remain separate, and this work establishes no product routing, whole-model parity, listening
+quality, driver stability or production readiness.
 
 ## Source references
 

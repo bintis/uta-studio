@@ -666,7 +666,7 @@ Source media, installed assets and unrelated user changes remain untouched;
 no CPU/GGML inference fallback, Vulkan stress, workspace release checks or Nix
 packaging were performed. See [execution design](../../docs/design/runtime/LIBTORCH_EXECUTION.md).
 
-## All-resource LibTorch AMD ROCm 10 — HALTED AFTER SECOND DISPLAY RESET (2026-09-11)
+## All-resource LibTorch AMD ROCm 10 — HALTED AFTER THIRD DISPLAY RESET (2026-09-11)
 
 **Zero of eighteen resources qualified; the full-song phase was not started.** The isolated Nix
 shell and official **ROCm 10.0.0 + PyTorch 2.13.0** packages, including the Radeon 780M `gfx1103`
@@ -674,9 +674,9 @@ device package, were installed only under ignored test evidence. They did not re
 driver, global Python, installed model store, source media or prior runtime. Authorization operation:
 `20260911T094255-176d942db7f9`; evidence root: `test-artifacts/amd-libtorch-rocm10/`.
 
-The linked native runtime and a synthetic FCPE GPU contract passed. Enabling AMD's documented
-experimental AOTriton switch made both Leap-width partitioned-attention oracle shapes execute; the
-PolarFormer unequal-width shape remained finite but missed the existing NMSE threshold. The first
+The linked native runtime and a synthetic FCPE GPU contract passed. AMD's documented experimental
+AOTriton switch initially made both Leap-width fused-attention oracle shapes execute; the PolarFormer
+unequal-width shape remained finite but missed the existing NMSE threshold. The first
 real twelve-second resource, `bs_roformer_leap_xe90_vocals`, then failed repeatedly without fallback:
 first with `SIGBUS`, then a synchronized diagnostic reported an unspecified launch failure after the
 first frequency feed-forward and sampled about 4.70 GiB GTT. Commit `074ea9e` bounded the wide
@@ -726,11 +726,33 @@ sample records `kworker/u64:3+amdgpu-reset-dev`; AMD busy remained 76–99% thro
 `bounded-resumed/observations/denoise/` and
 `bounded-resumed/diagnostics/denoise-failure-summary.json`.
 
-The resumed sweep is therefore **three passed, one failed, fourteen not run**. Denoise was not
-retried, no subsequent model was launched, and full-song execution was not started. Do not resume
-AMD ROCm model or stress execution without another explicit human decision after this second display
-reset. CPU/GGML fallback remains prohibited. See
-[LibTorch execution](../../docs/design/runtime/LIBTORCH_EXECUTION.md).
+At the user's request, the shared attention risk was reviewed before one Denoise retry. Six
+RoFormer resources, three GAME sizes and two Qwen resources could select fused SDPA on ROCm.
+Commit `0fa8110` replaces that production ROCm route with query- and batch-bounded GPU mixed
+attention while retaining every key/value row, masks and grouped-query semantics, and removes the
+gfx1103 AOTriton opt-in. Three complete-context RoFormer geometries plus GAME additive-mask, Qwen
+boolean-mask/GQA and causal oracles passed **6/6** against complete rounded-input double references;
+no experimental fused kernel was used.
+
+That result did not fix Denoise. With preflight AMD use at 2%, the authorized retry loaded the real
+model and failed during its first of six chunks with `SIGBUS` after 5.619 seconds. It published no
+result. The observer sampled the AMD device and ROCm libraries, 1,818,668 KiB peak GTT, and
+`kworker/u64:6+amdgpu-reset-dev` in the final host sample. No model process remained. This third
+reset falsifies AOTriton as the sole cause; it does not establish that the experimental fused path
+was safe. Evidence: `repair-review/attention-check/` and `repair-review/denoise-retry/`.
+
+Offline GGUF inspection then identified an uncovered Denoise mask-estimator contraction: each band
+could submit one `801 x 1536` by `1536 x 1536` GEMM, about 1.89 billion multiply-accumulates, because
+that private path bypassed projection tiling. Commit `8268ab9` routes those layers through the shared
+ROCm projection path, bounds each submitted GEMM by both rows and 268,435,456 multiply-accumulates,
+and adds per-layer trace checkpoints plus the actual square-projection oracle. The native build
+passed. The new oracle and model have **not** been executed on GPU after the third reset, so this is
+a built candidate fix, not a verified repair.
+
+The sweep remains **three passed, one failed, fourteen not run**. No subsequent model was launched
+and full-song execution was not started. Do not resume AMD ROCm model, oracle or stress execution
+without another explicit human decision after this third display reset. CPU/GGML fallback remains
+prohibited. See [LibTorch execution](../../docs/design/runtime/LIBTORCH_EXECUTION.md).
 
 ## Next actions
 
