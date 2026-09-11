@@ -2088,5 +2088,13 @@
   "Completed": "Completed",
   "Open song": "Open song",
   "Rerun": "Rerun",
-  "Completed successfully · outputs and run history are retained until you rerun or delete this entry": "Completed successfully · outputs and run history are retained until you rerun or delete this entry"
+  "Completed successfully · outputs and run history are retained until you rerun or delete this entry": "Completed successfully · outputs and run history are retained until you rerun or delete this entry",
+  "Compute backend": "Compute backend",
+  "Native runtime for every model that has no per-model runtime choice below. GGML Vulkan is the pinned default; LibTorch XPU runs the same models natively on the Intel Arc GPU and needs the installed LibTorch XPU runtime. A selected backend never falls back to the other.": "Native runtime for every model that has no per-model runtime choice below. GGML Vulkan is the pinned default; LibTorch XPU runs the same models natively on the Intel Arc GPU and needs the installed LibTorch XPU runtime. A selected backend never falls back to the other.",
+  "Pinned default (GGML Vulkan)": "Pinned default (GGML Vulkan)",
+  "GGML Vulkan": "GGML Vulkan",
+  "LibTorch XPU": "LibTorch XPU",
+  "Native library not installed": "Native library not installed",
+  "LibTorch XPU runs on the discrete Intel GPU only; CPU and iGPU selections fail instead of falling back.": "LibTorch XPU runs on the discrete Intel GPU only; CPU and iGPU selections fail instead of falling back.",
+  "Compute backend set to {}. It applies to future analysis requests; per-model runtime choices below take precedence, and an unavailable backend fails in Plan Preview without fallback.": "Compute backend set to {}. It applies to future analysis requests; per-model runtime choices below take precedence, and an unavailable backend fails in Plan Preview without fallback."
 }
