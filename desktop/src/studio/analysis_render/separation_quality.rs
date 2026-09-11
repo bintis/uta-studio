@@ -145,7 +145,7 @@ mod tests {
 
     fn rendered_text(engine: Option<&app_core::EngineRunHistoryProjection>) -> String {
         let mut world = World::new();
-        let mut queue = bevy::ecs::system::CommandQueue::default();
+        let mut queue = bevy::ecs::world::CommandQueue::default();
         let mut commands = Commands::new(&mut queue, &world);
         commands.spawn(Node::default()).with_children(|parent| {
             spawn_separation_quality_inspection(
