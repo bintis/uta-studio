@@ -51,4 +51,15 @@ if command -v patchelf >/dev/null 2>&1 && [ -n "${LD_LIBRARY_PATH:-}" ]; then
     done
 fi
 
+# Keep result/bin aligned with target/release so standard desktop launchers
+# pointing to result/bin/uta-studio immediately resolve to the fresh build.
+mkdir -p "$repo_root/target/bin"
+for binary in "$repo_root/target/release"/uta-*; do
+    if [ -f "$binary" ] && [ -x "$binary" ]; then
+        ln -sf "$binary" "$repo_root/target/bin/$(basename "$binary")"
+    fi
+done
+rm -f "$repo_root/result"
+ln -s target "$repo_root/result"
+
 printf '\nBuilt Studio and packaged protocols in: %s\n' "$repo_root/target/release"
