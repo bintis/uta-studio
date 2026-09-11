@@ -136,3 +136,19 @@ fn measured_character_alignment_reaches_individual_chart_notes_without_line_lyri
         assert_eq!(lyric.text, text);
     }
 }
+
+#[test]
+#[ignore = "requires explicit caller-lyrics input and a new diagnostic output path; no inference"]
+fn prepare_alignment_words_from_explicit_lyrics() {
+    let input = std::env::var_os("UTA_STUDIO_ALIGNMENT_LYRICS_INPUT")
+        .expect("explicit canonical lyric input is required");
+    let output = std::env::var_os("UTA_STUDIO_ALIGNMENT_WORDS_OUTPUT")
+        .expect("explicit new word-request output is required");
+    let transcript: CanonicalLyrics =
+        serde_json::from_slice(&std::fs::read(input).unwrap()).unwrap();
+    let words = qwen_alignment_words(&transcript, &[]).unwrap();
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(output).unwrap();
+    serde_json::to_writer_pretty(&mut file, &words).unwrap();
+    file.sync_all().unwrap();
+    println!("caller tokens: {}; lexical alignment requests: {}", transcript.tokens.len(), words.len());
+}
