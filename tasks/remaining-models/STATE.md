@@ -1,6 +1,6 @@
 # Remaining Models + Final Feature Closure — State
 
-**Updated:** 2026-09-11 (after complete-model Super scheduler implementation and CPU verification)
+**Updated:** 2026-09-11 (after complete-model Super scheduler and note-fusion regression verification)
 **Owner:** Rust + upstream-GGML migration
 
 This file stores current effective state only. Historical execution evidence remains in its original records; current source and focused tests override stale historical conclusions. Durable cross-cutting conclusions live in `docs/KEY_CONCLUSIONS.md`.
@@ -937,6 +937,33 @@ diagnostic operations preceded the pass (missing `libz.so.1`, a compute-runtime 
 `ZE_ENABLE_ALT_DRIVERS`, the Engine's existing-output-directory requirement, oneDNN writing to stdout
 with the OpenCL loader unresolved, and a 32-bit OpenCL loader); each fix is a separate commit
 (`f0062fc`, `e6884b2`, `ccaacee`). Details: `summary.json` in the evidence root.
+
+## Note-fusion regression — source repaired, real-song quality review open (2026-09-11)
+
+The current Studio Japanese-song run reached `singing-fusion` after its six pitch/note
+experts completed, then failed with `one duration state exceeds the bounded pitch-proposal
+limit`. Its temporary evidence had already been cleaned by the application; the lifecycle
+log alone cannot reproduce that exact pool. `06430702` replaces per-overlapping-note pitch
+expansion with one overlap-duration-weighted median per expert and duration, retaining raw
+notes and exact fractional pitches. `d9e0e842` shares the corroborated acoustic onset detector
+with both F0-consolidation checks, so flux-only fluctuations no longer veto stable-note
+consolidation. Existing limits, caller/word/gap protections and continuous F0 are unchanged.
+
+Five new regressions reproduce and repair these mechanisms. All 71 fusion tests, 287 Engine
+unit tests plus four packaged-boundary tests (serial), and targeted all-target clippy pass.
+An earlier parallel suite had one unchanged acoustic-cache fixture failure; its isolated and
+serial executions pass, but the intermittent cause remains unknown. App-core's 93-test export
+filter includes nine UltraStar chart/publication tests; no real audio bundle export occurred.
+
+Read-only cached comparison: a matched 12-second multi-expert sample drops from 577 to 520
+candidates (9.88%), with maximum pitch states per duration 11 to 5. Both select twenty pitched
+notes with identical times/MIDI/lyrics/F0; two cents values change. A separate 216.88-second
+F0-derived song remains chart-identical with 527 pitched notes, 231 under 100 ms. **Real final-note
+fragmentation reduction is not established.** Card 21J is `NEEDS_REVIEW` for this current quality
+regression; model integration/production readiness is unchanged. No new GPU inference, user-data
+mutation or installed build. Evidence and next action:
+[21J current follow-up](../final-features/followups/21J_MELODY_PATH_SCORE_COHERENCE.md#current-regression-follow-up--2026-09-11-utc),
+`test-artifacts/note-fragmentation/comparison.json`.
 
 ## Next actions
 

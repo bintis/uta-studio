@@ -1,10 +1,85 @@
 # 21J — Melody Path and Score Coherence
 
-**State:** `READY`
+**State:** `NEEDS_REVIEW` — current 2026-09-11 regression: source repairs verified; exact failed-song replay and broader fragmentation/listening qualification remain.
 
 **Parent:** Card 21 final design-parity audit
 
 **Task class:** Analysis Engine algorithm-quality convergence; no new user-facing tuning surface required
+
+## Current regression follow-up — 2026-09-11 UTC
+
+The Studio run `studio-auto-721315-1789142535295031711-1` completed RMVPE, FCPE,
+Basic Pitch, GAME, JBM555 and ROSVOT, then failed in `singing-fusion` with
+`one duration state exceeds the bounded pitch-proposal limit`. The retained log
+is `~/Documents/uta-studio/analysis-logs/1789142537932-3a286aeab79b61b4462eb5dbd607dd0d-721315-1.jsonl`.
+The application had already cleaned this failed run's temporary evidence; the
+exact failing pool cannot be reconstructed from that lifecycle log. Separate
+later runs report RoFormer nonfinite masks and STARS G2P identity errors; neither
+is repaired or attributed to note fusion by this follow-up.
+
+Two independent algorithm fixes are committed:
+
+- `06430702`: peer pitches are summarized per expert and candidate duration with
+  an **overlap-duration-weighted median of measured fractional MIDI**, rather
+  than promoting every overlapping short note into a whole-duration pitch state.
+  Raw boundary evidence, each note's own duration/pitch state, distinct experts
+  and continuous F0 remain. No aggregate calibrated confidence is invented.
+  Existing capacity limits are unchanged. The new 96-fragment fixture reproduces
+  the original error before this fix and succeeds afterwards.
+- `d9e0e842`: both local-edge and whole-span F0-consolidation checks use the same
+  corroborated acoustic attack detector as contextual onset generation. A flux
+  spike alone no longer vetoes consolidation; energy/periodicity/voicing-backed
+  attacks still do. Word/caller boundaries, real gaps and sustained-shift checks
+  are unchanged. A stable-vibrato fixture selects two notes before the fix and
+  one spanning candidate afterwards, without deleting its original states.
+
+`193b5616` updates the existing read-only `replay_singing` example to accept an
+explicit current-evidence input manifest, including optional GAME/F0-derived,
+JBM and conditioned note evidence. `55aa00f2` formats these changes. No model or
+audio inference is executed by replay; every output uses a new directory.
+
+### Executed verification and remaining quality limits
+
+Evidence root: `test-artifacts/note-fragmentation/`. The detached control retains
+pre-fix fusion and uses the identical diagnostic entry point. All compared inputs
+are retained real worker evidence, not fabricated outputs of the failed run.
+
+| Replay | Pre-fix | Current | Meaning |
+| --- | --- | --- | --- |
+| Same-source 12-second mix experts + retained XPU alignment/acoustics | 577 candidates; up to 11 pitch states per duration | 520 candidates; up to 5 states | 9.88% fewer candidates. Twenty pitched notes in both; note times, MIDI, lyrics and continuous F0 are unchanged. Two cents values change from 0 to 35 and from 0 to 1; not identical charts or pitch-accuracy qualification. |
+| Retained 216.88-second XPU F0-derived route, without semantic note experts | 533 candidates; 527 pitched notes; 231 under 100 ms | Identical | Complete chart and continuous F0 unchanged. This remains a short-note quality concern, not a fragmentation-reduction result. |
+
+`comparison.json` and `note-differences.json` retain the complete comparison.
+Operations: excerpt current/control `20260911T161926-6028cc3a4570` /
+`20260911T162007-d61529c197a1`; full-song current/control
+`20260911T161947-dc09c5492ced` / `20260911T162345-2f109ed3555f`;
+comparison `20260911T162428-6d1cbceeb329`.
+
+Focused verification:
+
+- Five new regressions cover dense proposal expansion, local duration weighting,
+  independent exact fractional proposals, flux-only consolidation and preserved
+  corroborated attacks. Red runs are retained at `20260911T161024-8f32320419f2`
+  and `20260911T161309-276ec69d6382`; all 71 fusion tests then pass.
+- `20260911T162345-7da194e959e6`: 287 Engine tests plus four packaged CLI-boundary
+  tests pass with one test thread. The prior parallel run
+  `20260911T161736-79f7f22a7e33` had 286 passes and one failure in the **unchanged**
+  acoustic-cache fixture (`acoustic DSP decode duration differs from the validated
+  semantic input`). Its isolated run also passes (`20260911T162234-4866c6ece20d`);
+  the intermittent cause remains unknown, and the original failure is not erased.
+- Targeted all-target Engine clippy passes with warnings denied
+  (`20260911T162253-284bec544917`). The app-core export filter passes 93 tests,
+  including nine UltraStar serialization/publication fixtures and generated type
+  exports (`20260911T162038-989a53f55c87`); this is not a real UTZ/UltraStar audio
+  bundle export. Engine tests/replay cover UTZ chart finalization and validation.
+
+The reported overflow mechanism and unsupported acoustic veto are repaired, but
+no reduction of real-song final short-note counts has been demonstrated here.
+Next: retain evidence from the next explicitly authorized failed-song re-analysis,
+then inspect its actual boundaries and voiced gaps before further tuning. Do not
+promote this card to broad quality acceptance based on candidate-count reduction.
+No GPU inference, user cache/settings/model mutation, desktop installation,
+whole-workspace release check or Nix packaging was performed.
 
 ## Mission
 

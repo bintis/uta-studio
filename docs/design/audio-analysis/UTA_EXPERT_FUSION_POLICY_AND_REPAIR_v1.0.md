@@ -75,6 +75,20 @@ primary regions
 
 A challenger is not promoted merely because it exists. Primary regions receive a small structural prior. Challenger paths can win when their segmentation is supported by contextual evidence, such as a measured onset. Stable continuous F0 may add an explicitly typed `F0Consolidation` state spanning unsupported sequential primary fragments, but never across a word edge, caller boundary, measured attack, sustained pitch shift, unstable context, or unvoiced gap. The original primary states remain in the auditable pool. Raw model scores are never compared across models as if they were calibrated probabilities.
 
+Each duration receives one overlap-duration-weighted median of measured fractional pitch per
+peer note expert, not a whole-duration pitch state for every overlapping local note. The original
+expert's notes retain their own duration/pitch states and raw boundary evidence. Median selection
+retains an actual fractional proposal without MIDI-bin quantization; raw model scores do not supply
+cross-expert weights, and aggregating multiple notes does not invent calibrated confidence.
+This prevents dense local fragments from overflowing a long region's pitch-proposal budget.
+
+F0 consolidation uses the same corroborated acoustic attack detector as onset candidate generation
+and candidate onset support: spectral flux alone cannot veto consolidation without an energy,
+periodicity or voicing attack cue. Existing word/caller boundaries, continuous-F0 stability,
+sustained shifts and unvoiced-gap handling remain. These rules repair demonstrated construction
+failures, not a claim of broad real-song fragmentation reduction; current evidence is recorded in
+[21J](../../../tasks/final-features/followups/21J_MELODY_PATH_SCORE_COHERENCE.md#current-regression-follow-up--2026-09-11-utc).
+
 Unpitched challenger boundaries that have no local continuous F0 remain disagreement evidence and do not become invalid note states. Caller-authored hard boundaries are a normalized pool-level authority, carried identically to Algorithm and AI judgment, included in the pool digest, persisted with SingingAnalysis, and used by shared structural validation. Candidate-local context and voicing transitions may reset melody scoring but do not become structural barriers.
 
 All candidate construction and decoding work is explicitly bounded: at most `100000` Candidate states after expansion, at most `64` distinct pitch proposals per duration state, at most `10000000` Candidate-to-boundary/word/technique evidence relations before metadata cloning and again after pitch-state expansion (including cloned nested evidence), at most `10000000` conservatively projected Candidate-to-local-F0/Acoustic/Basic-Pitch frame visits counted through sorted interval indexes, `65536` examined second-order pair states, and `2000000` examined pair transitions across the complete graph. The external AI request has an independent serialized limit of `8 MiB`. Reaching a documented limit succeeds; one unit beyond it fails closed.

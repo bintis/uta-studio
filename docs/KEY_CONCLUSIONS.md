@@ -150,6 +150,25 @@ Generated transcription and forced alignment are available again through Rust/up
 - Inst V2 remains permanently retired: no catalog entry, graph, worker route, or fallback.
 - Former C++/CLI/WGPU/OpenVINO implementations and catalog entries remain removed. Historical measurements for deleted routes remain historical only and must not be described as current readiness.
 
+## Note-fusion regression (2026-09-11)
+
+A current real Studio run failed in singing fusion because every overlapping note's fractional
+pitch was promoted into a whole-duration hypothesis, exceeding the existing 64-proposal bound.
+A 96-fragment regression reproduces the error. `06430702` now uses overlap-duration-weighted
+median pitch per expert and duration, retaining every raw note/state and continuous F0 rather
+than raising the limit. `d9e0e842` also shares the existing corroborated acoustic attack detector
+with F0 consolidation; flux-only changes no longer block a coherent spanning candidate.
+
+The same cached 12-second multi-expert input produces 577 → 520 candidates and at most 11 → 5
+pitch states per duration. Its twenty final pitched notes retain times/MIDI/lyrics/F0, with two
+cents changes; **this is not measured final-note fragmentation reduction**. A separate cached
+216.88-second F0-derived song remains chart-identical with 527 pitched notes, including 231 under
+100 ms. The original failed run's temporary evidence is no longer available. Card 21J is therefore
+`NEEDS_REVIEW`, not broad quality acceptance. Five new regressions, 71 fusion tests, 287 + four
+serial Engine/CLI tests and targeted clippy pass; an earlier parallel acoustic-cache fixture
+failure remains recorded and unexplained despite passing isolated/serial checks. No new inference
+or installed assets. See [current evidence and next action](../tasks/final-features/followups/21J_MELODY_PATH_SCORE_COHERENCE.md#current-regression-follow-up--2026-09-11-utc).
+
 ## Workflow contract
 
 - Current Studio workflow schema is 7.
