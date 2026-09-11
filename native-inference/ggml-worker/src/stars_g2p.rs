@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 use uta_ggml_runtime::stars::PhonemeInput;
 
-pub const PROFILE: &str = "stars-chinese-g2p-pypinyin-0.55.0";
+pub const PROFILE: &str = "stars-chinese-g2p";
 
 #[derive(Debug, Deserialize)]
 struct RawAsset {
@@ -157,6 +157,29 @@ mod tests {
             .unwrap();
         assert_eq!(result.phone_ids, [34, 20, 19, 7, 10, 36, 39, 27]);
         assert_eq!(result.phone_to_word, [0, 0, 0, 0, 1, 1, 1, 1]);
+    }
+
+    #[test]
+    fn packaged_asset_expands_contracted_finals_and_restores_umlauts() {
+        let asset = ChineseG2pAsset::load_embedded().unwrap();
+        for (character, phones) in [
+            ('吹', ["ch", "uei"]),
+            ('归', ["g", "uei"]),
+            ('对', ["d", "uei"]),
+            ('春', ["ch", "uen"]),
+            ('秋', ["q", "iou"]),
+            ('学', ["x", "ve"]),
+            ('去', ["q", "v"]),
+            ('全', ["q", "van"]),
+        ] {
+            assert_eq!(asset.characters[&character], phones);
+        }
+        let words = ["风吹沙蝶恋花千古佳话".to_string(), "你背上行囊离开家".to_string()];
+        let result = asset.phonemize_words(&words).unwrap();
+        assert!(!result.phone_ids.is_empty());
+        assert_eq!(result.phone_ids.len(), result.phone_to_word.len());
+        assert!(result.phone_to_word.contains(&0));
+        assert!(result.phone_to_word.contains(&1));
     }
 
     #[test]
