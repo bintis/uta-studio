@@ -15,20 +15,22 @@ struct Word {
     start_micros: u64,
     duration_micros: u64,
 }
+fn rmvpe_curve(frames: &[Value]) -> Result<Vec<f32>, String> {
+    frames.iter().enumerate().map(|(index, frame)| {
+        let hz = frame["hz"].as_f64().ok_or("RMVPE frame lacks frequency")?;
+        let time = frame["time"].as_f64().ok_or("RMVPE frame lacks time")?;
+        let voiced = frame["voiced"].as_bool().ok_or("RMVPE frame lacks voiced decision")?;
+        audio::finite([time, hz])?;
+        if (time - index as f64 * 0.01).abs() > 1.0e-6 { return Err("RMVPE frame timeline disagrees with its 10 ms cadence".into()); }
+        Ok(if voiced { hz as f32 } else { 0.0 })
+    }).collect()
+}
 fn conditioning(request: &Request) -> Result<(Vec<f32>, Vec<Word>, usize), String> {
     let pitch = audio::read_json(required(&request.pitch, "real RMVPE evidence")?)?;
     let frames = pitch["frames"]
         .as_array()
         .ok_or("RMVPE evidence has no frames")?;
-    let raw_pitch = frames
-        .iter()
-        .map(|frame| {
-            frame["hz"]
-                .as_f64()
-                .map(|value| value as f32)
-                .ok_or("RMVPE frame has no finite frequency")
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let raw_pitch = rmvpe_curve(frames)?;
     audio::finite(raw_pitch.iter().map(|value| f64::from(*value)))?;
     let alignment = audio::read_json(required(
         &request.alignment,
@@ -69,6 +71,16 @@ fn conditioning(request: &Request) -> Result<(Vec<f32>, Vec<Word>, usize), Strin
         return Err("real alignment produced no resolved words for conditioned inference".into());
     }
     Ok((raw_pitch, words, unresolved))
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn real_pitch_conditioning_keeps_uv_instead_of_voicing_every_raw_estimate() {
+        let frames = vec![json!({"time":0.0,"hz":440.,"voiced":true}), json!({"time":0.01,"hz":220.,"voiced":false})];
+        assert_eq!(rmvpe_curve(&frames).unwrap(), [440.,0.]);
+        assert!(rmvpe_curve(&[json!({"time":1.0,"hz":220.,"voiced":true})]).is_err());
+    }
 }
 fn note(start: usize, end: usize, logits: &[f32], midi: Option<u8>) -> Result<Value, String> {
     audio::finite(logits.iter().map(|value| f64::from(*value)))?;
