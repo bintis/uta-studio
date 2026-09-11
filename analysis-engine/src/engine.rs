@@ -47,6 +47,7 @@ use crate::workflow_executor::{CompiledWorkflowExecutionPlan, WorkflowNodeExecut
 
 mod acceleration;
 mod export;
+mod light_models;
 mod output_guard;
 mod runtime_route;
 mod tasks;
@@ -720,9 +721,30 @@ impl AnalysisEngine {
         } else {
             None
         };
+        let light_context = light_models::LightModelContext {
+            request: request.clone(),
+            plan: plan.clone(),
+            workflow: workflow.clone(),
+            resolved: resolved.clone(),
+            workflow_audio: workflow_audio.clone(),
+            analysis_input: analysis_input.clone(),
+            analysis_role: analysis_role.to_string(),
+            output_root: output_root.clone(),
+            source_start,
+            source_duration,
+            cancellation: cancellation.clone(),
+        };
+        let (light_model_task, mut light_context) =
+            if request.execution_policy.turbo_acceleration {
+                (
+                    Some(owner.start(true, move || light_models::run(light_context))?),
+                    None,
+                )
+            } else {
+                (None, Some(light_context))
+            };
         let needs_transcribe = has_capability(&plan, "speech.transcribe");
         let needs_alignment = has_capability(&plan, "speech.align");
-        let needs_pitch = has_capability(&plan, "pitch.track");
         let transcript_evidence = if needs_transcribe {
             let (input, _) = workflow_bound_audio(
                 plan.workflow_execution.as_ref(),
@@ -985,302 +1007,24 @@ impl AnalysisEngine {
             )?);
         }
 
-        let mut shared_rmvpe_evidence_path = None;
-        let pitch_evidence: Option<PitchEvidence> = if needs_pitch {
-            let (input, _) = workflow_bound_audio(
-                plan.workflow_execution.as_ref(),
-                "pitch.track",
-                &workflow_audio,
-                &analysis_input,
-                analysis_role,
-            )?;
-            let model = resolved_model(&resolved, "rmvpe")?;
-            let directory = create_task_dir(&output_root, "worker/rmvpe")?;
-            let (component, config) = pitch_dispatch(model, request)?;
-            let outputs = run_native_task(
-                model,
-                component,
-                "task-rmvpe",
-                "pitch.track",
-                &input,
-                &directory,
-                config,
-                cancellation,
-            )?;
-            let worker_evidence = typed_worker_output(&outputs, "pitch_evidence")?;
-            let pitch = parse_rmvpe_pitch(worker_evidence, source_start, source_duration)?;
-            shared_rmvpe_evidence_path = Some(worker_evidence.to_path_buf());
-            if request.requested_artifacts.pitch_evidence {
-                artifacts.pitch_evidence = Some(write_json_artifact(
-                    &output_root,
-                    Path::new("pitch/pitch-evidence.json"),
-                    PITCH_MEDIA_TYPE,
-                    &pitch,
-                )?);
-            }
-            Some(pitch)
-        } else {
-            None
+        let light_output = match light_model_task {
+            Some(task) => task.join()?,
+            None => light_models::run(
+                light_context
+                    .take()
+                    .expect("ordinary mode retains its light-model context"),
+            )?,
         };
-        let fcpe_evidence: Option<PitchEvidence> = if has_capability(&plan, "pitch.secondary.fcpe")
-        {
-            if let Some(model) = resolved.iter().find(|model| model.model_id == "fcpe") {
-                let (input, _) = workflow_bound_audio(
-                    plan.workflow_execution.as_ref(),
-                    "pitch.secondary.fcpe",
-                    &workflow_audio,
-                    &analysis_input,
-                    analysis_role,
-                )?;
-                let directory = create_task_dir(&output_root, "worker/fcpe")?;
-                let result = (|| {
-                    let (component, config) = pitch_dispatch(model, request)?;
-                    let outputs = run_native_task(
-                        model,
-                        component,
-                        "task-fcpe",
-                        "pitch.secondary.fcpe",
-                        &input,
-                        &directory,
-                        config,
-                        cancellation,
-                    )?;
-                    parse_fcpe_pitch(
-                        typed_worker_output(&outputs, "pitch_evidence")?,
-                        source_start,
-                        source_duration,
-                    )
-                })();
-                match result {
-                    Ok(evidence) => Some(evidence),
-                    Err(error) if error.code == EngineErrorCode::Cancelled => {
-                        return Err(error);
-                    }
-                    Err(error) => {
-                        degraded_reasons.push(format!(
-                            "optional capability pitch.secondary.fcpe failed: {}",
-                            error.message
-                        ));
-                        None
-                    }
-                }
-            } else {
-                degraded_reasons.push(
-                    "optional capability pitch.secondary.fcpe skipped: model was not resolved"
-                        .to_string(),
-                );
-                None
-            }
-        } else {
-            None
-        };
-        let basic_pitch_evidence: Option<BasicPitchEvidence> =
-            if has_capability(&plan, "notes.basic_pitch") {
-                let (input, _) = workflow_bound_audio(
-                    plan.workflow_execution.as_ref(),
-                    "notes.basic_pitch",
-                    &workflow_audio,
-                    &analysis_input,
-                    analysis_role,
-                )?;
-                let model = resolved_model(&resolved, "basic_pitch")?;
-                let directory = create_task_dir(&output_root, "worker/basic-pitch")?;
-                let (component, config) =
-                    model_dispatch(model, request, "note+onset+contour_activation")?;
-                let outputs = run_native_task(
-                    model,
-                    component,
-                    &format!("{}-basic-pitch", request.request_id),
-                    "notes.basic_pitch",
-                    &input,
-                    &directory,
-                    config,
-                    cancellation,
-                )?;
-                Some(parse_basic_pitch_evidence(
-                    typed_worker_output(&outputs, "basic_pitch_evidence")?,
-                    source_start,
-                    source_duration,
-                )?)
-            } else {
-                None
-            };
-        let game_model = resolved
-            .iter()
-            .filter(|model| {
-                matches!(
-                    model.model_id.as_str(),
-                    "game_1_0_3_small" | "game_1_0_3_medium" | "game_1_0_3_large"
-                )
-            })
-            .collect::<Vec<_>>();
-        if game_model.len() > 1 {
-            return Err(EngineError::new(
-                EngineErrorCode::InvalidContract,
-                "workflow must select exactly one immutable GAME resource",
-            )
-            .with_capability("notes.game"));
-        }
-        let mut game_conditioned_boundary_count = 0usize;
-        let game_evidence: Option<GameEvidence> = if has_capability(&plan, "notes.game") {
-            let model = game_model.first().copied().ok_or_else(|| {
-                EngineError::new(
-                    EngineErrorCode::RuntimeResolutionFailed,
-                    "planned GAME expert was not resolved",
-                )
-                .with_capability("notes.game")
-            })?;
-            let (input, _) = workflow_bound_audio(
-                plan.workflow_execution.as_ref(),
-                "notes.game",
-                &workflow_audio,
-                &analysis_input,
-                analysis_role,
-            )?;
-            let source_end = source_start.saturating_add(source_duration);
-            let mut known_boundaries = request
-                .boundary_constraints
-                .iter()
-                .filter(|constraint| constraint.authority == BoundaryAuthority::Hard)
-                .flat_map(|constraint| [constraint.start, constraint.end().unwrap_or(u64::MAX)])
-                .filter(|time| (source_start..=source_end).contains(time))
-                .map(|time| time - source_start)
-                .collect::<Vec<_>>();
-            known_boundaries.sort_unstable();
-            known_boundaries.dedup();
-            game_conditioned_boundary_count = known_boundaries.len();
-            let directory = create_task_dir(&output_root, "worker/game")?;
-            let (component, mut config) =
-                model_dispatch(model, request, "note_candidate_evidence")?;
-            config["language"] = serde_json::json!(request.lyrics.language);
-            config["known_boundaries_us"] = serde_json::json!(known_boundaries);
-            let outputs = run_native_task(
-                model,
-                component,
-                &format!("{}-{}", request.request_id, model.model_id),
-                "notes.game",
-                &input,
-                &directory,
-                config,
-                cancellation,
-            )?;
-            Some(parse_game_evidence(
-                typed_worker_output(&outputs, "game_evidence")?,
-                source_start,
-                source_duration,
-            )?)
-        } else {
-            None
-        };
-        let mut timed_note_evidence = Vec::<TimedNoteExpertEvidence>::new();
-        if has_capability(&plan, "notes.jbm555") {
-            let mix = request
-                .audio_sources
-                .iter()
-                .find(|source| source.role == crate::contract::AudioRole::OriginalMix)
-                .ok_or_else(|| {
-                    EngineError::new(
-                        EngineErrorCode::MissingRequiredInput,
-                        "JBM555 requires the original mix input",
-                    )
-                    .with_capability("notes.jbm555")
-                })?;
-            let (vocal, _) = workflow_bound_audio(
-                plan.workflow_execution.as_ref(),
-                "notes.jbm555",
-                &workflow_audio,
-                &analysis_input,
-                analysis_role,
-            )?;
-            let model = resolved_model(&resolved, "jbm555_cectc_80")?;
-            let mix_audio_identity = format!("source:{}", mix.sha256);
-            let vocal_audio_identity = format!(
-                "analysis:{}:{}:{}",
-                primary.sha256,
-                analysis_role,
-                plan.source_route
-                    .preparation
-                    .iter()
-                    .map(|capability| capability.as_str())
-                    .collect::<Vec<_>>()
-                    .join("+")
-            );
-            let separator_model_generation = plan
-                .source_route
-                .preparation
-                .iter()
-                .any(|capability| capability.as_str() == "audio.extract_vocals")
-                .then(|| {
-                    workflow
-                        .as_ref()
-                        .and_then(|workflow| {
-                            workflow.model_for_engine_capability("audio.extract_vocals")
-                        })
-                        .unwrap_or("bs_roformer_leap_xe90_vocals")
-                })
-                .and_then(|model_id| {
-                    resolved
-                        .iter()
-                        .find(|resolved| resolved.model_id == model_id)
-                        .map(|resolved| resolved.generation.clone())
-                })
-                .unwrap_or_else(|| "caller-supplied-vocal".to_string());
-            let vocal_preparation_generation = resolved
-                .iter()
-                .filter(|resolved| {
-                    matches!(
-                        resolved.model_id.as_str(),
-                        "melband_roformer_harmony"
-                            | "melband_roformer_denoise_aufr33"
-                            | "melband_roformer_dereverb_anvuew"
-                    )
-                })
-                .map(|resolved| format!("{}@{}", resolved.model_id, resolved.generation))
-                .collect::<Vec<_>>()
-                .join("+");
-            let vocal_preparation_generation = if vocal_preparation_generation.is_empty() {
-                "analysis-ready-lead".to_string()
-            } else {
-                vocal_preparation_generation
-            };
-            let expected = Jbm555ExpectedInputs {
-                source_start,
-                source_duration,
-                mix_audio_identity: &mix_audio_identity,
-                vocal_audio_identity: &vocal_audio_identity,
-                separator_model_generation: &separator_model_generation,
-                vocal_preparation_generation: &vocal_preparation_generation,
-            };
-            let directory = create_task_dir(&output_root, "worker/jbm555")?;
-            let (component, mut config) =
-                model_dispatch(model, request, "note_candidate_evidence")?;
-            config["source_start"] = serde_json::json!(source_start);
-            config["source_duration"] = serde_json::json!(source_duration);
-            config["upstream_revision"] = serde_json::json!("jbm555-public");
-            config["checkpoint_identity"] = serde_json::json!(model.model_content_digest);
-            config["config_identity"] = serde_json::json!("cectc80-public");
-            config["conversion_identity"] = serde_json::json!("gguf-f32");
-            config["model_generation"] = serde_json::json!(model.generation);
-            config["mix_audio_identity"] = serde_json::json!(mix_audio_identity);
-            config["vocal_audio_identity"] = serde_json::json!(vocal_audio_identity);
-            config["separator_model_generation"] = serde_json::json!(separator_model_generation);
-            config["vocal_preparation_generation"] =
-                serde_json::json!(vocal_preparation_generation);
-            let outputs = run_native_task_with_inputs(
-                model,
-                component,
-                &format!("{}-jbm555", request.request_id),
-                "notes.jbm555",
-                &[mix.path.clone(), vocal],
-                &directory,
-                config,
-                cancellation,
-            )?;
-            let evidence =
-                parse_jbm555_evidence(typed_worker_output(&outputs, "jbm555_evidence")?, expected)?;
-            timed_note_evidence.push(evidence.timed_note_evidence(expected)?);
-        }
-        let shared_rmvpe_evidence_path = shared_rmvpe_evidence_path.as_deref();
+        artifacts.pitch_evidence = light_output.pitch_artifact;
+        degraded_reasons.extend(light_output.degraded_reasons);
+        let pitch_evidence = light_output.pitch_evidence;
+        let fcpe_evidence = light_output.fcpe_evidence;
+        let basic_pitch_evidence = light_output.basic_pitch_evidence;
+        let game_evidence = light_output.game_evidence;
+        let game_conditioned_boundary_count = light_output.game_conditioned_boundary_count;
+        let mut timed_note_evidence = light_output.timed_note_evidence;
+        let shared_rmvpe_evidence_path =
+            light_output.shared_rmvpe_evidence_path.as_deref();
         let run_stars_notes = has_capability(&plan, "notes.stars");
         let run_stars_technique = has_capability(&plan, "technique.analyze");
         let run_rosvot = has_capability(&plan, "notes.rosvot");
