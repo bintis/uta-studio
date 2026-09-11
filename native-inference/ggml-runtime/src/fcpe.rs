@@ -183,9 +183,13 @@ impl Fcpe {
         progress: impl FnMut(u64, u64),
     ) -> Result<Vec<PitchFrame>, String> {
         let mut graph = None;
-        host::process_wav(input_path, progress, &self.cents_mapping, threshold, |mel| {
-            self.run_window(mel, &mut graph)
-        })
+        host::process_wav(
+            input_path,
+            progress,
+            &self.cents_mapping,
+            threshold,
+            |mel| self.run_window(mel, &mut graph),
+        )
     }
 
     fn api(&self) -> &ModelApi {
@@ -802,7 +806,11 @@ fn channel_major_window(
     output
 }
 
-fn decode_pitch(activations: &[f32], cents_mapping: &[f32], threshold: f32) -> Result<Vec<Option<f32>>, String> {
+fn decode_pitch(
+    activations: &[f32],
+    cents_mapping: &[f32],
+    threshold: f32,
+) -> Result<Vec<Option<f32>>, String> {
     if activations.len() != WINDOW_FRAMES * PITCH_CLASSES
         || cents_mapping.len() != PITCH_CLASSES
         || activations.iter().any(|value| !value.is_finite())

@@ -90,8 +90,15 @@ impl Rosvot {
     /// Neural layers execute on the selected upstream-GGML backend; Rust owns
     /// segment framing, transcript boundary preservation, and note decoding.
     pub fn infer_transcript<P>(
-        &self, shared: &SharedInputs, words: &[TranscriptWord], source_start_micros: u64, progress: P,
-    ) -> Result<RosvotResult, String> where P: FnMut(f32, &str) {
+        &self,
+        shared: &SharedInputs,
+        words: &[TranscriptWord],
+        source_start_micros: u64,
+        progress: P,
+    ) -> Result<RosvotResult, String>
+    where
+        P: FnMut(f32, &str),
+    {
         self.infer_transcript_with_threshold(shared, words, source_start_micros, 0.85, progress)
     }
 

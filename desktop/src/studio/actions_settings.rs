@@ -403,7 +403,10 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
             invalidated.invalidate(UiDirtyRegion::Settings);
         }
         UiCommand::Settings(SettingsCommand::SelectModelTuning(model)) => {
-            if app_core::model_settings::MODELS.iter().any(|item| item.id == model) {
+            if app_core::model_settings::MODELS
+                .iter()
+                .any(|item| item.id == model)
+            {
                 studio.shell.model_tuning = model.clone();
                 studio.shell.notice = None;
             } else {
@@ -419,10 +422,18 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
             invalidated.invalidate(UiDirtyRegion::Settings);
         }
         UiCommand::Settings(SettingsCommand::AdjustModelParameter(model, key, delta)) => {
-            let result = app_core::model_settings::parameter(model, key).ok_or_else(|| format!("Unknown model parameter: {model}.{key}"))
+            let result = app_core::model_settings::parameter(model, key)
+                .ok_or_else(|| format!("Unknown model parameter: {model}.{key}"))
                 .and_then(|parameter| {
-                    let value = model_parameter_value(&studio.shell.config, model, parameter) + f64::from(*delta) * parameter.step;
-                    change_model_parameter(&mut studio.shell.config, model, key, &value.to_string(), AppConfig::save)
+                    let value = model_parameter_value(&studio.shell.config, model, parameter)
+                        + f64::from(*delta) * parameter.step;
+                    change_model_parameter(
+                        &mut studio.shell.config,
+                        model,
+                        key,
+                        &value.to_string(),
+                        AppConfig::save,
+                    )
                 });
             studio.shell.notice = Some(match result {
                 Ok(()) => "Model setting saved. Applies to the next analysis; existing charts are unchanged.".to_string(),

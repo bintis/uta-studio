@@ -220,7 +220,8 @@ mod settings_tests {
         let params = super::infer_params(&serde_json::json!({
             "language":"ja", "known_boundaries_us":[100000],
             "model_settings":{"sampling_steps":16,"boundary_threshold":0.4,"note_threshold":0.6}
-        })).unwrap();
+        }))
+        .unwrap();
         assert_eq!(params.d3pm_steps, 16);
         assert_eq!(params.boundary_threshold, 0.4);
         assert_eq!(params.note_threshold, 0.6);

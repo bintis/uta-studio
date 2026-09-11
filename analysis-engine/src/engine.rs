@@ -550,7 +550,7 @@ impl AnalysisEngine {
             );
             let route = resolve_roformer_route(model, request)?;
             let task = DenoiseTask {
-                    model_settings: request.execution_policy.model_settings.get(&model.model_id),
+                model_settings: request.execution_policy.model_settings.get(&model.model_id),
                 model_path: &model.model_path,
                 executable: &model.runtime_executable,
                 runtime_recipe_digest: model.runtime_recipe_digest.as_deref(),

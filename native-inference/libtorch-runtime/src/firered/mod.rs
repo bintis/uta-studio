@@ -40,7 +40,11 @@ impl FireRed {
         self.greedy_decode_with_budget(encoded, MAX_GENERATED_TOKENS)
     }
 
-    pub fn greedy_decode_with_budget(&self, encoded: &EncodedAudio, max_new_tokens: usize) -> Result<Vec<u32>, String> {
+    pub fn greedy_decode_with_budget(
+        &self,
+        encoded: &EncodedAudio,
+        max_new_tokens: usize,
+    ) -> Result<Vec<u32>, String> {
         if max_new_tokens == 0 || max_new_tokens > MAX_GENERATED_TOKENS {
             return Err("FireRed token budget exceeds the native decoder capacity".to_string());
         }

@@ -72,7 +72,15 @@ pub fn infer(
         report,
         |mix, vocal, report| {
             let model = crate::prepared::jbm(loaded, runtime, device, model_path)?;
-            model.process_wavs_with_thresholds(mix, vocal, uta_model_settings::number(config, "onset_threshold", f64::from(ONSET_THRESHOLD)) as f32, uta_model_settings::number(config, "offset_threshold", f64::from(OFFSET_THRESHOLD)) as f32, report)
+            model.process_wavs_with_thresholds(
+                mix,
+                vocal,
+                uta_model_settings::number(config, "onset_threshold", f64::from(ONSET_THRESHOLD))
+                    as f32,
+                uta_model_settings::number(config, "offset_threshold", f64::from(OFFSET_THRESHOLD))
+                    as f32,
+                report,
+            )
         },
     )
 }
@@ -148,8 +156,16 @@ pub fn infer_with(
         ),
         frontend_profile: "jbm555-rust-logfft-44k1-hop1024-midi24-384x48-scales0.5-1-2",
         decode_profile: "jbm555-cectc",
-        onset_threshold: uta_model_settings::number(config, "onset_threshold", f64::from(ONSET_THRESHOLD)) as f32,
-        offset_threshold: uta_model_settings::number(config, "offset_threshold", f64::from(OFFSET_THRESHOLD)) as f32,
+        onset_threshold: uta_model_settings::number(
+            config,
+            "onset_threshold",
+            f64::from(ONSET_THRESHOLD),
+        ) as f32,
+        offset_threshold: uta_model_settings::number(
+            config,
+            "offset_threshold",
+            f64::from(OFFSET_THRESHOLD),
+        ) as f32,
         notes,
     };
     let mut file = std::fs::OpenOptions::new()

@@ -64,7 +64,8 @@ pub fn parse_rmvpe_pitch(
             .map_err(|error| invalid(format!("could not read RMVPE evidence: {error}")))?,
     )
     .map_err(|error| invalid(format!("RMVPE evidence JSON is invalid: {error}")))?;
-    if !raw.voiced_threshold.is_finite() || !(0.0..=1.0).contains(&raw.voiced_threshold)
+    if !raw.voiced_threshold.is_finite()
+        || !(0.0..=1.0).contains(&raw.voiced_threshold)
         || raw.schema_version != 1
         || raw.model_id != "rmvpe"
         || !matches!(

@@ -197,7 +197,12 @@ fn execute_exact_intent(
             })
         } else {
             client.analyze_with_events(&request_value, &intent.request_id, &output_root, |event| {
-                apply_engine_lifecycle_event(file_hash, log_path, event, &request.execution_policy.model_settings)
+                apply_engine_lifecycle_event(
+                    file_hash,
+                    log_path,
+                    event,
+                    &request.execution_policy.model_settings,
+                )
             })
         };
         remove_active_engine(file_hash);

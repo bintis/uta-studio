@@ -99,8 +99,13 @@ pub fn infer(
         |wav, forced_language, progress| {
             let mut qwen = crate::prepared::qwen(loaded, runtime, device, model_path)?;
             qwen.retain_audio_intermediates(retain_audio);
-            let transcription =
-                qwen.transcribe_wav(wav, uta_model_settings::number(config, "max_new_tokens", DEFAULT_MAX_NEW_TOKENS as f64) as usize, forced_language, progress)?;
+            let transcription = qwen.transcribe_wav(
+                wav,
+                uta_model_settings::number(config, "max_new_tokens", DEFAULT_MAX_NEW_TOKENS as f64)
+                    as usize,
+                forced_language,
+                progress,
+            )?;
             let (retained, reused) = qwen.audio_residency_bytes();
             if retained > 0 {
                 crate::audio_cache::diagnostic(&format!(

@@ -241,7 +241,10 @@ fn validate_semantics(model_id: &str, config: &serde_json::Value) -> Result<(), 
     if let Some(settings) = config.get("model_settings") {
         let settings = serde_json::from_value(settings.clone())
             .map_err(|error| format!("invalid model settings: {error}"))?;
-        uta_model_settings::validate(&std::collections::BTreeMap::from([(model_id.to_string(), settings)]))?;
+        uta_model_settings::validate(&std::collections::BTreeMap::from([(
+            model_id.to_string(),
+            settings,
+        )]))?;
     }
     let backend = config
         .get("backend")
@@ -883,7 +886,11 @@ pub fn run(
             } else if model_id == "fcpe" {
                 let fcpe = crate::prepared::fcpe(loaded, ggml_runtime, &device, &model);
                 fcpe.and_then(|fcpe| {
-                    let frames = fcpe.process_wav_with_threshold(&input, uta_model_settings::number(config, "voiced_threshold", 0.006) as f32, &mut report_units)?;
+                    let frames = fcpe.process_wav_with_threshold(
+                        &input,
+                        uta_model_settings::number(config, "voiced_threshold", 0.006) as f32,
+                        &mut report_units,
+                    )?;
                     write_raw_fcpe_evidence(frames, &engine_output)
                 })
             } else if model_id == "basic_pitch" {
@@ -997,7 +1004,9 @@ pub fn run(
                 crate::prepared::roformer(loaded, ggml_runtime, &device, &model).and_then(
                     |mut roformer| {
                         if config["model_settings"]["overlap"].is_number() {
-                            roformer.set_overlap(uta_model_settings::number(config, "overlap", 2.0) as usize)?;
+                            roformer.set_overlap(
+                                uta_model_settings::number(config, "overlap", 2.0) as usize,
+                            )?;
                         }
                         roformer.process_wav(&input, &engine_output, &mut report_units)
                     },
@@ -1264,7 +1273,8 @@ mod tests {
         assert_eq!(evidence["runtime_manifest_sha256"], runtime_digest);
         let tuned = root.join("tuned.json");
         publish_rmvpe_evidence(&raw, &tuned, &runtime_digest, "ggml_vulkan", 0.9).unwrap();
-        let tuned: serde_json::Value = serde_json::from_slice(&std::fs::read(tuned).unwrap()).unwrap();
+        let tuned: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(tuned).unwrap()).unwrap();
         assert!((tuned["voiced_threshold"].as_f64().unwrap() - 0.9).abs() < 0.000001);
         assert_eq!(tuned["frames"][0]["voiced"], false);
         assert_eq!(tuned["frames"][0]["hz"], 220.0);

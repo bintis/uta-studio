@@ -80,7 +80,14 @@ pub fn infer(
         progress,
         |wav, cmvn, tokens, progress| {
             let model = crate::prepared::firered(loaded, runtime, device, model_path)?;
-            model.transcribe_wav_with_budget(wav, cmvn, tokens, uta_model_settings::number(config, "max_new_tokens", MAX_GENERATED_TOKENS as f64) as usize, progress)
+            model.transcribe_wav_with_budget(
+                wav,
+                cmvn,
+                tokens,
+                uta_model_settings::number(config, "max_new_tokens", MAX_GENERATED_TOKENS as f64)
+                    as usize,
+                progress,
+            )
         },
     )
 }

@@ -26,12 +26,23 @@ pub fn decode_notes(
     pitch_class: &[f32],
     frames: usize,
 ) -> Result<Vec<Note>, String> {
-    decode_notes_with_thresholds(on_off, octave, pitch_class, frames, ONSET_THRESHOLD, OFFSET_THRESHOLD)
+    decode_notes_with_thresholds(
+        on_off,
+        octave,
+        pitch_class,
+        frames,
+        ONSET_THRESHOLD,
+        OFFSET_THRESHOLD,
+    )
 }
 
 pub fn decode_notes_with_thresholds(
-    on_off: &[f32], octave: &[f32], pitch_class: &[f32], frames: usize,
-    onset_threshold: f32, offset_threshold: f32,
+    on_off: &[f32],
+    octave: &[f32],
+    pitch_class: &[f32],
+    frames: usize,
+    onset_threshold: f32,
+    offset_threshold: f32,
 ) -> Result<Vec<Note>, String> {
     if on_off.len() != frames * 4 || octave.len() != frames * 5 || pitch_class.len() != frames * 13
     {
@@ -173,7 +184,9 @@ mod tests {
         assert_eq!(notes.len(), 2);
         assert_eq!(notes[0].midi, notes[1].midi);
         assert!(notes[0].range.end <= notes[1].range.start);
-        let less_sensitive = decode_notes_with_thresholds(&on_off, &octave, &class, frames, 0.85, OFFSET_THRESHOLD).unwrap();
+        let less_sensitive =
+            decode_notes_with_thresholds(&on_off, &octave, &class, frames, 0.85, OFFSET_THRESHOLD)
+                .unwrap();
         assert_eq!(less_sensitive.len(), 1);
         assert!(less_sensitive[0].range.start > notes[0].range.start);
     }

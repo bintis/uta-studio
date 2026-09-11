@@ -42,8 +42,14 @@ fn super_acceleration_is_captured_in_the_exact_request() {
         ordinary.requested_artifacts
     );
     assert_eq!(accelerated.analysis, ordinary.analysis);
-    assert_eq!(accelerated.execution_policy.model_settings, ordinary.execution_policy.model_settings);
-    assert_eq!(accelerated.execution_policy.model_settings["bs_roformer_leap_xe90_vocals"]["overlap"], 8);
+    assert_eq!(
+        accelerated.execution_policy.model_settings,
+        ordinary.execution_policy.model_settings
+    );
+    assert_eq!(
+        accelerated.execution_policy.model_settings["bs_roformer_leap_xe90_vocals"]["overlap"],
+        8
+    );
     assert_eq!(accelerated.execution_policy.requested_backend, None);
     assert!(
         accelerated

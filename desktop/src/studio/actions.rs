@@ -79,12 +79,20 @@ fn dispatch_action(action: &UiAction, commands: &mut Commands, context: &mut Act
     // Apply/Enter reads the visible numeric field, then uses the same mutation
     // command as NDJSON automation and +/- controls.
     if let UiCommand::Settings(SettingsCommand::ApplyModelParameter(model, key)) = &action.0 {
-        let value = context.model_inputs.iter().find(|(input, _)| input.model == *model && input.key == *key)
+        let value = context
+            .model_inputs
+            .iter()
+            .find(|(input, _)| input.model == *model && input.key == *key)
             .map(|(_, text)| text.value().to_string());
         if let Some(value) = value {
-            dispatch_action(&SettingsCommand::SetModelParameter(model.clone(), key.clone(), value).into(), commands, context);
+            dispatch_action(
+                &SettingsCommand::SetModelParameter(model.clone(), key.clone(), value).into(),
+                commands,
+                context,
+            );
         } else {
-            context.shell.notice = Some("Open this model's controls before applying an edited value".to_string());
+            context.shell.notice =
+                Some("Open this model's controls before applying an edited value".to_string());
             context.invalidated.invalidate(UiDirtyRegion::Settings);
         }
         return;

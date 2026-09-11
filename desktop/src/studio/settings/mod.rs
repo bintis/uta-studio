@@ -8,8 +8,8 @@ mod layout;
 mod models;
 mod rows;
 mod storage;
-mod types;
 mod tuning;
+mod types;
 
 #[cfg(test)]
 mod tests;
@@ -24,5 +24,5 @@ pub(crate) use layout::*;
 pub(crate) use models::*;
 pub(crate) use rows::*;
 pub(crate) use storage::*;
-pub(crate) use types::*;
 pub(crate) use tuning::*;
+pub(crate) use types::*;

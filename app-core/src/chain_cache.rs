@@ -71,13 +71,32 @@ fn enabled(node: Option<&WorkflowNodeInstance>) -> bool {
     node.is_some_and(|node| node.execution_policy != ExecutionPolicy::Disabled)
 }
 
-fn normalized_parameters(node: &WorkflowNodeInstance, settings: &uta_model_settings::ModelSettings) -> String {
-    let providers = node.separation_strategy.map(crate::workflow::separation_strategy_descriptor)
-        .map(|strategy| strategy.executions.iter().map(|execution| execution.provider_id).collect::<Vec<_>>())
+fn normalized_parameters(
+    node: &WorkflowNodeInstance,
+    settings: &uta_model_settings::ModelSettings,
+) -> String {
+    let providers = node
+        .separation_strategy
+        .map(crate::workflow::separation_strategy_descriptor)
+        .map(|strategy| {
+            strategy
+                .executions
+                .iter()
+                .map(|execution| execution.provider_id)
+                .collect::<Vec<_>>()
+        })
         .unwrap_or_else(|| node.model_id.as_deref().into_iter().collect());
-    let tuning = providers.into_iter().map(|provider| (provider, settings.get(provider))).collect::<Vec<_>>();
-    serde_json::to_string(&(&node.model_id, &node.separation_strategy, &node.parameters, tuning))
-        .unwrap_or_default()
+    let tuning = providers
+        .into_iter()
+        .map(|provider| (provider, settings.get(provider)))
+        .collect::<Vec<_>>();
+    serde_json::to_string(&(
+        &node.model_id,
+        &node.separation_strategy,
+        &node.parameters,
+        tuning,
+    ))
+    .unwrap_or_default()
 }
 
 /// Decides how far into the Step 1 chain a cached result can be reused for
@@ -85,7 +104,11 @@ fn normalized_parameters(node: &WorkflowNodeInstance, settings: &uta_model_setti
 /// non-`OriginalMix` role when every unit up to that point both opted in
 /// (`skip_if_unchanged`) and has a still-valid cached artifact whose
 /// fingerprint matches the current configuration exactly.
-pub fn plan_chain_cache(file_hash: &str, workflow: &WorkflowDefinition, settings: &uta_model_settings::ModelSettings) -> ChainCacheDecision {
+pub fn plan_chain_cache(
+    file_hash: &str,
+    workflow: &WorkflowDefinition,
+    settings: &uta_model_settings::ModelSettings,
+) -> ChainCacheDecision {
     let mut decision = ChainCacheDecision::default();
     let mut chain_input_hash = file_hash.to_string();
 
@@ -376,7 +399,13 @@ fn finalize_and_persist_stem(
 /// or a `source` this cache can't read/capture -- this must never turn an
 /// otherwise-successful worker output into a failed run merely because
 /// caching it hit a snag.
-pub fn persist_cacheable_stem(cache_root: &Path, file_hash: &str, artifact: &str, source: &Path, settings: &uta_model_settings::ModelSettings) {
+pub fn persist_cacheable_stem(
+    cache_root: &Path,
+    file_hash: &str,
+    artifact: &str,
+    source: &Path,
+    settings: &uta_model_settings::ModelSettings,
+) {
     let Ok(stored_workflow) = crate::workflow::load_song_workflow(file_hash) else {
         return;
     };
@@ -515,19 +544,52 @@ mod tests {
         let file_hash = "song-overlap";
         let mut workflow = default_workflow(file_hash);
         workflow.nodes[1].skip_if_unchanged = true;
-        crate::workflow::save_song_workflow(file_hash, workflow.clone(), crate::workflow::WorkflowLayout::default()).unwrap();
+        crate::workflow::save_song_workflow(
+            file_hash,
+            workflow.clone(),
+            crate::workflow::WorkflowLayout::default(),
+        )
+        .unwrap();
         let mut settings = uta_model_settings::ModelSettings::new();
-        uta_model_settings::set(&mut settings, "bs_roformer_leap_xe90_vocals", "overlap", 4.0).unwrap();
+        uta_model_settings::set(
+            &mut settings,
+            "bs_roformer_leap_xe90_vocals",
+            "overlap",
+            4.0,
+        )
+        .unwrap();
         let source = root.join("guide-vocals.flac");
         std::fs::write(&source, b"isolated stem").unwrap();
         persist_cacheable_stem(&root, file_hash, "guide_vocals", &source, &settings);
-        assert!(plan_chain_cache(file_hash, &workflow, &settings).source_path.is_some());
+        assert!(
+            plan_chain_cache(file_hash, &workflow, &settings)
+                .source_path
+                .is_some()
+        );
         // Independent pitch controls do not invalidate an audio separator.
         uta_model_settings::set(&mut settings, "rmvpe", "voiced_threshold", 0.1).unwrap();
-        assert!(plan_chain_cache(file_hash, &workflow, &settings).source_path.is_some());
-        uta_model_settings::set(&mut settings, "bs_roformer_leap_xe90_vocals", "overlap", 8.0).unwrap();
-        assert!(plan_chain_cache(file_hash, &workflow, &settings).source_path.is_none());
-        assert!(plan_chain_cache(file_hash, &workflow, &Default::default()).source_path.is_none());
+        assert!(
+            plan_chain_cache(file_hash, &workflow, &settings)
+                .source_path
+                .is_some()
+        );
+        uta_model_settings::set(
+            &mut settings,
+            "bs_roformer_leap_xe90_vocals",
+            "overlap",
+            8.0,
+        )
+        .unwrap();
+        assert!(
+            plan_chain_cache(file_hash, &workflow, &settings)
+                .source_path
+                .is_none()
+        );
+        assert!(
+            plan_chain_cache(file_hash, &workflow, &Default::default())
+                .source_path
+                .is_none()
+        );
         assert!(source.exists());
     }
 
@@ -643,7 +705,13 @@ mod tests {
 
         let source = root.join("guide-vocals.flac");
         std::fs::write(&source, b"fake vocal stem bytes").unwrap();
-        persist_cacheable_stem(&root, file_hash, "guide_vocals", &source, &Default::default());
+        persist_cacheable_stem(
+            &root,
+            file_hash,
+            "guide_vocals",
+            &source,
+            &Default::default(),
+        );
 
         let revision = load_active_artifact(file_hash, ArtifactKind::VocalStem)
             .expect("the live event must have published a matching revision");
@@ -744,7 +812,13 @@ mod tests {
 
         let source = root.join("guide-vocals.flac");
         std::fs::write(&source, b"fake vocal stem bytes").unwrap();
-        persist_cacheable_stem(&root, file_hash, "guide_vocals", &source, &Default::default());
+        persist_cacheable_stem(
+            &root,
+            file_hash,
+            "guide_vocals",
+            &source,
+            &Default::default(),
+        );
 
         assert!(load_active_artifact(file_hash, ArtifactKind::VocalStem).is_none());
     }

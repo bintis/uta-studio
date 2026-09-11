@@ -44,7 +44,8 @@ pub fn read_shared_rmvpe(path: &Path) -> Result<Vec<f32>, String> {
             .map_err(|error| format!("could not read shared RMVPE evidence: {error}"))?,
     )
     .map_err(|error| format!("shared RMVPE evidence JSON is invalid: {error}"))?;
-    if !evidence.voiced_threshold.is_finite() || !(0.0..=1.0).contains(&evidence.voiced_threshold)
+    if !evidence.voiced_threshold.is_finite()
+        || !(0.0..=1.0).contains(&evidence.voiced_threshold)
         || evidence.schema_version != 1
         || evidence.model_id != "rmvpe"
         || evidence.source_model_sha256.trim().is_empty()
