@@ -135,9 +135,6 @@
             gstreamer
             gst-plugins-base
             gst-plugins-good
-            gst-plugins-bad
-            gst-plugins-ugly
-            gst-libav
           ];
           # GStreamer is a multi-output package. The default package path can
           # resolve to its `bin` output, which contains gst-inspect but not the
@@ -161,7 +158,6 @@
             ];
 
             buildInputs = gstPlugins ++ (with pkgs; [
-              ffmpeg
               libglvnd
               libxkbcommon
               udev
@@ -244,7 +240,7 @@
               install -Dm644 icon.png $out/share/icons/hicolor/512x512/apps/uta-studio.png
               install -Dm644 desktop/uta-studio.desktop $out/share/applications/uta-studio.desktop
               runtimeWrapperArgs=(
-                --set UTA_STUDIO_FFMPEG_PATH ${pkgs.ffmpeg}/bin/ffmpeg
+                --prefix PATH : /run/current-system/sw/bin
                 --set UTA_STUDIO_GGML_RUNTIME_PATH $out/bin/uta-ggml-worker
                 --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath (runtimeLibraries ++ [ pkgs.libglvnd pkgs.libxkbcommon pkgs.udev pkgs.vulkan-loader pkgs.wayland ])}"
                 --prefix LD_LIBRARY_PATH : /run/opengl-driver/lib
@@ -252,8 +248,8 @@
               makeWrapper $out/bin/.uta-runtime-unwrapped $out/bin/uta-runtime "''${runtimeWrapperArgs[@]}"
               makeWrapper $out/bin/.uta-analyze-unwrapped $out/bin/uta-analyze "''${runtimeWrapperArgs[@]}"
               makeWrapper $out/bin/.uta-studio-unwrapped $out/bin/uta-studio \
+                --prefix PATH : /run/current-system/sw/bin \
                 --set UTA_STUDIO_ASSET_PATH $out/share/uta-studio \
-                --set UTA_STUDIO_FFMPEG_PATH ${pkgs.ffmpeg}/bin/ffmpeg \
                 --set UTA_STUDIO_ANALYSIS_CLI_PATH $out/bin/uta-analyze \
                 --set UTA_STUDIO_RUNTIME_CLI_PATH $out/bin/uta-runtime \
                 --set UTA_STUDIO_GGML_RUNTIME_PATH $out/bin/uta-ggml-worker \
@@ -279,9 +275,6 @@
             gstreamer
             gst-plugins-base
             gst-plugins-good
-            gst-plugins-bad
-            gst-plugins-ugly
-            gst-libav
           ];
           gstPluginPath = pkgs.lib.makeSearchPath "lib/gstreamer-1.0"
             (map pkgs.lib.getLib gstPlugins);
@@ -321,8 +314,6 @@
               if [ -z "''${UTA_STUDIO_FFMPEG_PATH:-}" ]; then
                 if command -v ffmpeg >/dev/null 2>&1; then
                   export UTA_STUDIO_FFMPEG_PATH="$(command -v ffmpeg)"
-                elif [ -x "${pkgs.ffmpeg}/bin/ffmpeg" ]; then
-                  export UTA_STUDIO_FFMPEG_PATH="${pkgs.ffmpeg}/bin/ffmpeg"
                 fi
               fi
               export UTA_STUDIO_ANALYSIS_CLI_PATH="$PWD/target/debug/uta-analyze"
@@ -332,6 +323,11 @@
               export __EGL_VENDOR_LIBRARY_DIRS=/run/opengl-driver/share/glvnd/egl_vendor.d
               export GST_PLUGIN_SYSTEM_PATH_1_0="${gstPluginPath}:''${GST_PLUGIN_SYSTEM_PATH_1_0:-}"
               export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath (runtimeLibraries ++ [ pkgs.libglvnd pkgs.libxkbcommon pkgs.udev pkgs.vulkan-loader pkgs.wayland ])}:/run/opengl-driver/lib:''${LD_LIBRARY_PATH:-}"
+              # winit dynamically loads Wayland and graphics libraries at runtime.
+              # Embed the Nix and driver locations into native host builds so
+              # target/debug and target/release executables run directly on NixOS.
+              export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C link-arg=-Wl,-rpath,${pkgs.lib.makeLibraryPath (runtimeLibraries ++ [ pkgs.libglvnd pkgs.libxkbcommon pkgs.udev pkgs.vulkan-loader pkgs.wayland ])}:/run/opengl-driver/lib ''${CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS:-}"
+              export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C link-arg=-Wl,-rpath,${pkgs.lib.makeLibraryPath (runtimeLibraries ++ [ pkgs.libglvnd pkgs.libxkbcommon pkgs.udev pkgs.vulkan-loader pkgs.wayland ])}:/run/opengl-driver/lib ''${CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS:-}"
             '';
           };
         });
