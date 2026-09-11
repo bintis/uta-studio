@@ -433,15 +433,27 @@ fn unresolved_words_do_not_shift_later_measured_words_into_an_earlier_line() {
     })
     .collect::<Vec<_>>();
     assert_eq!(
-        timed_lyric_word_owner(TimeRange::new(11_000_000, 11_200_000).unwrap(), &transcript, &words),
+        timed_lyric_word_owner(
+            TimeRange::new(11_000_000, 11_200_000).unwrap(),
+            &transcript,
+            &words
+        ),
         Some("later-sand")
     );
     assert_eq!(
-        timed_lyric_word_owner(TimeRange::new(3_000_000, 3_200_000).unwrap(), &transcript, &words),
+        timed_lyric_word_owner(
+            TimeRange::new(3_000_000, 3_200_000).unwrap(),
+            &transcript,
+            &words
+        ),
         Some("first-wind")
     );
     assert_eq!(
-        timed_lyric_word_owner(TimeRange::new(6_000_000, 6_200_000).unwrap(), &transcript, &words),
+        timed_lyric_word_owner(
+            TimeRange::new(6_000_000, 6_200_000).unwrap(),
+            &transcript,
+            &words
+        ),
         None
     );
 }
