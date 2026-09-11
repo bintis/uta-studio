@@ -26,6 +26,13 @@ pub fn decode_notes(
     pitch_class: &[f32],
     frames: usize,
 ) -> Result<Vec<Note>, String> {
+    decode_notes_with_thresholds(on_off, octave, pitch_class, frames, ONSET_THRESHOLD, OFFSET_THRESHOLD)
+}
+
+pub fn decode_notes_with_thresholds(
+    on_off: &[f32], octave: &[f32], pitch_class: &[f32], frames: usize,
+    onset_threshold: f32, offset_threshold: f32,
+) -> Result<Vec<Note>, String> {
     if on_off.len() != frames * 4 || octave.len() != frames * 5 || pitch_class.len() != frames * 13
     {
         return Err("JBM555 decoder received malformed output tensors".to_string());
@@ -48,7 +55,7 @@ pub fn decode_notes(
     for frame in 0..frames {
         let backward = frame.saturating_sub(3);
         let forward = (frame + 4).min(frames);
-        let is_peak = onset[frame] >= ONSET_THRESHOLD
+        let is_peak = onset[frame] >= onset_threshold
             && onset[backward..forward]
                 .iter()
                 .enumerate()
@@ -57,7 +64,7 @@ pub fn decode_notes(
         if is_peak {
             finish_note(frame, &mut active, &mut pitches, &mut notes, None);
             active = Some((frame, onset[frame]));
-        } else if on_off[frame * 4 + 2] >= OFFSET_THRESHOLD {
+        } else if on_off[frame * 4 + 2] >= offset_threshold {
             finish_note(
                 frame,
                 &mut active,

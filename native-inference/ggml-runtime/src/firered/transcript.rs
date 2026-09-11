@@ -33,8 +33,15 @@ impl FireRed {
         vocabulary: &[u8],
         progress: impl FnMut(u64, u64),
     ) -> Result<Transcription, String> {
+        self.transcribe_wav_with_budget(wav, cmvn, vocabulary, super::MAX_GENERATED_TOKENS, progress)
+    }
+
+    pub fn transcribe_wav_with_budget(
+        &self, wav: &std::path::Path, cmvn: &[u8], vocabulary: &[u8], max_new_tokens: usize,
+        progress: impl FnMut(u64, u64),
+    ) -> Result<Transcription, String> {
         let samples = crate::wav::read_f32_wav(wav, SAMPLE_RATE as u32, 1)?;
-        self.transcribe_long(&samples, cmvn, vocabulary, progress)
+        self.transcribe_long_with_budget(&samples, cmvn, vocabulary, max_new_tokens, progress)
     }
 
     /// Transcribes up to four hours as bounded overlapping FireRed windows.
@@ -46,6 +53,13 @@ impl FireRed {
         samples: &[f32],
         cmvn: &[u8],
         vocabulary: &[u8],
+        progress: impl FnMut(u64, u64),
+    ) -> Result<Transcription, String> {
+        self.transcribe_long_with_budget(samples, cmvn, vocabulary, super::MAX_GENERATED_TOKENS, progress)
+    }
+
+    pub fn transcribe_long_with_budget(
+        &self, samples: &[f32], cmvn: &[u8], vocabulary: &[u8], max_new_tokens: usize,
         mut progress: impl FnMut(u64, u64),
     ) -> Result<Transcription, String> {
         if samples.is_empty() || samples.len() > MAX_INPUT_SAMPLES {
@@ -72,7 +86,7 @@ impl FireRed {
                 ));
             }
             let encoded = self.encode(&features)?;
-            let generated = self.greedy_decode(&encoded)?;
+            let generated = self.greedy_decode_with_budget(&encoded, max_new_tokens)?;
             if generated.last() != Some(&EOS) {
                 // An attention decoder with nothing to transcribe does not
                 // predict EOS, it runs to the budget. Instrumental windows are

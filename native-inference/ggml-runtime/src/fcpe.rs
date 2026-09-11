@@ -173,8 +173,17 @@ impl Fcpe {
         input_path: &Path,
         progress: impl FnMut(u64, u64),
     ) -> Result<Vec<PitchFrame>, String> {
+        self.process_wav_with_threshold(input_path, VOICED_THRESHOLD, progress)
+    }
+
+    pub fn process_wav_with_threshold(
+        &self,
+        input_path: &Path,
+        threshold: f32,
+        progress: impl FnMut(u64, u64),
+    ) -> Result<Vec<PitchFrame>, String> {
         let mut graph = None;
-        host::process_wav(input_path, progress, &self.cents_mapping, |mel| {
+        host::process_wav(input_path, progress, &self.cents_mapping, threshold, |mel| {
             self.run_window(mel, &mut graph)
         })
     }
@@ -793,7 +802,7 @@ fn channel_major_window(
     output
 }
 
-fn decode_pitch(activations: &[f32], cents_mapping: &[f32]) -> Result<Vec<Option<f32>>, String> {
+fn decode_pitch(activations: &[f32], cents_mapping: &[f32], threshold: f32) -> Result<Vec<Option<f32>>, String> {
     if activations.len() != WINDOW_FRAMES * PITCH_CLASSES
         || cents_mapping.len() != PITCH_CLASSES
         || activations.iter().any(|value| !value.is_finite())
@@ -808,7 +817,7 @@ fn decode_pitch(activations: &[f32], cents_mapping: &[f32]) -> Result<Vec<Option
             .enumerate()
             .max_by(|left, right| left.1.total_cmp(&right.1))
             .ok_or_else(|| "FCPE activation row is empty".to_string())?;
-        if maximum <= VOICED_THRESHOLD {
+        if maximum <= threshold {
             pitches.push(None);
             continue;
         }
@@ -999,7 +1008,7 @@ mod tests {
             activations[index] = 0.5;
         }
         activations[100] = 0.6;
-        let pitches = decode_pitch(&activations, &cents).unwrap();
+        let pitches = decode_pitch(&activations, &cents, VOICED_THRESHOLD).unwrap();
         let expected = 10.0 * 2.0_f32.powf(2000.0 / 1200.0);
         assert!((pitches[0].unwrap() - expected).abs() < 1.0e-4);
         assert!(pitches[1..].iter().all(Option::is_none));
@@ -1026,6 +1035,7 @@ pub mod host {
         input_path: &Path,
         mut progress: impl FnMut(u64, u64),
         cents_mapping: &[f32],
+        threshold: f32,
         mut run_window: impl FnMut(&[f32]) -> Result<Vec<f32>, String>,
     ) -> Result<Vec<PitchFrame>, String> {
         let audio = read_f32_wav(input_path, SAMPLE_RATE, 1)?;
@@ -1041,7 +1051,7 @@ pub mod host {
             let mel = log_mel_window(&audio_window)?;
             let input = channel_major_window(&mel, WINDOW_FRAMES, 0, WINDOW_FRAMES);
             let activations = run_window(&input)?;
-            let decoded = decode_pitch(&activations, cents_mapping)?;
+            let decoded = decode_pitch(&activations, cents_mapping, threshold)?;
             for (local_frame, hz) in decoded.into_iter().enumerate() {
                 if window > 0 && local_frame == 0 {
                     continue;

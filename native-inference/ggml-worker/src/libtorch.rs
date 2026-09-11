@@ -205,7 +205,7 @@ pub fn execute(
             crate::engine::write_raw_rmvpe_evidence(frames, engine_output)
         }
         "fcpe" => {
-            let frames = native::fcpe::Fcpe::from_model(model)?.process_wav(input, report)?;
+            let frames = native::fcpe::Fcpe::from_model(model)?.process_wav_with_threshold(input, uta_model_settings::number(config, "voiced_threshold", 0.006) as f32, report)?;
             crate::engine::write_raw_fcpe_evidence(frames, engine_output)
         }
         "basic_pitch" => {
@@ -241,7 +241,7 @@ pub fn execute(
                 report,
                 |mix, vocal, report| {
                     let (notes, samples) = native::jbm555::Jbm555::from_model(model)
-                        .process_wavs(mix, vocal, report)?;
+                        .process_wavs_with_thresholds(mix, vocal, uta_model_settings::number(config, "onset_threshold", 0.32) as f32, uta_model_settings::number(config, "offset_threshold", 0.70) as f32, report)?;
                     Ok((notes.into_iter().map(jbm_note).collect(), samples))
                 },
             )
@@ -265,11 +265,12 @@ pub fn execute(
                         duration_micros: word.duration_micros,
                     })
                     .collect::<Vec<_>>();
-                let result = native::stars::Stars::from_model(model).infer_transcript(
+                let result = native::stars::Stars::from_model(model).infer_transcript_with_threshold(
                     &shared,
                     &words,
                     source_start_micros,
                     include_technique,
+                    uta_model_settings::number(config, "boundary_threshold", 0.8) as f32,
                     |texts| {
                         let phones = g2p.phonemize_words(texts)?;
                         Ok(native::stars::PhonemeInput {
@@ -301,10 +302,11 @@ pub fn execute(
                         duration_micros: word.duration_micros,
                     })
                     .collect::<Vec<_>>();
-                let result = native::rosvot::Rosvot::from_model(model).infer_transcript(
+                let result = native::rosvot::Rosvot::from_model(model).infer_transcript_with_threshold(
                     &shared,
                     &words,
                     source_start_micros,
+                    uta_model_settings::number(config, "boundary_threshold", 0.85) as f32,
                     |_, _| {},
                 )?;
                 Ok(rosvot_result(result))
@@ -344,7 +346,7 @@ pub fn execute(
             |wav, forced_language, progress| {
                 let transcription = native::qwen::Qwen::from_model(model)?.transcribe_wav(
                     wav,
-                    native::qwen::asr::DEFAULT_MAX_NEW_TOKENS,
+                    uta_model_settings::number(config, "max_new_tokens", native::qwen::asr::DEFAULT_MAX_NEW_TOKENS as f64) as usize,
                     forced_language,
                     progress,
                 )?;
@@ -361,14 +363,18 @@ pub fn execute(
             |completed, total| report(completed, total),
             |wav, cmvn, tokens, progress| {
                 let transcription = native::firered::FireRed::from_model(model)
-                    .transcribe_wav(wav, cmvn, tokens, progress)?;
+                    .transcribe_wav_with_budget(wav, cmvn, tokens, uta_model_settings::number(config, "max_new_tokens", native::firered::MAX_GENERATED_TOKENS as f64) as usize, progress)?;
                 Ok(firered_transcription(transcription))
             },
         ),
         _ => {
             // Every separator: complete direct stem; the worker publishes the
             // residual from the decoded input exactly as on the GGML route.
-            native::roformer::Roformer::from_model(model)?.process_wav(
+            let mut roformer = native::roformer::Roformer::from_model(model)?;
+            if config["model_settings"]["overlap"].is_number() {
+                roformer.set_overlap(uta_model_settings::number(config, "overlap", 2.0) as usize)?;
+            }
+            roformer.process_wav(
                 input,
                 engine_output,
                 &mut |completed, total| report(completed, total),

@@ -179,6 +179,15 @@ impl Roformer {
         Ok(Self { model })
     }
 
+    /// Override overlap for this invocation without changing learned chunk geometry.
+    pub fn set_overlap(&mut self, overlap: usize) -> Result<(), String> {
+        if overlap == 0 || self.model.config.chunk_size / overlap == 0 {
+            return Err("RoFormer overlap produces a zero stride".to_string());
+        }
+        self.model.config.overlap = overlap;
+        Ok(())
+    }
+
     pub fn process_wav(
         &mut self,
         input_path: &Path,

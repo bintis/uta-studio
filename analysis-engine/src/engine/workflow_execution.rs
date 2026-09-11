@@ -10,6 +10,7 @@ use super::*;
 use crate::execution::{NativeTask, SupervisedWorker, WorkerExpectation};
 
 pub(super) struct DenoiseTask<'a> {
+    pub(super) model_settings: Option<&'a std::collections::BTreeMap<String, serde_json::Value>>,
     pub(super) model_path: &'a Path,
     pub(super) executable: &'a Path,
     pub(super) runtime_recipe_digest: Option<&'a str>,
@@ -20,6 +21,14 @@ pub(super) struct DenoiseTask<'a> {
     pub(super) output_root: &'a Path,
     pub(super) source_duration: u64,
     pub(super) task_id: &'a str,
+}
+
+impl DenoiseTask<'_> {
+    pub(super) fn apply_model_settings(&self, config: &mut serde_json::Value) {
+        if let Some(settings) = self.model_settings {
+            config["model_settings"] = serde_json::json!(settings);
+        }
+    }
 }
 
 pub(super) struct DualSeparationOutput {
@@ -441,8 +450,9 @@ pub(super) fn run_ggml_dual_separation(
     } else {
         "vocal+instrumental_residual"
     };
-    let (component, config) =
+    let (component, mut config) =
         roformer_dispatch_config(&task.route, task.model_path, semantic_output)?;
+    task.apply_model_settings(&mut config);
     let outputs = SupervisedWorker::run(
         task.executable,
         &WorkerExpectation {
@@ -611,6 +621,7 @@ pub(super) fn run_ggml_harmony(
         task.model_path,
         "lead_vocal+backing_vocal_residual",
     )?;
+    task.apply_model_settings(&mut config);
     config["input_semantics"] = serde_json::json!("all_vocals");
     let outputs = SupervisedWorker::run(
         task.executable,

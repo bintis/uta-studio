@@ -28,6 +28,7 @@ pub struct PitchEvidence {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RmvpeEvidence {
+    voiced_threshold: f32,
     schema_version: u32,
     model_id: String,
     source_model_sha256: String,
@@ -63,7 +64,8 @@ pub fn parse_rmvpe_pitch(
             .map_err(|error| invalid(format!("could not read RMVPE evidence: {error}")))?,
     )
     .map_err(|error| invalid(format!("RMVPE evidence JSON is invalid: {error}")))?;
-    if raw.schema_version != 1
+    if !raw.voiced_threshold.is_finite() || !(0.0..=1.0).contains(&raw.voiced_threshold)
+        || raw.schema_version != 1
         || raw.model_id != "rmvpe"
         || !matches!(
             raw.backend.as_str(),
@@ -90,7 +92,7 @@ pub fn parse_rmvpe_pitch(
             || frame.hz <= 0.0
             || !frame.confidence.is_finite()
             || !(0.0..=1.0).contains(&frame.confidence)
-            || frame.voiced != (frame.confidence >= 0.03)
+            || frame.voiced != (frame.confidence >= raw.voiced_threshold)
         {
             return Err(invalid(
                 "RMVPE frames are invalid or not on the declared grid",
@@ -279,6 +281,7 @@ mod tests {
             serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
                 "model_id": "rmvpe",
+                "voiced_threshold": 0.03,
                 "source_model_sha256": RMVPE_SOURCE_SHA256,
                 "model_gguf_sha256": "1b4095d1b57818f5e812b1986ea5a7d7e6d64ccd9e1b1d7b71f4091304513fd2",
                 "runtime_manifest_sha256": "d".repeat(64),
@@ -316,6 +319,7 @@ mod tests {
             serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
                 "model_id": "rmvpe",
+                "voiced_threshold": 0.03,
                 "source_model_sha256": RMVPE_SOURCE_SHA256,
                 "model_gguf_sha256": "1b4095d1b57818f5e812b1986ea5a7d7e6d64ccd9e1b1d7b71f4091304513fd2",
                 "runtime_manifest_sha256": "d".repeat(64),
@@ -349,6 +353,7 @@ mod tests {
             serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
                 "model_id": "rmvpe",
+                "voiced_threshold": 0.03,
                 "source_model_sha256": RMVPE_SOURCE_SHA256,
                 "model_gguf_sha256": "1b4095d1b57818f5e812b1986ea5a7d7e6d64ccd9e1b1d7b71f4091304513fd2",
                 "runtime_manifest_sha256": "d".repeat(64),

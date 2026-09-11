@@ -12,8 +12,9 @@ pub(super) fn run_ggml_cleanup(
     cancellation: &CancellationToken,
 ) -> EngineResult<SeparationOutput> {
     let directory = create_task_dir(task.output_root, spec.worker_directory)?;
-    let (component, config) =
+    let (component, mut config) =
         roformer_dispatch_config(&task.route, task.model_path, spec.semantic_output)?;
+    task.apply_model_settings(&mut config);
     let outputs = SupervisedWorker::run(
         task.executable,
         &WorkerExpectation {

@@ -66,7 +66,15 @@ pub mod fcpe {
             path: &Path,
             progress: impl FnMut(u64, u64),
         ) -> Result<Vec<PitchFrame>, String> {
-            uta_ggml_runtime::fcpe::host::process_wav(path, progress, &self.cents, |mel| {
+            self.process_wav_with_threshold(path, 0.006, progress)
+        }
+        pub fn process_wav_with_threshold(
+            &self,
+            path: &Path,
+            threshold: f32,
+            progress: impl FnMut(u64, u64),
+        ) -> Result<Vec<PitchFrame>, String> {
+            uta_ggml_runtime::fcpe::host::process_wav(path, progress, &self.cents, threshold, |mel| {
                 let input = frame_major(mel, 128, 201)?;
                 self.model
                     .forward("forward", &[Input::f32("mel", &[201, 128], &input)])?

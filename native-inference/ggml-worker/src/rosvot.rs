@@ -105,7 +105,7 @@ pub fn infer(
         |wav, raw_f0, words, source_start_micros| {
             let shared = uta_ggml_runtime::rosvot::prepare_wav_inputs(wav, raw_f0)?;
             let rosvot = crate::prepared::rosvot(loaded, runtime, device, rosvot_model)?;
-            rosvot.infer_transcript(&shared, words, source_start_micros, |_, _| {})
+            rosvot.infer_transcript_with_threshold(&shared, words, source_start_micros, uta_model_settings::number(config, "boundary_threshold", 0.85) as f32, |_, _| {})
         },
     )
 }

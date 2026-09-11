@@ -44,7 +44,8 @@ impl Chunks {
             step,
             fade,
             count,
-            window: crossfade_window(size, fade),
+            // Without overlap there is no adjacent chunk to fill a faded seam.
+            window: if overlap == 1 { vec![1.0; size] } else { crossfade_window(size, fade) },
         })
     }
 
@@ -142,6 +143,27 @@ mod tests {
     use super::*;
     use std::cell::Cell;
     use std::rc::Rc;
+
+    #[test]
+    fn overlap_factors_change_work_without_losing_samples_or_seams() {
+        for length in [7, 256, 513, 2048] {
+            let input = (0..length * 2).map(|index| 0.25 + (index as f32 * 0.01).sin() * 0.2).collect::<Vec<_>>();
+            let mut previous_calls = 0;
+            for overlap in [1, 2, 4, 8, 16] {
+                let mut calls = 0;
+                let mut reported = (0, 0);
+                let output = process(&input, 256, overlap, |chunk| {
+                    calls += 1;
+                    Ok(vec![chunk.to_vec()])
+                }, &mut |done, total| reported = (done, total)).unwrap();
+                assert_eq!(output[0].len(), input.len());
+                assert!(output[0].iter().zip(&input).all(|(actual, expected)| (actual - expected).abs() < 0.000001));
+                assert!(calls >= previous_calls);
+                assert_eq!(reported, (calls, calls));
+                previous_calls = calls;
+            }
+        }
+    }
 
     #[test]
     fn every_chunk_uses_the_same_caller_owned_processor() {

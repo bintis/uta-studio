@@ -12,7 +12,7 @@ use crate::fusion::{EvidenceProvenance, ExpertTask, TimeRange};
 pub const JBM555_MODEL_ID: &str = "jbm555_cectc_80";
 pub const JBM555_FRONTEND_PROFILE: &str =
     "jbm555-rust-logfft-44k1-hop1024-midi24-384x48-scales0.5-1-2";
-pub const JBM555_DECODE_PROFILE: &str = "jbm555-cectc-onset0.32-offset0.70";
+pub const JBM555_DECODE_PROFILE: &str = "jbm555-cectc";
 pub const JBM555_ONSET_THRESHOLD: f32 = 0.32;
 pub const JBM555_OFFSET_THRESHOLD: f32 = 0.70;
 const MAX_EVIDENCE_BYTES: u64 = 256 * 1024 * 1024;
@@ -96,8 +96,10 @@ impl Jbm555Evidence {
             )
             || self.frontend_profile != JBM555_FRONTEND_PROFILE
             || self.decode_profile != JBM555_DECODE_PROFILE
-            || (self.onset_threshold - JBM555_ONSET_THRESHOLD).abs() > f32::EPSILON
-            || (self.offset_threshold - JBM555_OFFSET_THRESHOLD).abs() > f32::EPSILON
+            || !self.onset_threshold.is_finite()
+            || !(0.0..=1.0).contains(&self.onset_threshold)
+            || !self.offset_threshold.is_finite()
+            || !(0.0..=1.0).contains(&self.offset_threshold)
         {
             return Err(invalid(
                 "JBM555 evidence identity or decode contract is invalid",

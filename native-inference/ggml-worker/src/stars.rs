@@ -138,11 +138,12 @@ pub fn infer(
         |wav, raw_f0, words, source_start_micros, include_technique, g2p| {
             let shared = uta_ggml_runtime::stars::prepare_wav_inputs(wav, raw_f0)?;
             let stars = crate::prepared::stars(loaded, runtime, device, stars_model)?;
-            stars.infer_transcript(
+            stars.infer_transcript_with_threshold(
                 &shared,
                 words,
                 source_start_micros,
                 include_technique,
+                uta_model_settings::number(config, "boundary_threshold", 0.8) as f32,
                 |texts| g2p.phonemize_words(texts),
                 |_, _| {},
             )

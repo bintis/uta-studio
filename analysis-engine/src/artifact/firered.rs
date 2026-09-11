@@ -13,7 +13,7 @@ const WINDOW_SAMPLES: usize = 37_199;
 const WINDOW_OVERLAP_SAMPLES: usize = SAMPLE_RATE;
 const FEATURE_FRAMES: usize = 230;
 const ENCODER_FRAMES: usize = 58;
-const MAX_GENERATED_TOKENS: usize = 11;
+const MAX_GENERATED_TOKENS: usize = ENCODER_FRAMES;
 const VOCAB_SIZE: u32 = 8_667;
 
 #[derive(Deserialize)]
@@ -31,6 +31,7 @@ struct RawEvidence {
     window_samples: usize,
     window_overlap_samples: usize,
     window_count: usize,
+    unfinished_windows: usize,
     feature_frames: usize,
     encoder_frames: usize,
     max_generated_tokens: usize,
@@ -68,7 +69,7 @@ pub fn parse_firered_transcript(path: &Path) -> EngineResult<TranscriptArtifact>
                     && window.start_sample == start
                     && window.end_sample == end
                     && window.text == window.text.trim()
-                    && window.token_ids.len() < MAX_GENERATED_TOKENS
+                    && window.token_ids.len() < raw.max_generated_tokens
                     && window.token_ids.iter().all(|token| *token < VOCAB_SIZE)
             },
         );
@@ -92,10 +93,11 @@ pub fn parse_firered_transcript(path: &Path) -> EngineResult<TranscriptArtifact>
         || raw.window_samples != WINDOW_SAMPLES
         || raw.window_overlap_samples != WINDOW_OVERLAP_SAMPLES
         || raw.window_count != raw.windows.len()
+        || raw.unfinished_windows > raw.window_count
         || !windows_valid
         || raw.feature_frames != FEATURE_FRAMES
         || raw.encoder_frames != ENCODER_FRAMES
-        || raw.max_generated_tokens != MAX_GENERATED_TOKENS
+        || !(1..=MAX_GENERATED_TOKENS).contains(&raw.max_generated_tokens)
         || raw.text.trim().is_empty()
         || raw.text != raw.text.trim()
         || raw.token_ids.is_empty()
@@ -179,7 +181,8 @@ mod tests {
             "window_count": 2,
             "feature_frames": 230,
             "encoder_frames": 58,
-            "max_generated_tokens": 11,
+            "max_generated_tokens": 58,
+            "unfinished_windows": 0,
             "text": "hello world",
             "token_ids": [42, 43, 44],
             "windows": [

@@ -204,6 +204,9 @@ fn infer_params(config: &Value) -> Result<GameInferParams, String> {
         Some(_) => return Err("GAME known_boundaries_us must be an array".to_string()),
     };
     Ok(GameInferParams {
+        d3pm_steps: uta_model_settings::number(config, "sampling_steps", 8.0) as usize,
+        boundary_threshold: uta_model_settings::number(config, "boundary_threshold", 0.2) as f32,
+        note_threshold: uta_model_settings::number(config, "note_threshold", 0.2) as f32,
         language,
         known_boundaries,
         ..GameInferParams::default()

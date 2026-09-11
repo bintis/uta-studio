@@ -238,6 +238,11 @@ fn backend_for_device(device: &DeviceDescriptor) -> &'static str {
 }
 
 fn validate_semantics(model_id: &str, config: &serde_json::Value) -> Result<(), String> {
+    if let Some(settings) = config.get("model_settings") {
+        let settings = serde_json::from_value(settings.clone())
+            .map_err(|error| format!("invalid model settings: {error}"))?;
+        uta_model_settings::validate(&std::collections::BTreeMap::from([(model_id.to_string(), settings)]))?;
+    }
     let backend = config
         .get("backend")
         .and_then(serde_json::Value::as_str)
@@ -451,6 +456,7 @@ pub(crate) fn write_raw_basic_pitch_evidence(
 
 #[derive(serde::Serialize)]
 struct RmvpeEvidence<'a> {
+    voiced_threshold: f32,
     schema_version: u32,
     model_id: &'a str,
     source_model_sha256: &'a str,
@@ -467,6 +473,7 @@ fn publish_rmvpe_evidence(
     destination: &Path,
     runtime_manifest_digest: &str,
     backend: &str,
+    voiced_threshold: f32,
 ) -> Result<(), String> {
     if destination.exists() {
         return Err("RMVPE evidence target already exists".to_string());
@@ -477,7 +484,7 @@ fn publish_rmvpe_evidence(
     if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_PITCH_EVIDENCE_BYTES {
         return Err("RMVPE engine evidence size is invalid".to_string());
     }
-    let raw: RawRmvpeEvidence = serde_json::from_slice(
+    let mut raw: RawRmvpeEvidence = serde_json::from_slice(
         &std::fs::read(engine_output)
             .map_err(|error| format!("could not read RMVPE engine evidence: {error}"))?,
     )
@@ -498,7 +505,11 @@ fn publish_rmvpe_evidence(
             return Err("RMVPE engine frames are invalid or off the 10 ms grid".to_string());
         }
     }
+    for frame in &mut raw.frames {
+        frame.voiced = frame.confidence >= voiced_threshold;
+    }
     let evidence = RmvpeEvidence {
+        voiced_threshold,
         schema_version: 1,
         model_id: "rmvpe",
         source_model_sha256: runtime::RMVPE_SOURCE_SHA256,
@@ -872,7 +883,7 @@ pub fn run(
             } else if model_id == "fcpe" {
                 let fcpe = crate::prepared::fcpe(loaded, ggml_runtime, &device, &model);
                 fcpe.and_then(|fcpe| {
-                    let frames = fcpe.process_wav(&input, &mut report_units)?;
+                    let frames = fcpe.process_wav_with_threshold(&input, uta_model_settings::number(config, "voiced_threshold", 0.006) as f32, &mut report_units)?;
                     write_raw_fcpe_evidence(frames, &engine_output)
                 })
             } else if model_id == "basic_pitch" {
@@ -984,7 +995,12 @@ pub fn run(
                 // Super acceleration reuses prepared weights, but a complete model
                 // invocation stays on its assigned device, including every chunk.
                 crate::prepared::roformer(loaded, ggml_runtime, &device, &model).and_then(
-                    |mut roformer| roformer.process_wav(&input, &engine_output, &mut report_units),
+                    |mut roformer| {
+                        if config["model_settings"]["overlap"].is_number() {
+                            roformer.set_overlap(uta_model_settings::number(config, "overlap", 2.0) as usize)?;
+                        }
+                        roformer.process_wav(&input, &engine_output, &mut report_units)
+                    },
                 )
             };
             (backend_for_device(&device), inference_result)
@@ -1017,6 +1033,7 @@ pub fn run(
                 &destination,
                 route.manifest_content_digest(),
                 backend,
+                uta_model_settings::number(config, "voiced_threshold", 0.03) as f32,
             );
             (destination, "pitch_evidence", result)
         } else if model_id == "fcpe" {
@@ -1237,7 +1254,7 @@ mod tests {
         )
         .unwrap();
         let runtime_digest = "d".repeat(64);
-        publish_rmvpe_evidence(&raw, &published, &runtime_digest, "ggml_vulkan").unwrap();
+        publish_rmvpe_evidence(&raw, &published, &runtime_digest, "ggml_vulkan", 0.03).unwrap();
         let evidence: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&published).unwrap()).unwrap();
         assert_eq!(evidence["schema_version"], 1);
@@ -1246,7 +1263,7 @@ mod tests {
         assert_eq!(evidence["model_gguf_sha256"], runtime::RMVPE_GGUF_SHA256);
         assert_eq!(evidence["runtime_manifest_sha256"], runtime_digest);
         assert!(!published.with_extension("json.tmp").exists());
-        assert!(publish_rmvpe_evidence(&raw, &published, "replacement", "ggml_cpu").is_err());
+        assert!(publish_rmvpe_evidence(&raw, &published, "replacement", "ggml_cpu", 0.03).is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 

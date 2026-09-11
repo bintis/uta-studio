@@ -8,6 +8,7 @@ const MAX_FRAMES: usize = 4 * 60 * 60 * 100;
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Evidence {
+    voiced_threshold: f32,
     schema_version: u32,
     model_id: String,
     source_model_sha256: String,
@@ -43,7 +44,8 @@ pub fn read_shared_rmvpe(path: &Path) -> Result<Vec<f32>, String> {
             .map_err(|error| format!("could not read shared RMVPE evidence: {error}"))?,
     )
     .map_err(|error| format!("shared RMVPE evidence JSON is invalid: {error}"))?;
-    if evidence.schema_version != 1
+    if !evidence.voiced_threshold.is_finite() || !(0.0..=1.0).contains(&evidence.voiced_threshold)
+        || evidence.schema_version != 1
         || evidence.model_id != "rmvpe"
         || evidence.source_model_sha256.trim().is_empty()
         || evidence.model_gguf_sha256.trim().is_empty()
@@ -71,7 +73,7 @@ pub fn read_shared_rmvpe(path: &Path) -> Result<Vec<f32>, String> {
                 || frame.hz <= 0.0
                 || !frame.confidence.is_finite()
                 || !(0.0..=1.0).contains(&frame.confidence)
-                || frame.voiced != (frame.confidence >= 0.03)
+                || frame.voiced != (frame.confidence >= evidence.voiced_threshold)
             {
                 return Err(format!("shared RMVPE frame {index} is invalid"));
             }
@@ -99,6 +101,7 @@ mod tests {
             serde_json::to_vec(&serde_json::json!({
                 "schema_version": 1,
                 "model_id": "rmvpe",
+                "voiced_threshold": 0.03,
                 "source_model_sha256": "provenance-source",
                 "model_gguf_sha256": "provenance-gguf",
                 "runtime_manifest_sha256": "provenance-runtime",

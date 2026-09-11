@@ -80,7 +80,7 @@ pub fn infer(
         progress,
         |wav, cmvn, tokens, progress| {
             let model = crate::prepared::firered(loaded, runtime, device, model_path)?;
-            model.transcribe_wav(wav, cmvn, tokens, progress)
+            model.transcribe_wav_with_budget(wav, cmvn, tokens, uta_model_settings::number(config, "max_new_tokens", MAX_GENERATED_TOKENS as f64) as usize, progress)
         },
     )
 }
@@ -126,6 +126,7 @@ pub fn infer_with(
         runtime_content_digest,
         backend,
         transcription,
+        uta_model_settings::number(config, "max_new_tokens", MAX_GENERATED_TOKENS as f64) as usize,
     )?;
     write_evidence(destination, &evidence)
 }
@@ -181,6 +182,7 @@ fn evidence(
     runtime_content_digest: &str,
     backend: &str,
     transcription: Transcription,
+    max_generated_tokens: usize,
 ) -> Result<Evidence, String> {
     let input_samples = transcription
         .windows
@@ -203,7 +205,7 @@ fn evidence(
         unfinished_windows: transcription.unfinished_windows,
         feature_frames: FEATURE_FRAMES,
         encoder_frames: ENCODER_FRAMES,
-        max_generated_tokens: MAX_GENERATED_TOKENS,
+        max_generated_tokens,
         text: transcription.text,
         token_ids: transcription.token_ids,
         windows: transcription
@@ -235,7 +237,7 @@ fn validate_evidence(evidence: &Evidence) -> Result<(), String> {
                     && window.start_sample == start
                     && window.end_sample == end
                     && window.text == window.text.trim()
-                    && window.token_ids.len() < MAX_GENERATED_TOKENS
+                    && window.token_ids.len() < evidence.max_generated_tokens
                     && window
                         .token_ids
                         .iter()
@@ -258,7 +260,7 @@ fn validate_evidence(evidence: &Evidence) -> Result<(), String> {
         || evidence.window_count != evidence.windows.len()
         || evidence.feature_frames != FEATURE_FRAMES
         || evidence.encoder_frames != ENCODER_FRAMES
-        || evidence.max_generated_tokens != MAX_GENERATED_TOKENS
+        || !(1..=MAX_GENERATED_TOKENS).contains(&evidence.max_generated_tokens)
         || evidence.text.trim().is_empty()
         || evidence.text != evidence.text.trim()
         || evidence.token_ids.is_empty()
@@ -361,6 +363,7 @@ mod tests {
             "runtime-generation",
             "ggml_vulkan",
             transcription(),
+            MAX_GENERATED_TOKENS,
         )
         .unwrap();
         assert_eq!(evidence.schema_version, 2);
@@ -376,6 +379,7 @@ mod tests {
             "runtime-generation",
             "ggml_cpu",
             transcription(),
+            MAX_GENERATED_TOKENS,
         )
         .unwrap();
         evidence.token_ids.push(42);

@@ -90,10 +90,17 @@ impl Rosvot {
     /// Neural layers execute on the selected upstream-GGML backend; Rust owns
     /// segment framing, transcript boundary preservation, and note decoding.
     pub fn infer_transcript<P>(
+        &self, shared: &SharedInputs, words: &[TranscriptWord], source_start_micros: u64, progress: P,
+    ) -> Result<RosvotResult, String> where P: FnMut(f32, &str) {
+        self.infer_transcript_with_threshold(shared, words, source_start_micros, 0.85, progress)
+    }
+
+    pub fn infer_transcript_with_threshold<P>(
         &self,
         shared: &SharedInputs,
         words: &[TranscriptWord],
         source_start_micros: u64,
+        boundary_threshold: f32,
         mut progress: P,
     ) -> Result<RosvotResult, String>
     where
@@ -131,7 +138,7 @@ impl Rosvot {
                 .copy_from_slice(&frame.boundary_logits[..segment.valid]);
             let regulated = regulate_boundaries(
                 &frame.boundary_logits,
-                0.85,
+                boundary_threshold,
                 17,
                 &reference,
                 8,

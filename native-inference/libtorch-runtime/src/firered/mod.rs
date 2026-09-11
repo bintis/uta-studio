@@ -37,15 +37,22 @@ impl FireRed {
         Ok(self.resident.remember(rows, D_MODEL))
     }
     pub fn greedy_decode(&self, encoded: &EncodedAudio) -> Result<Vec<u32>, String> {
+        self.greedy_decode_with_budget(encoded, MAX_GENERATED_TOKENS)
+    }
+
+    pub fn greedy_decode_with_budget(&self, encoded: &EncodedAudio, max_new_tokens: usize) -> Result<Vec<u32>, String> {
+        if max_new_tokens == 0 || max_new_tokens > MAX_GENERATED_TOKENS {
+            return Err("FireRed token budget exceeds the native decoder capacity".to_string());
+        }
         let _guard = self.resident.lock()?;
         self.resident.validate(encoded)?;
         let output = self.model.forward(
             "session",
-            &[Input::i64("@capacity", &[], &[MAX_GENERATED_TOKENS as i64])],
+            &[Input::i64("@capacity", &[], &[max_new_tokens as i64])],
         )?;
         position(&output, 0)?;
         let mut tokens = vec![SOS];
-        for step in 0..MAX_GENERATED_TOKENS {
+        for step in 0..max_new_tokens {
             let last = i64::from(*tokens.last().expect("SOS initializes the token sequence"));
             let output = self.model.forward(
                 "decode",

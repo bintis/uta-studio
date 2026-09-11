@@ -126,11 +126,22 @@ impl Stars {
     /// optional D/E technique path. Neural layers execute on the explicitly
     /// selected native device; Rust owns segmentation and discrete decoders.
     pub fn infer_transcript<F, P>(
+        &self, shared: &SharedInputs, words: &[TranscriptWord], source_start_micros: u64,
+        include_technique: bool, phonemize: F, progress: P,
+    ) -> Result<StarsResult, String>
+    where F: FnMut(&[String]) -> Result<PhonemeInput, String>, P: FnMut(f32, &str),
+    {
+        self.infer_transcript_with_threshold(shared, words, source_start_micros, include_technique, 0.8, phonemize, progress)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn infer_transcript_with_threshold<F, P>(
         &self,
         shared: &SharedInputs,
         words: &[TranscriptWord],
         source_start_micros: u64,
         include_technique: bool,
+        boundary_threshold: f32,
         mut phonemize: F,
         mut progress: P,
     ) -> Result<StarsResult, String>
@@ -190,7 +201,7 @@ impl Stars {
             all_logits[segment.start..segment.start + segment.valid]
                 .copy_from_slice(&rhythm.note_boundary_logits[..segment.valid]);
             let regulated =
-                decode::regulate_boundaries(&rhythm.note_boundary_logits, 0.8, 17, segment.valid)?;
+                decode::regulate_boundaries(&rhythm.note_boundary_logits, boundary_threshold, 17, segment.valid)?;
             let local_boundaries = boundary_indices(&regulated, segment.valid);
             let ranges = note_ranges(&local_boundaries, segment.valid);
             if ranges.len() > NOTE_BUCKET {
