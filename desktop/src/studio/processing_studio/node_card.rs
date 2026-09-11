@@ -110,13 +110,10 @@ pub(super) fn workflow_node_can_be_removed(
     app_core::remove_workflow_node(&mut candidate, node_id).is_ok()
 }
 
-pub(super) fn workflow_model_can_be_selected(
-    definition: &app_core::WorkflowDefinition,
-    node_id: &app_core::WorkflowNodeId,
-    model_id: &str,
-) -> bool {
-    let mut candidate = definition.clone();
-    app_core::set_workflow_node_model(&mut candidate, node_id, model_id).is_ok()
+pub(super) fn workflow_model_choice_enabled(automatic_routing: bool, current: bool) -> bool {
+    // Let the mutation return its real validation error through the dispatcher.
+    // A failed trial compile must not silently remove the user's click target.
+    !automatic_routing && !current
 }
 
 pub(super) fn uses_binary_preprocessing_switch(capability: &app_core::NodeCapability) -> bool {
@@ -719,14 +716,7 @@ pub(super) fn spawn_node_card(
                         } else {
                             option.label.to_string()
                         };
-                        if !context.automatic_routing
-                            && !current
-                            && workflow_model_can_be_selected(
-                                context.definition,
-                                &node.instance_id,
-                                option.model_id,
-                            )
-                        {
+                        if workflow_model_choice_enabled(context.automatic_routing, current) {
                             action_button(
                                 choices,
                                 font.clone(),
@@ -746,12 +736,21 @@ pub(super) fn spawn_node_card(
                     card,
                     font.clone(),
                     if context.automatic_routing {
-                        "Super acceleration preserves the selected model and temporarily disables manual model changes while automatic backend/device placement is active."
+                        "Model size is locked while Super acceleration is on. Turn it off in Settings → Models & runtime to change the size. Your saved selection is preserved."
                     } else {
-                        "Choosing a provider already used by a sibling card swaps the providers while preserving each card's execution condition."
+                        "Choose a model size, then Save Workflow. Changes apply only to future analysis, not existing chart data. If a change is invalid, its reason is shown above."
                     },
                     7.5,
                     theme.muted_foreground,
+                );
+            }
+            if expanded && model_options.len() > 1 && context.automatic_routing {
+                action_button(
+                    card,
+                    font.clone(),
+                    theme,
+                    "Open Models & runtime",
+                    UiAction::from(SettingsCommand::SettingsTab(SettingsTab::Models)),
                 );
             }
             let inputs = capability

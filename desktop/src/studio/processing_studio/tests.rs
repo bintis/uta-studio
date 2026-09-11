@@ -11,6 +11,27 @@ use super::{
 };
 
 #[test]
+fn workflow_model_choices_allow_clicks_except_current_or_super_owned() {
+    use super::node_card::workflow_model_choice_enabled;
+    assert!(workflow_model_choice_enabled(false, false));
+    assert!(!workflow_model_choice_enabled(false, true));
+    assert!(!workflow_model_choice_enabled(true, false));
+    assert!(!workflow_model_choice_enabled(true, true));
+}
+
+#[test]
+fn game_size_changes_update_the_compiled_provider() {
+    let mut definition = app_core::default_workflow_definition();
+    for model in ["game_1_0_3_small", "game_1_0_3_large", "game_1_0_3_medium"] {
+        app_core::set_workflow_node_model(
+            &mut definition, &app_core::WorkflowNodeId::new("game_notes"), model,
+        ).unwrap();
+        assert_eq!(definition.nodes.iter().find(|node| node.instance_id.as_str() == "game_notes")
+            .unwrap().model_id.as_deref(), Some(model));
+    }
+}
+
+#[test]
 fn processing_studio_scroll_extent_handles_short_and_long_pages() {
     assert_eq!(processing_studio_scroll_max(600.0, 420.0), 0.0);
     assert_eq!(processing_studio_scroll_max(600.0, 600.0), 0.0);
