@@ -37,7 +37,9 @@ struct DebugSession {
 /// and may leave a partial snapshot at the path included in the error.
 /// This is synchronous local I/O, with no retention cap or power-loss guarantee.
 pub fn start_debug_logging(context: &str) -> Result<PathBuf, String> {
-    let _snapshot = SNAPSHOT_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _snapshot = SNAPSHOT_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let root = crate::cache::uta_studio_dir();
     // Bulk copies must not hold up live logging or backend pipe draining.
     let prepared = DebugSession::snapshot(&root, context);
@@ -112,7 +114,10 @@ impl DebugLogging {
             let result = writeln!(session.app_log, "{}", text.trim_end_matches('\n'));
             if let Err(error) = result {
                 self.error.get_or_insert_with(|| {
-                    format!("write {}: {error}", session.directory.join("app.log").display())
+                    format!(
+                        "write {}: {error}",
+                        session.directory.join("app.log").display()
+                    )
                 });
             }
         }
@@ -135,9 +140,8 @@ impl DebugLogging {
 impl DebugSession {
     fn snapshot(root: &Path, context: &str) -> Result<Self, String> {
         let directory = unique_directory(&root.join("debug-logs"))?;
-        Self::snapshot_into(root, context, &directory).map_err(|error| {
-            format!("debug snapshot {} incomplete: {error}", directory.display())
-        })
+        Self::snapshot_into(root, context, &directory)
+            .map_err(|error| format!("debug snapshot {} incomplete: {error}", directory.display()))
     }
 
     fn snapshot_into(root: &Path, context: &str, directory: &Path) -> Result<Self, String> {
@@ -153,7 +157,10 @@ impl DebugSession {
                 "Uta! Studio debug snapshot\nsource: {}\nprocess: {}\nstarted unix milliseconds: {}\nFiles copied through their length at open; analysis logs may be changing.\nLinks are not followed. Live backend stderr is raw, uncapped and shared by all drains.\nOnly future native commands receive UTA_STUDIO_DEBUG=1.\n",
                 root.display(),
                 std::process::id(),
-                SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis()
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis()
             ),
         )?;
         copy_logs(
@@ -168,11 +175,23 @@ impl DebugSession {
                 Some(io_at("open", &source_path, File::open(&source_path))?)
             }
             Ok(_) => {
-                io_at("write", &notes_path, writeln!(notes, "skipped non-regular app log: {}", source_path.display()))?;
+                io_at(
+                    "write",
+                    &notes_path,
+                    writeln!(
+                        notes,
+                        "skipped non-regular app log: {}",
+                        source_path.display()
+                    ),
+                )?;
                 None
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                io_at("write", &notes_path, writeln!(notes, "missing: {}", source_path.display()))?;
+                io_at(
+                    "write",
+                    &notes_path,
+                    writeln!(notes, "missing: {}", source_path.display()),
+                )?;
                 None
             }
             Err(error) => return Err(format!("inspect {}: {error}", source_path.display())),
@@ -187,7 +206,10 @@ impl DebugSession {
         let backend_stderr = io_at(
             "create live log",
             &stderr_path,
-            OpenOptions::new().create_new(true).append(true).open(&stderr_path),
+            OpenOptions::new()
+                .create_new(true)
+                .append(true)
+                .open(&stderr_path),
         )?;
         let mut session = Self {
             directory: directory.to_path_buf(),
@@ -207,11 +229,19 @@ impl DebugSession {
         };
         let path = self.directory.join("app.log");
         let length = io_at("inspect app log source for", &path, source.metadata())?.len();
-        let remaining = length.checked_sub(self.app_copied)
+        let remaining = length
+            .checked_sub(self.app_copied)
             .ok_or_else(|| format!("copy app log to {}: source shortened", path.display()))?;
-        let copied = io_at("copy app log to", &path, io::copy(&mut source.take(remaining), &mut self.app_log))?;
+        let copied = io_at(
+            "copy app log to",
+            &path,
+            io::copy(&mut source.take(remaining), &mut self.app_log),
+        )?;
         if copied != remaining {
-            return Err(format!("copy app log to {}: source shortened during copy", path.display()));
+            return Err(format!(
+                "copy app log to {}: source shortened during copy",
+                path.display()
+            ));
         }
         self.app_copied = length;
         Ok(())
@@ -230,15 +260,21 @@ impl DebugSession {
                 }
                 Ok(_) => {}
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(format!(
-                    "debug snapshot {} incomplete: inspect {}: {error}",
-                    self.directory.display(), self.app_source_path.display()
-                )),
+                Err(error) => {
+                    return Err(format!(
+                        "debug snapshot {} incomplete: inspect {}: {error}",
+                        self.directory.display(),
+                        self.app_source_path.display()
+                    ));
+                }
             }
         }
         // Only bytes appended during the bulk app copy require the live lock.
         self.copy_app_tail().map_err(|error| {
-            format!("debug snapshot {} incomplete: {error}", self.directory.display())
+            format!(
+                "debug snapshot {} incomplete: {error}",
+                self.directory.display()
+            )
         })?;
         self.app_source = None;
         Ok(())
@@ -251,10 +287,16 @@ fn io_at<T>(action: &str, path: &Path, result: io::Result<T>) -> Result<T, Strin
 
 fn unique_directory(parent: &Path) -> Result<PathBuf, String> {
     io_at("create directory", parent, fs::create_dir_all(parent))?;
-    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
     loop {
         let sequence = DIRECTORY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let directory = parent.join(format!("session-{timestamp}-{}-{sequence}", std::process::id()));
+        let directory = parent.join(format!(
+            "session-{timestamp}-{}-{sequence}",
+            std::process::id()
+        ));
         match fs::create_dir(&directory) {
             Ok(()) => return Ok(directory),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
@@ -263,11 +305,20 @@ fn unique_directory(parent: &Path) -> Result<PathBuf, String> {
     }
 }
 
-fn copy_logs(source: &Path, destination: &Path, notes: &mut File, notes_path: &Path) -> Result<(), String> {
+fn copy_logs(
+    source: &Path,
+    destination: &Path,
+    notes: &mut File,
+    notes_path: &Path,
+) -> Result<(), String> {
     let metadata = match fs::symlink_metadata(source) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return io_at("write", notes_path, writeln!(notes, "missing: {}", source.display()));
+            return io_at(
+                "write",
+                notes_path,
+                writeln!(notes, "missing: {}", source.display()),
+            );
         }
         Err(error) => return Err(format!("inspect {}: {error}", source.display())),
     };
@@ -275,19 +326,44 @@ fn copy_logs(source: &Path, destination: &Path, notes: &mut File, notes_path: &P
         io_at("create directory", destination, fs::create_dir(destination))?;
         for entry in io_at("read directory", source, fs::read_dir(source))? {
             let entry = io_at("read directory entry", source, entry)?;
-            copy_logs(&entry.path(), &destination.join(entry.file_name()), notes, notes_path)?;
+            copy_logs(
+                &entry.path(),
+                &destination.join(entry.file_name()),
+                notes,
+                notes_path,
+            )?;
         }
     } else if metadata.is_file() {
         let input = io_at("open", source, File::open(source))?;
         let length = io_at("inspect open file", source, input.metadata())?.len();
-        let mut output = io_at("create", destination, OpenOptions::new().write(true).create_new(true).open(destination))?;
-        let copied = io::copy(&mut input.take(length), &mut output)
-            .map_err(|error| format!("copy {} to {}: {error}", source.display(), destination.display()))?;
+        let mut output = io_at(
+            "create",
+            destination,
+            OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(destination),
+        )?;
+        let copied = io::copy(&mut input.take(length), &mut output).map_err(|error| {
+            format!(
+                "copy {} to {}: {error}",
+                source.display(),
+                destination.display()
+            )
+        })?;
         if copied != length {
-            return Err(format!("copy {} to {}: source shortened from {length} to {copied} bytes", source.display(), destination.display()));
+            return Err(format!(
+                "copy {} to {}: source shortened from {length} to {copied} bytes",
+                source.display(),
+                destination.display()
+            ));
         }
     } else {
-        io_at("write", notes_path, writeln!(notes, "skipped link or special file: {}", source.display()))?;
+        io_at(
+            "write",
+            notes_path,
+            writeln!(notes, "skipped link or special file: {}", source.display()),
+        )?;
     }
     Ok(())
 }
@@ -314,7 +390,9 @@ mod tests {
     fn copies_full_app_log_and_nested_jsonl_and_context() {
         let fixture = Fixture::new();
         let root = &fixture.0;
-        let text = (0..1200).map(|index| format!("line-{index}\n")).collect::<String>();
+        let text = (0..1200)
+            .map(|index| format!("line-{index}\n"))
+            .collect::<String>();
         fs::write(root.join("app.log"), &text).unwrap();
         fs::create_dir_all(root.join("analysis-logs/run/nodes")).unwrap();
         let jsonl = b"{\"event\":\"start\"}\n{\"event\":\"end\"}\n";
@@ -322,10 +400,19 @@ mod tests {
         let mut logging = DebugLogging::default();
         let directory = logging.start(root, "desktop context\nunchanged").unwrap();
         assert_eq!(fs::read_to_string(directory.join("app.log")).unwrap(), text);
-        assert_eq!(fs::read(directory.join("analysis-logs/run/nodes/events.jsonl")).unwrap(), jsonl);
-        assert_eq!(fs::read_to_string(directory.join("context.txt")).unwrap(), "desktop context\nunchanged");
+        assert_eq!(
+            fs::read(directory.join("analysis-logs/run/nodes/events.jsonl")).unwrap(),
+            jsonl
+        );
+        assert_eq!(
+            fs::read_to_string(directory.join("context.txt")).unwrap(),
+            "desktop context\nunchanged"
+        );
         logging.record_app("live\n");
-        assert_eq!(fs::read_to_string(directory.join("app.log")).unwrap(), format!("{text}live\n"));
+        assert_eq!(
+            fs::read_to_string(directory.join("app.log")).unwrap(),
+            format!("{text}live\n")
+        );
         assert_eq!(fs::read_to_string(root.join("app.log")).unwrap(), text);
     }
 
@@ -340,7 +427,10 @@ mod tests {
         let mut logging = DebugLogging::default();
         let directory = logging.activate(Ok(prepared)).unwrap();
         logging.record_app("after");
-        assert_eq!(fs::read_to_string(directory.join("app.log")).unwrap(), "before\nduring\nafter\n");
+        assert_eq!(
+            fs::read_to_string(directory.join("app.log")).unwrap(),
+            "before\nduring\nafter\n"
+        );
     }
 
     #[test]
@@ -350,7 +440,10 @@ mod tests {
         fs::write(fixture.0.join("app.log"), "created\n").unwrap();
         let mut logging = DebugLogging::default();
         let directory = logging.activate(Ok(prepared)).unwrap();
-        assert_eq!(fs::read_to_string(directory.join("app.log")).unwrap(), "created\n");
+        assert_eq!(
+            fs::read_to_string(directory.join("app.log")).unwrap(),
+            "created\n"
+        );
     }
 
     #[test]
@@ -379,10 +472,22 @@ mod tests {
         assert_ne!(previous, current);
         logging.record_app("current live");
         logging.record_stderr(b"current stderr");
-        assert_eq!(fs::read_to_string(previous.join("app.log")).unwrap(), "before\n");
-        assert_eq!(fs::read(previous.join("backend-stderr.log")).unwrap(), b"previous stderr");
-        assert_eq!(fs::read_to_string(current.join("app.log")).unwrap(), "before\nafter\ncurrent live\n");
-        assert_eq!(fs::read(current.join("backend-stderr.log")).unwrap(), b"current stderr");
+        assert_eq!(
+            fs::read_to_string(previous.join("app.log")).unwrap(),
+            "before\n"
+        );
+        assert_eq!(
+            fs::read(previous.join("backend-stderr.log")).unwrap(),
+            b"previous stderr"
+        );
+        assert_eq!(
+            fs::read_to_string(current.join("app.log")).unwrap(),
+            "before\nafter\ncurrent live\n"
+        );
+        assert_eq!(
+            fs::read(current.join("backend-stderr.log")).unwrap(),
+            b"current stderr"
+        );
     }
 
     #[test]
@@ -399,7 +504,10 @@ mod tests {
         assert!(error.contains("debug-logs"));
         assert_eq!(logging.error.as_deref(), Some(error.as_str()));
         logging.record_stderr(b"still captured");
-        assert_eq!(fs::read(directory.join("backend-stderr.log")).unwrap(), b"still captured");
+        assert_eq!(
+            fs::read(directory.join("backend-stderr.log")).unwrap(),
+            b"still captured"
+        );
     }
 
     #[test]
@@ -411,9 +519,13 @@ mod tests {
         for chunk in bytes.chunks(4096) {
             logging.record_stderr(chunk);
         }
-        assert_eq!(fs::read(directory.join("backend-stderr.log")).unwrap(), bytes);
+        assert_eq!(
+            fs::read(directory.join("backend-stderr.log")).unwrap(),
+            bytes
+        );
         // Read-only handles deterministically fail writes, even when tests run as root.
-        logging.session.as_mut().unwrap().backend_stderr = File::open(directory.join("backend-stderr.log")).unwrap();
+        logging.session.as_mut().unwrap().backend_stderr =
+            File::open(directory.join("backend-stderr.log")).unwrap();
         logging.record_stderr(b"cannot write");
         let error = logging.error.clone().unwrap();
         assert!(error.contains("backend-stderr.log"));

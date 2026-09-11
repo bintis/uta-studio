@@ -169,11 +169,7 @@ pub fn spawn_stderr_drain(
     (captured, handle)
 }
 
-fn drain_stderr(
-    stderr: impl Read,
-    output: &Mutex<Vec<u8>>,
-    mut mirror: impl FnMut(&[u8]),
-) {
+fn drain_stderr(stderr: impl Read, output: &Mutex<Vec<u8>>, mut mirror: impl FnMut(&[u8])) {
     let mut reader = BufReader::new(stderr);
     let mut buffer = [0_u8; 4096];
     loop {
@@ -212,7 +208,11 @@ mod tests {
             key == OsStr::new("UTA_STUDIO_DEBUG") && value == Some(OsStr::new("1"))
         }));
         let command = native_command_with_debug("unused-backend", false);
-        assert!(!command.get_envs().any(|(key, _)| key == OsStr::new("UTA_STUDIO_DEBUG")));
+        assert!(
+            !command
+                .get_envs()
+                .any(|(key, _)| key == OsStr::new("UTA_STUDIO_DEBUG"))
+        );
     }
 
     #[test]
@@ -220,7 +220,9 @@ mod tests {
         let bytes = vec![0xff; MAX_CAPTURED_STDERR_BYTES * 3];
         let output = Mutex::new(Vec::new());
         let mut mirrored = Vec::new();
-        drain_stderr(bytes.as_slice(), &output, |chunk| mirrored.extend_from_slice(chunk));
+        drain_stderr(bytes.as_slice(), &output, |chunk| {
+            mirrored.extend_from_slice(chunk)
+        });
         assert_eq!(mirrored, bytes);
         assert_eq!(*output.lock().unwrap(), bytes[..MAX_CAPTURED_STDERR_BYTES]);
     }
