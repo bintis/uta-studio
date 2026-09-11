@@ -106,6 +106,9 @@
               export PATH="$UTA_STUDIO_ROCM_ENVIRONMENT/bin:$PATH"
               export UTA_STUDIO_ROCM_ROOT="$("$UTA_STUDIO_ROCM_ENVIRONMENT/bin/rocm-sdk" path --root)"
               export UTA_STUDIO_ROCM_TORCH_ROOT="$("$UTA_STUDIO_ROCM_ENVIRONMENT/bin/python" -c 'import pathlib, sysconfig; print(pathlib.Path(sysconfig.get_paths()["purelib"]) / "torch")')"
+              rocm_site_packages="$(dirname "$UTA_STUDIO_ROCM_ROOT")"
+              export UTA_STUDIO_ROCM_LIBRARY_PATH="$UTA_STUDIO_ROCM_TORCH_ROOT/lib:$UTA_STUDIO_ROCM_ROOT/lib:$UTA_STUDIO_ROCM_ROOT/lib/host-math/lib:$UTA_STUDIO_ROCM_ROOT/lib/rocm_sysdeps/lib:$UTA_STUDIO_ROCM_ROOT/lib/llvm/lib:$rocm_site_packages/_rocm_sdk_core/lib:$rocm_site_packages/_rocm_sdk_libraries/lib"
+              export LD_LIBRARY_PATH="$UTA_STUDIO_ROCM_LIBRARY_PATH:$LD_LIBRARY_PATH"
               export CMAKE_PREFIX_PATH="$("$UTA_STUDIO_ROCM_ENVIRONMENT/bin/rocm-sdk" path --cmake):''${CMAKE_PREFIX_PATH:-}"
             fi
           '';
