@@ -145,7 +145,9 @@ pub(crate) fn poll_debug_log_job(
         return;
     }
     let enabled = shell.config.debug_logging;
-    let change = job.applied != enabled && job.attempted != Some(enabled);
+    // Cleanup is independent of filter changes: never discard a confirmed
+    // clear request because enabling/disabling detailed capture failed.
+    let change = !job.clear_requested && job.applied != enabled && job.attempted != Some(enabled);
     if !change && !job.clear_requested {
         return;
     }

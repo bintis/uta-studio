@@ -304,7 +304,7 @@ fn snake_variant(debug: &str) -> String {
 }
 
 fn classified_access(command: &str) -> &'static str {
-    if command.ends_with(".queue_exact_preview") {
+    if command.ends_with(".queue_exact_preview") || command == "ui.app.toggle_debug_logging" {
         "mutation"
     } else if command.contains("confirm_delete")
         || command.contains("confirm_clear")
