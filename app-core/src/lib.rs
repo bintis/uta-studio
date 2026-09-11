@@ -25,6 +25,7 @@ mod export_destination;
 mod library_db;
 mod library_menu;
 mod library_model;
+mod log_storage;
 mod lrc;
 mod lyrics;
 mod lyrics_sources;
@@ -128,7 +129,10 @@ pub use chart::{
     save_vocal_chart, save_vocal_chart_from_revision,
 };
 pub use config::{AppConfig, LibrarySource};
-pub use debug_logging::{debug_logging_error, start_debug_logging};
+pub use debug_logging::{
+    clear_logs, debug_logging_enabled, debug_logging_error, log_storage_stats, start_debug_logging,
+    stop_debug_logging,
+};
 pub use editor::{
     ChartLyric, ChartNote, ChartProblem, ClipboardNote, CorrectionType, EDITOR_ACTIONS,
     EditorActionAccess, EditorActionDef, EditorActionGroup, EditorAudioArtifact, EditorDocument,
@@ -146,6 +150,7 @@ pub use export_destination::{
 pub use library_db::{init_library, library_db_path, load_song_by_hash, load_song_by_path};
 pub use library_menu::{LibraryMenuItem, LibraryMenuItems, load_library_menu_items};
 pub use library_model::{LibraryMenuFilters, LoadSongsParams, SongsMeta, SongsStore};
+pub use log_storage::LogStorageStats;
 pub use lyrics::{
     CanonicalLyricsSource, CanonicalLyricsStatus, LrclibCandidate, LyricsCandidate, LyricsFile,
     LyricsProvider, LyricsProviderFailure, LyricsSearchResult, apply_timed_lyrics,

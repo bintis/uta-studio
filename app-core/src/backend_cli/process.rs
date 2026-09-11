@@ -87,13 +87,16 @@ fn executable_file(path: &Path) -> bool {
 }
 
 pub fn native_command(program: impl AsRef<OsStr>) -> Command {
-    native_command_with_debug(program, crate::debug_logging::enabled())
+    native_command_with_debug(program, crate::debug_logging::debug_logging_enabled())
 }
 
 fn native_command_with_debug(program: impl AsRef<OsStr>, debug: bool) -> Command {
     let mut command = Command::new(program);
     if debug {
         command.env("UTA_STUDIO_DEBUG", "1");
+    } else {
+        // The persisted app setting owns future workers, not the parent's env.
+        command.env_remove("UTA_STUDIO_DEBUG");
     }
     #[cfg(windows)]
     let command = {
@@ -208,11 +211,9 @@ mod tests {
             key == OsStr::new("UTA_STUDIO_DEBUG") && value == Some(OsStr::new("1"))
         }));
         let command = native_command_with_debug("unused-backend", false);
-        assert!(
-            !command
-                .get_envs()
-                .any(|(key, _)| key == OsStr::new("UTA_STUDIO_DEBUG"))
-        );
+        assert!(command.get_envs().any(|(key, value)| {
+            key == OsStr::new("UTA_STUDIO_DEBUG") && value.is_none()
+        }));
     }
 
     #[test]

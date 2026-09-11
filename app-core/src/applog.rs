@@ -63,10 +63,10 @@ fn record_log_text_at(text: &str, path: Option<&std::path::Path>) {
         buffer.push_back(line);
     }
     if let Some(path) = path
-        && let Ok(mut file) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
+        && let Ok(mut file) = crate::log_storage::open_file(
+            path,
+            std::fs::OpenOptions::new().create(true).append(true),
+        )
     {
         let _ = writeln!(file, "{text}");
     }
@@ -77,7 +77,7 @@ fn record_log_text_at(text: &str, path: Option<&std::path::Path>) {
 /// when the containing directory can't be created, not a panic.
 pub fn get_log_path() -> Option<PathBuf> {
     let dir = crate::cache::uta_studio_dir();
-    std::fs::create_dir_all(&dir).ok()?;
+    crate::log_storage::create_directory(&dir).ok()?;
     Some(dir.join("app.log"))
 }
 

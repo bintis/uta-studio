@@ -48,7 +48,35 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "start_debug_logging",
         "mutation",
         false,
-        "Create a persistent full log snapshot and enable live debug capture for future backend commands"
+        "Enable local debug capture with an initial snapshot; an active session is unchanged"
+    ),
+    capability!(
+        "app",
+        "stop_debug_logging",
+        "mutation",
+        false,
+        "Stop local debug mirroring immediately and disable DEBUG for future backend commands"
+    ),
+    capability!(
+        "app",
+        "debug_logging_enabled",
+        "read",
+        true,
+        "Read whether local debug capture is active"
+    ),
+    capability!(
+        "storage",
+        "log_storage_stats",
+        "read",
+        true,
+        "Count bytes and regular files in app-owned logs without following links"
+    ),
+    capability!(
+        "storage",
+        "clear_logs",
+        "destructive",
+        false,
+        "Explicitly clear app-owned logs and resume any active capture without copying history"
     ),
     capability!(
         "app",
@@ -97,14 +125,14 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "load_config",
         "read",
         true,
-        "Load persisted settings, including super acceleration"
+        "Load persisted settings, including DEBUG logging and super acceleration"
     ),
     capability!(
         "config",
         "save_config",
         "mutation",
         false,
-        "Persist settings, including super acceleration for subsequent exact analysis requests"
+        "Persist settings, including DEBUG logging and super acceleration for subsequent exact analysis requests"
     ),
     capability!(
         "models",
@@ -1069,6 +1097,24 @@ mod tests {
             capability.access,
             "read" | "mutation" | "destructive" | "external" | "temporary"
         )));
+    }
+
+    #[test]
+    fn debug_and_log_storage_commands_have_explicit_access_classes() {
+        for (command, access) in [
+            ("start_debug_logging", "mutation"),
+            ("stop_debug_logging", "mutation"),
+            ("debug_logging_enabled", "read"),
+            ("debug_logging_error", "read"),
+            ("log_storage_stats", "read"),
+            ("clear_logs", "destructive"),
+        ] {
+            let capability = API_CAPABILITIES
+                .iter()
+                .find(|capability| capability.command == command)
+                .unwrap_or_else(|| panic!("missing {command}"));
+            assert_eq!(capability.access, access, "{command}");
+        }
     }
 
     #[test]

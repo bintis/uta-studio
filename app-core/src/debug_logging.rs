@@ -8,6 +8,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::log_storage::{self, LogStorageStats};
+
 static DEBUG_LOGGING: LazyLock<Mutex<DebugLogging>> =
     LazyLock::new(|| Mutex::new(DebugLogging::default()));
 static DIRECTORY_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
@@ -21,10 +23,11 @@ struct DebugLogging {
 
 struct DebugSession {
     directory: PathBuf,
+    context: String,
     app_log: File,
     backend_stderr: File,
     app_source: Option<File>,
-    app_source_path: PathBuf,
+    app_source_path: Option<PathBuf>,
     app_copied: u64,
 }
 
@@ -32,14 +35,21 @@ struct DebugSession {
 /// subsequent app-log lines and backend stderr into the returned directory.
 /// `context` is stored verbatim in context.txt; desktop owns its contents and
 /// tracing configuration. Missing logs and skipped links are in snapshot-notes.txt.
-/// Each successful call switches live capture to a new persistent directory;
-/// previous directories remain untouched. Failure preserves any active session
-/// and may leave a partial snapshot at the path included in the error.
+/// An already-active session is returned unchanged (no repeated snapshot).
+/// After stopping, a new start creates a new directory; previous logs remain.
+/// Failure may leave a partial snapshot at the path included in the error.
 /// This is synchronous local I/O, with no retention cap or power-loss guarantee.
 pub fn start_debug_logging(context: &str) -> Result<PathBuf, String> {
     let _snapshot = SNAPSHOT_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(directory) = DEBUG_LOGGING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .active_directory()
+    {
+        return Ok(directory);
+    }
     let root = crate::cache::uta_studio_dir();
     // Bulk copies must not hold up live logging or backend pipe draining.
     let prepared = DebugSession::snapshot(&root, context);
@@ -49,8 +59,51 @@ pub fn start_debug_logging(context: &str) -> Result<PathBuf, String> {
         .activate(prepared)
 }
 
-/// First live-write failure (or latest start failure), retained until the next
-/// successful start. Reading does not clear it. No recursive tracing is used.
+/// Stop mirroring immediately without deleting logs or changing desktop tracing.
+/// Serialized with start and cleanup; repeated stops are harmless. Already-running
+/// workers retain their level, but future commands no longer inherit DEBUG.
+pub fn stop_debug_logging() {
+    let _snapshot = SNAPSHOT_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    DEBUG_LOGGING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .stop();
+}
+
+/// Logical bytes and regular-file count under the app-owned log locations.
+/// Links and special files are skipped. I/O failures are returned, not hidden.
+/// Active workers can still append analysis logs, so this is a point-in-time view.
+pub fn log_storage_stats() -> Result<LogStorageStats, String> {
+    let _snapshot = SNAPSHOT_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _logging = DEBUG_LOGGING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    log_storage::stats_at(&crate::cache::uta_studio_dir())
+}
+
+/// Explicitly clear only regular app-owned logs, truncating app.log in place.
+/// Close live handles first; if enabled, resume a fresh capture without copying
+/// history, even after a cleanup error. No cached media, models or settings are
+/// touched. Directories, links and special files are retained. Errors can mean
+/// partial cleanup; a restart failure leaves DEBUG off and is also reported.
+/// Returned stats include the fresh session's context/notes when enabled.
+pub fn clear_logs() -> Result<LogStorageStats, String> {
+    let _snapshot = SNAPSHOT_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    DEBUG_LOGGING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clear(&crate::cache::uta_studio_dir())
+}
+
+/// First live-write failure (or latest start/cleanup failure), retained until a
+/// successful new start or cleanup. An idempotent start does not clear errors.
+/// Reading does not clear it. No recursive tracing is used.
 pub fn debug_logging_error() -> Option<String> {
     DEBUG_LOGGING
         .lock()
@@ -59,7 +112,8 @@ pub fn debug_logging_error() -> Option<String> {
         .clone()
 }
 
-pub(crate) fn enabled() -> bool {
+/// Whether local mirroring is active; desktop owns persistence and tracing.
+pub fn debug_logging_enabled() -> bool {
     DEBUG_LOGGING
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -87,7 +141,45 @@ pub(crate) fn record_backend_stderr(bytes: &[u8]) {
 impl DebugLogging {
     #[cfg(test)]
     fn start(&mut self, root: &Path, context: &str) -> Result<PathBuf, String> {
+        if let Some(directory) = self.active_directory() {
+            return Ok(directory);
+        }
         self.activate(DebugSession::snapshot(root, context))
+    }
+
+    fn active_directory(&self) -> Option<PathBuf> {
+        self.session
+            .as_ref()
+            .map(|session| session.directory.clone())
+    }
+
+    fn stop(&mut self) {
+        self.session = None;
+    }
+
+    fn clear(&mut self, root: &Path) -> Result<LogStorageStats, String> {
+        let context = self.session.as_ref().map(|session| session.context.clone());
+        self.stop(); // Drop all mirror handles before deleting their files (Windows too).
+        let cleanup = log_storage::clear_at(root);
+        let restart = if let Some(context) = context {
+            // Never snapshot here, including when cleanup only partially succeeded.
+            self.activate(DebugSession::fresh(root, &context))
+                .map(|_| ())
+        } else {
+            Ok(())
+        };
+        let result = match (cleanup, restart) {
+            (Ok(()), Ok(())) => log_storage::stats_at(root),
+            (Err(cleanup), Ok(())) => Err(format!("log cleanup incomplete: {cleanup}")),
+            (Ok(()), Err(restart)) => {
+                Err(format!("logs cleared but debug restart failed: {restart}"))
+            }
+            (Err(cleanup), Err(restart)) => Err(format!(
+                "log cleanup incomplete: {cleanup}; debug restart failed: {restart}"
+            )),
+        };
+        self.error = result.as_ref().err().cloned();
+        result
     }
 
     fn activate(&mut self, prepared: Result<DebugSession, String>) -> Result<PathBuf, String> {
@@ -144,11 +236,35 @@ impl DebugSession {
             .map_err(|error| format!("debug snapshot {} incomplete: {error}", directory.display()))
     }
 
+    fn fresh(root: &Path, context: &str) -> Result<Self, String> {
+        let directory = unique_directory(&root.join("debug-logs"))?;
+        Self::create(root, context, &directory, false)
+            .map_err(|error| format!("debug capture {} incomplete: {error}", directory.display()))
+    }
+
     fn snapshot_into(root: &Path, context: &str, directory: &Path) -> Result<Self, String> {
+        Self::create(root, context, directory, true)
+    }
+
+    fn create(
+        root: &Path,
+        context: &str,
+        directory: &Path,
+        snapshot: bool,
+    ) -> Result<Self, String> {
         let context_path = directory.join("context.txt");
-        io_at("write", &context_path, fs::write(&context_path, context))?;
+        let mut context_file = log_storage::open_file(
+            &context_path,
+            OpenOptions::new().write(true).create_new(true),
+        )?;
+        io_at(
+            "write",
+            &context_path,
+            context_file.write_all(context.as_bytes()),
+        )?;
         let notes_path = directory.join("snapshot-notes.txt");
-        let mut notes = io_at("create", &notes_path, File::create(&notes_path))?;
+        let mut notes =
+            log_storage::open_file(&notes_path, OpenOptions::new().write(true).create_new(true))?;
         io_at(
             "write",
             &notes_path,
@@ -163,60 +279,72 @@ impl DebugSession {
                     .as_millis()
             ),
         )?;
-        copy_logs(
-            &root.join("analysis-logs"),
-            &directory.join("analysis-logs"),
-            &mut notes,
-            &notes_path,
-        )?;
+        if snapshot {
+            copy_logs(
+                &root.join("analysis-logs"),
+                &directory.join("analysis-logs"),
+                &mut notes,
+                &notes_path,
+            )?;
+        } else {
+            io_at(
+                "write",
+                &notes_path,
+                writeln!(
+                    notes,
+                    "Fresh live capture after explicit log cleanup; no history copied."
+                ),
+            )?;
+        }
         let source_path = root.join("app.log");
-        let app_source = match fs::symlink_metadata(&source_path) {
-            Ok(metadata) if metadata.is_file() => {
-                Some(io_at("open", &source_path, File::open(&source_path))?)
+        let app_source = if !snapshot {
+            None
+        } else {
+            match fs::symlink_metadata(&source_path) {
+                Ok(metadata) if metadata.is_file() => Some(log_storage::open_file(
+                    &source_path,
+                    OpenOptions::new().read(true),
+                )?),
+                Ok(_) => {
+                    io_at(
+                        "write",
+                        &notes_path,
+                        writeln!(
+                            notes,
+                            "skipped non-regular app log: {}",
+                            source_path.display()
+                        ),
+                    )?;
+                    None
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    io_at(
+                        "write",
+                        &notes_path,
+                        writeln!(notes, "missing: {}", source_path.display()),
+                    )?;
+                    None
+                }
+                Err(error) => return Err(format!("inspect {}: {error}", source_path.display())),
             }
-            Ok(_) => {
-                io_at(
-                    "write",
-                    &notes_path,
-                    writeln!(
-                        notes,
-                        "skipped non-regular app log: {}",
-                        source_path.display()
-                    ),
-                )?;
-                None
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                io_at(
-                    "write",
-                    &notes_path,
-                    writeln!(notes, "missing: {}", source_path.display()),
-                )?;
-                None
-            }
-            Err(error) => return Err(format!("inspect {}: {error}", source_path.display())),
         };
         let app_path = directory.join("app.log");
         let stderr_path = directory.join("backend-stderr.log");
-        let app_log = io_at(
-            "open live log",
-            &app_path,
-            OpenOptions::new().create(true).append(true).open(&app_path),
-        )?;
-        let backend_stderr = io_at(
-            "create live log",
+        let app_log =
+            log_storage::open_file(&app_path, OpenOptions::new().create_new(true).append(true))?;
+        let backend_stderr = log_storage::open_file(
             &stderr_path,
-            OpenOptions::new()
-                .create_new(true)
-                .append(true)
-                .open(&stderr_path),
+            OpenOptions::new().create_new(true).append(true),
         )?;
         let mut session = Self {
             directory: directory.to_path_buf(),
+            context: context.to_string(),
             app_log,
             backend_stderr,
             app_source,
-            app_source_path: source_path,
+            // None on a fresh capture prevents the activation tail from reopening
+            // any surviving app history after a partially failed cleanup.
+            app_source_path: snapshot.then_some(source_path),
             app_copied: 0,
         };
         session.copy_app_tail()?;
@@ -249,13 +377,14 @@ impl DebugSession {
 
     fn finish_app_snapshot(&mut self) -> Result<(), String> {
         // The primary app log may have been created while missing at preparation.
-        if self.app_source.is_none() {
-            match fs::symlink_metadata(&self.app_source_path) {
+        if self.app_source.is_none()
+            && let Some(source_path) = &self.app_source_path
+        {
+            match fs::symlink_metadata(source_path) {
                 Ok(metadata) if metadata.is_file() => {
-                    self.app_source = Some(io_at(
-                        "open app log for final snapshot",
-                        &self.app_source_path,
-                        File::open(&self.app_source_path),
+                    self.app_source = Some(log_storage::open_file(
+                        source_path,
+                        OpenOptions::new().read(true),
                     )?);
                 }
                 Ok(_) => {}
@@ -264,7 +393,7 @@ impl DebugSession {
                     return Err(format!(
                         "debug snapshot {} incomplete: inspect {}: {error}",
                         self.directory.display(),
-                        self.app_source_path.display()
+                        source_path.display()
                     ));
                 }
             }
@@ -286,7 +415,7 @@ fn io_at<T>(action: &str, path: &Path, result: io::Result<T>) -> Result<T, Strin
 }
 
 fn unique_directory(parent: &Path) -> Result<PathBuf, String> {
-    io_at("create directory", parent, fs::create_dir_all(parent))?;
+    log_storage::create_directory(parent)?;
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -334,7 +463,7 @@ fn copy_logs(
             )?;
         }
     } else if metadata.is_file() {
-        let input = io_at("open", source, File::open(source))?;
+        let input = log_storage::open_file(source, OpenOptions::new().read(true))?;
         let length = io_at("inspect open file", source, input.metadata())?.len();
         let mut output = io_at(
             "create",
@@ -461,13 +590,28 @@ mod tests {
     }
 
     #[test]
-    fn repeated_start_refreshes_without_touching_previous_directory() {
+    fn repeated_start_is_idempotent_and_stop_can_repeat_before_reenabling() {
         let fixture = Fixture::new();
         let mut logging = DebugLogging::default();
         fs::write(fixture.0.join("app.log"), "before\n").unwrap();
         let previous = logging.start(&fixture.0, "previous").unwrap();
         logging.record_stderr(b"previous stderr");
         fs::write(fixture.0.join("app.log"), "before\nafter\n").unwrap();
+        let repeated = logging.start(&fixture.0, "not another snapshot").unwrap();
+        assert_eq!(previous, repeated);
+        assert_eq!(
+            fs::read_to_string(previous.join("context.txt")).unwrap(),
+            "previous"
+        );
+        assert_eq!(
+            fs::read_dir(fixture.0.join("debug-logs")).unwrap().count(),
+            1
+        );
+        logging.stop();
+        logging.stop();
+        assert!(logging.active_directory().is_none());
+        logging.record_app("not captured");
+        logging.record_stderr(b"not captured either");
         let current = logging.start(&fixture.0, "current").unwrap();
         assert_ne!(previous, current);
         logging.record_app("current live");
@@ -491,7 +635,7 @@ mod tests {
     }
 
     #[test]
-    fn start_failure_is_explicit_and_preserves_active_capture() {
+    fn start_failure_is_explicit_and_active_start_does_not_attempt_io() {
         let fixture = Fixture::new();
         let blocked = Fixture::new();
         fs::write(blocked.0.join("debug-logs"), "not a directory").unwrap();
@@ -500,14 +644,152 @@ mod tests {
         assert!(logging.session.is_none());
         let directory = logging.start(&fixture.0, "").unwrap();
         assert!(logging.error.is_none());
-        let error = logging.start(&blocked.0, "").unwrap_err();
-        assert!(error.contains("debug-logs"));
-        assert_eq!(logging.error.as_deref(), Some(error.as_str()));
+        assert_eq!(logging.start(&blocked.0, "").unwrap(), directory);
         logging.record_stderr(b"still captured");
         assert_eq!(
             fs::read(directory.join("backend-stderr.log")).unwrap(),
             b"still captured"
         );
+        logging.stop();
+        let error = logging.start(&blocked.0, "").unwrap_err();
+        assert!(error.contains("debug-logs"));
+        assert_eq!(logging.error.as_deref(), Some(error.as_str()));
+        assert!(logging.active_directory().is_none());
+    }
+
+    #[test]
+    fn clear_while_off_does_not_enable_capture_or_touch_unrelated_data() {
+        let fixture = Fixture::new();
+        fs::write(fixture.0.join("app.log"), b"history").unwrap();
+        fs::create_dir_all(fixture.0.join("analysis-logs/run")).unwrap();
+        fs::write(fixture.0.join("analysis-logs/run/events.jsonl"), b"{}\n").unwrap();
+        fs::write(fixture.0.join("settings.json"), b"settings").unwrap();
+        let mut logging = DebugLogging::default();
+        for _ in 0..2 {
+            let stats = logging.clear(&fixture.0).unwrap();
+            assert_eq!(
+                stats,
+                LogStorageStats {
+                    bytes: 0,
+                    file_count: 1
+                }
+            );
+            assert!(logging.active_directory().is_none());
+            assert!(!fixture.0.join("debug-logs").exists());
+            assert_eq!(
+                fs::read(fixture.0.join("settings.json")).unwrap(),
+                b"settings"
+            );
+        }
+    }
+
+    #[test]
+    fn clear_active_capture_restarts_empty_live_logs_without_copying_history() {
+        let fixture = Fixture::new();
+        fs::write(fixture.0.join("app.log"), b"deleted history\n").unwrap();
+        fs::create_dir_all(fixture.0.join("analysis-logs/run")).unwrap();
+        fs::write(fixture.0.join("analysis-logs/run/events.jsonl"), b"{}\n").unwrap();
+        let mut logging = DebugLogging::default();
+        let previous = logging.start(&fixture.0, "desktop context").unwrap();
+        logging.record_stderr(b"deleted stderr");
+        let stats = logging.clear(&fixture.0).unwrap();
+        assert_eq!(stats, log_storage::stats_at(&fixture.0).unwrap());
+        assert!(stats.bytes > 0); // Fresh context and notes are deliberately retained.
+        assert_eq!(stats.file_count, 5); // Primary log + four fresh session files.
+        assert!(!previous.join("app.log").exists());
+        assert!(!fixture.0.join("analysis-logs/run/events.jsonl").exists());
+        assert_eq!(fs::read(fixture.0.join("app.log")).unwrap(), b"");
+        let current = logging.active_directory().unwrap();
+        assert_ne!(current, previous);
+        assert_eq!(fs::read(current.join("app.log")).unwrap(), b"");
+        assert_eq!(fs::read(current.join("backend-stderr.log")).unwrap(), b"");
+        assert!(!current.join("analysis-logs").exists());
+        assert_eq!(
+            fs::read_to_string(current.join("context.txt")).unwrap(),
+            "desktop context"
+        );
+        assert!(
+            fs::read_to_string(current.join("snapshot-notes.txt"))
+                .unwrap()
+                .contains("no history copied")
+        );
+        logging.record_app("fresh line");
+        logging.record_stderr(b"fresh stderr");
+        assert_eq!(fs::read(current.join("app.log")).unwrap(), b"fresh line\n");
+        assert_eq!(
+            fs::read(current.join("backend-stderr.log")).unwrap(),
+            b"fresh stderr"
+        );
+        assert_eq!(logging.start(&fixture.0, "ignored").unwrap(), current);
+        logging.clear(&fixture.0).unwrap();
+        assert_ne!(logging.active_directory().unwrap(), current);
+        assert!(!current.join("app.log").exists());
+    }
+
+    #[test]
+    fn failed_cleanup_is_reported_and_capture_resumes_without_partial_history() {
+        let fixture = Fixture::new();
+        let mut logging = DebugLogging::default();
+        let previous = logging.start(&fixture.0, "context").unwrap();
+        logging.record_app("old mirror");
+        // Wrong type causes a deterministic traversal failure without permissions.
+        fs::create_dir(fixture.0.join("app.log")).unwrap();
+        let error = logging.clear(&fixture.0).unwrap_err();
+        assert!(error.contains("log cleanup incomplete"));
+        assert_eq!(logging.error.as_deref(), Some(error.as_str()));
+        let current = logging.active_directory().unwrap();
+        assert_ne!(current, previous);
+        assert_eq!(fs::read(current.join("app.log")).unwrap(), b"");
+        assert_eq!(fs::read(previous.join("app.log")).unwrap(), b"old mirror\n");
+        logging.record_stderr(b"resumed");
+        assert_eq!(
+            fs::read(current.join("backend-stderr.log")).unwrap(),
+            b"resumed"
+        );
+    }
+
+    #[test]
+    fn cleanup_and_restart_failures_are_both_reported_and_capture_is_off() {
+        let fixture = Fixture::new();
+        let blocked = Fixture::new();
+        let mut logging = DebugLogging::default();
+        let previous = logging.start(&fixture.0, "context").unwrap();
+        // A changed data root with a wrong-type log directory deterministically
+        // fails both traversal and restart, even on privileged test runners.
+        fs::write(blocked.0.join("debug-logs"), b"not a directory").unwrap();
+        let error = logging.clear(&blocked.0).unwrap_err();
+        assert!(error.contains("log cleanup incomplete"));
+        assert!(error.contains("debug restart failed"));
+        assert_eq!(logging.error.as_deref(), Some(error.as_str()));
+        assert!(logging.active_directory().is_none());
+        logging.record_stderr(b"not captured");
+        assert_eq!(fs::read(previous.join("backend-stderr.log")).unwrap(), b"");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_debug_directory_is_not_followed_on_start_or_restart() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = Fixture::new();
+        let linked = Fixture::new();
+        let outside = Fixture::new();
+        fs::write(outside.0.join("source.flac"), b"media").unwrap();
+        symlink(&outside.0, linked.0.join("debug-logs")).unwrap();
+        let mut logging = DebugLogging::default();
+        assert!(
+            logging
+                .start(&linked.0, "")
+                .unwrap_err()
+                .contains("debug-logs")
+        );
+        logging.start(&fixture.0, "context").unwrap();
+        let error = logging.clear(&linked.0).unwrap_err();
+        assert!(error.contains("logs cleared but debug restart failed"));
+        assert!(logging.active_directory().is_none());
+        assert_eq!(logging.error.as_deref(), Some(error.as_str()));
+        assert_eq!(fs::read(outside.0.join("source.flac")).unwrap(), b"media");
+        assert_eq!(fs::read_dir(&outside.0).unwrap().count(), 1);
     }
 
     #[test]
@@ -531,6 +813,9 @@ mod tests {
         assert!(error.contains("backend-stderr.log"));
         logging.record_stderr(b"still does not panic");
         assert_eq!(logging.error.as_deref(), Some(error.as_str()));
+        logging.start(&fixture.0, "").unwrap();
+        assert_eq!(logging.error.as_deref(), Some(error.as_str()));
+        logging.stop();
         logging.start(&fixture.0, "").unwrap();
         assert!(logging.error.is_none());
         let session = logging.session.as_mut().unwrap();

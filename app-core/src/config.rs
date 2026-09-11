@@ -34,6 +34,9 @@ pub struct AppConfig {
     pub export_path: Option<PathBuf>,
     pub fullscreen: Option<bool>,
     pub dark_mode: Option<bool>,
+    /// Persisted local DEBUG preference; desktop applies tracing and capture at startup.
+    #[serde(default)]
+    pub debug_logging: bool,
     /// Whether the application surface should let the native compositor show
     /// through. The desktop creates an alpha-capable Wayland surface up front
     /// and applies this preference through rendered pixel alpha.
@@ -121,6 +124,7 @@ impl Default for AppConfig {
             export_path: None,
             fullscreen: None,
             dark_mode: None,
+            debug_logging: false,
             window_transparency: None,
             window_opacity_percent: None,
             compute_backend: None,
@@ -383,6 +387,23 @@ mod tests {
         .with_defaults();
         assert_eq!(repaired.ui_language(), "system");
         assert!(repaired.ui_language.is_none());
+    }
+
+    #[test]
+    fn debug_logging_defaults_off_and_round_trips_both_states() {
+        assert!(!AppConfig::default().debug_logging);
+        let defaults: AppConfig = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(!defaults.debug_logging);
+        for enabled in [true, false] {
+            let config = AppConfig {
+                debug_logging: enabled,
+                ..AppConfig::default()
+            };
+            let serialized = serde_json::to_value(config).unwrap();
+            assert_eq!(serialized["debug_logging"], enabled);
+            let restored: AppConfig = serde_json::from_value(serialized).unwrap();
+            assert_eq!(restored.with_defaults().debug_logging, enabled);
+        }
     }
 
     #[test]
