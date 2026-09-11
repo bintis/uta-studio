@@ -193,7 +193,7 @@ word timings; STARS uses a separate actual FireRed Chinese alignment branch with
 primary-provider substitution follows. Full details, exact commits/operations,
 timings and remaining integration work: [full-song results](../../LIBTORCH_XPU_FULLSONG_RESULTS.md).
 
-## AMD ROCm 10 all-resource validation — halted after fourth GPU reset 2026-09-11
+## AMD ROCm 10 all-resource validation — halted after sixth GPU reset 2026-09-11
 
 **RESUMED AT ZERO OF EIGHTEEN FOR THE ORIGINAL TWELVE-SECOND SWEEP.** The authorized isolated environment resolves the official AMD stable
 combination, **ROCm 10.0.0 + PyTorch 2.13.0**, with the Radeon 780M `device-gfx1103` package. The
@@ -277,15 +277,33 @@ at row tile 1024 and comparable 692,616 KiB GTT, but the first work formula redu
 and increased submissions from about 59 to 132. Denoise itself was not launched. Evidence:
 `test-artifacts/amd-libtorch-rocm10/mask-projection-resume/projection-check/`.
 
-Commit `4fc2739` corrects this over-partitioning: the previously passed
+Commit `4fc2739` corrected this over-partitioning: the previously passed
 `1024 x 384 x 1536` contraction defines the submitted-work bound, so transformer projections retain
-row tile 1024 and private square mask projections use tile 256. The native build passed. No GPU
-oracle or model execution followed this fourth, code-triggered reset, so this remains an unverified
-candidate repair.
+row tile 1024 and private square mask projections use tile 256. The full projection/FFN oracle then
+passed **7/7**, including the square mask and 60,000-row cases, with no active reset worker sampled.
+
+A synchronized Denoise attempt completed band split and first-layer normalization before reporting
+an unspecified launch failure at the first time-attention QKV checkpoint; that attempt had no
+sampled reset worker. Commit `e0da4a8` made tiled projections write directly into their destination
+through `mm_out`/`addmm_out`, eliminating temporary linear outputs and copies. Its expanded oracle
+passed **8/8**, including all 9,842,688 values of the exact synthetic
+`6408 x 384 -> 1536` QKV shape. Real Denoise still failed at the QKV synchronization surface, and
+that attempt's final host sample did record `amdgpu-reset-dev`.
+
+Trace-only tile synchronization in `b4bdb20` then showed that the label was not stable causality.
+The next Denoise run failed before any QKV or projection-tile checkpoint, while `stack/cat` allocated
+the combined representation after sixty asynchronous band-split projections; its final host sample
+records a separate `amdgpu-reset-dev`.
+
+Commit `7934e08` replaces the ROCm band-split lifetime pattern with one preallocated contiguous
+`[band,time,channel]` destination. Each band GEMM writes directly into its slice, eliminating sixty
+retained outputs and the final stack allocation/copy; trace mode can synchronize each band. The
+native build passed. No GPU oracle or model execution followed the sixth recorded reset, so this is
+still an unverified candidate repair.
 
 The bounded result remains **three passed, one failed, fourteen not run**. Full-song execution was
 not started. Further AMD ROCm model, oracle or stress execution requires another explicit human
-decision after this fourth reset. CPU/GGML fallback remains prohibited. Previous XPU results remain
+decision after this sixth reset. CPU/GGML fallback remains prohibited. Previous XPU results remain
 separate, and this work establishes no product routing, whole-model parity, listening quality,
 driver stability or production readiness.
 

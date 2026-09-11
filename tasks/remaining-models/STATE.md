@@ -666,7 +666,7 @@ Source media, installed assets and unrelated user changes remain untouched;
 no CPU/GGML inference fallback, Vulkan stress, workspace release checks or Nix
 packaging were performed. See [execution design](../../docs/design/runtime/LIBTORCH_EXECUTION.md).
 
-## All-resource LibTorch AMD ROCm 10 — HALTED AFTER FOURTH GPU RESET (2026-09-11)
+## All-resource LibTorch AMD ROCm 10 — HALTED AFTER SIXTH GPU RESET (2026-09-11)
 
 **Zero of eighteen resources qualified; the full-song phase was not started.** The isolated Nix
 shell and official **ROCm 10.0.0 + PyTorch 2.13.0** packages, including the Radeon 780M `gfx1103`
@@ -756,15 +756,35 @@ to the prior passing run's 692,616 KiB. The final sample records
 `kworker/u64:3+amdgpu-reset-dev`. Denoise was not launched. Evidence:
 `mask-projection-resume/projection-check/`.
 
-Commit `4fc2739` corrects that scheduling regression. It uses the already passed
+Commit `4fc2739` corrected that scheduling regression. It uses the already passed
 `1024 x 384 x 1536` contraction as the work bound: transformer projections retain tile 1024 while
-the private `1536 x 1536` mask projection remains split at tile 256. The corrected native build
-passed, but no GPU execution followed the fourth reset. This is still a built candidate, not a
-verified model repair.
+the private `1536 x 1536` mask projection remains split at tile 256. The complete projection/FFN
+oracle then passed **7/7**, including 92,160,000 values for the restored large projection and
+1,230,336 values for the square mask case, with no active reset worker sampled.
+
+A synchronized Denoise run next completed band split and first-layer normalization but surfaced an
+unspecified launch failure at the first time-attention QKV synchronization point; no active reset
+worker was sampled in that attempt. Commit `e0da4a8` replaced temporary linear outputs plus
+asynchronous slice copies with direct `mm_out`/`addmm_out` writes. Its expanded oracle passed
+**8/8**, including all 9,842,688 values of the exact synthetic `6408 x 384 -> 1536` QKV geometry.
+The real Denoise trace nevertheless failed at the same QKV synchronization point and its final host
+sample recorded `amdgpu-reset-dev`.
+
+Commit `b4bdb20` added trace-only per-projection-tile synchronization. The next Denoise run failed
+before any such tile checkpoint: the exception surfaced while `stack/cat` allocated the combined
+band representation after sixty asynchronous band-split projections. Its final host sample records
+a separate `amdgpu-reset-dev`. This proves the earlier QKV label was only the next synchronization
+surface, not a stable causal stage.
+
+Commit `7934e08` removes that band-split lifetime pattern on ROCm. It preallocates one contiguous
+`[band,time,channel]` destination, writes every band projection directly into its own slice, removes
+the sixty retained projection outputs and final stack allocation/copy, and gives trace mode a
+per-band synchronization point. The corrected native build passed. No GPU execution followed the
+sixth recorded reset, so this remains a built candidate rather than a verified repair.
 
 The sweep remains **three passed, one failed, fourteen not run**. No subsequent model was launched
 and full-song execution was not started. Do not resume AMD ROCm model, oracle or stress execution
-without another explicit human decision after this fourth code-triggered GPU reset. CPU/GGML
+without another explicit human decision after this sixth code-triggered GPU reset. CPU/GGML
 fallback remains prohibited. See [LibTorch execution](../../docs/design/runtime/LIBTORCH_EXECUTION.md).
 
 ## Next actions
