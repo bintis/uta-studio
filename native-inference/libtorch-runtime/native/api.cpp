@@ -3,6 +3,8 @@
 #include <c10/core/DeviceGuard.h>
 #include <c10/core/InferenceMode.h>
 #include <chrono>
+#include <ctime>
+#include <iostream>
 #include <torch/version.h>
 #include <limits>
 #include <mutex>
@@ -154,9 +156,27 @@ UtaLibtorchResult* uta_libtorch_model_forward(UtaLibtorchModel* model, const cha
         plan.runtime->synchronize();
         result->timings.upload_seconds = seconds(begin);
         begin = Clock::now();
+        const bool profile = plan.runtime->profile_submission;
+        const auto cpu_begin = profile ? std::clock() : std::clock_t{};
         auto output = plan.forward(operation, prepared);
+        const auto submitted = profile ? Clock::now() : Clock::time_point{};
+        const auto cpu_submitted = profile ? std::clock() : std::clock_t{};
         plan.runtime->synchronize();
+        const auto cpu_completed = profile ? std::clock() : std::clock_t{};
         result->timings.synchronized_compute_seconds = seconds(begin);
+        if (profile) {
+            const auto cpu_seconds = [](std::clock_t first, std::clock_t last) {
+                if (first == std::clock_t(-1) || last == std::clock_t(-1) || last < first)
+                    return std::string("unavailable");
+                return std::to_string(static_cast<double>(last - first) / CLOCKS_PER_SEC);
+            };
+            const auto submission_wall = std::chrono::duration<double>(submitted - begin).count();
+            std::cerr << "[uta-libtorch-submission] operation=" << operation
+                      << " forward_wall=" << submission_wall
+                      << " forward_process_cpu=" << cpu_seconds(cpu_begin, cpu_submitted)
+                      << " completion_wall=" << result->timings.synchronized_compute_seconds - submission_wall
+                      << " completion_process_cpu=" << cpu_seconds(cpu_submitted, cpu_completed) << std::endl;
+        }
         begin = Clock::now();
         for (auto& [name, tensor] : output) {
             if (!tensor.defined()) throw std::runtime_error("native model returned an undefined tensor: " + name);

@@ -48,6 +48,8 @@ Runtime::Runtime(const std::string& selected, int index, const std::string& arit
     at::set_num_threads(2);
     const auto trace = std::getenv("UTA_STUDIO_LIBTORCH_TRACE_SYNC");
     trace_synchronization = trace && std::string(trace) == "1";
+    const auto profile = std::getenv("UTA_STUDIO_LIBTORCH_PROFILE_SUBMISSION");
+    profile_submission = profile && std::string(profile) == "1";
 }
 void Runtime::synchronize() const {
     if (device.is_cpu()) return;

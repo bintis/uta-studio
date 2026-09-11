@@ -14,6 +14,8 @@ struct Runtime {
     void synchronize() const;
     // Opt-in fault localization; never enabled for performance measurements.
     bool trace_synchronization = false;
+    // Process CPU/wall attribution around existing submission/completion only.
+    bool profile_submission = false;
     void checkpoint(const std::string& stage) const;
 };
 struct Inputs {
