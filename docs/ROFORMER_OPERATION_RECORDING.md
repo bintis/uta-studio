@@ -26,6 +26,16 @@ python3 tools/record-operation.py gpu-before-run -- bash dev.sh -c nvtop --snaps
 
 在2026-09-07候选全曲事故中，启动/进程样本存在，但stdout/stderr为零字节；不能据此说没有启动。观察器现于每个既有采样周期同步目标stdout/stderr，而不只在进程退出后同步；同步失败记为 `live-output-sync`，不重新启动目标。子进程自身缓冲、两个同步点之间的尾部和硬件掉电仍可能丢失。此变化单独提交并用CPU子进程验证，观测I/O开销应纳入后续运行说明，不伪造历史日志。
 
+### Settings DEBUG（桌面黑屏排查）
+
+在 **Settings → General → Diagnostics → Full debug logs → DEBUG** 点击一次，后台复制当前数据目录中的完整 `app.log` 和递归 `analysis-logs`（包括 JSONL），保存到独立的 `debug-logs/session-…/`，并写入包含窗口、平台和设置的 `context.txt`。默认位置是 `~/.uta-studio/debug-logs/`；界面完成提示给出实际目录。缺失日志或跳过的链接／特殊文件记录在 `snapshot-notes.txt`。
+
+随后桌面 tracing 开启 DEBUG 级别直到退出；后续 app 日志继续镜像到快照 `app.log`，正在排空的后端原始 stderr 不经内存摘要上限截断地写入 `backend-stderr.log`，新建的本地后端命令收到 `UTA_STUDIO_DEBUG=1`。请先点击、等完成提示，再复现黑屏。再次点击创建新目录并切换实时采集，先前目录保留；没有自动清理或上传。写入失败会显示错误，不停止后端 stderr 排空。日志可能含路径、配置和歌词。
+
+这不是系统／内核日志采集器，无法补回此前被过滤的事件，无法改变已经启动的 worker 的日志级别，也不打开编译期 GGML Vulkan 日志。已有分析文件仅做快照；并发后端 stderr 共用原始文件，可能交错。写入不承诺逐条 fsync 或断电尾部完整；日志开启后的吞吐不能当正常性能结果。
+
+2026-09-11 针对性验证：app-core 快照／stderr 10 个隔离测试，桌面 DEBUG 3 个测试、Workflow 22 个测试、UI 脚本 4 个测试通过；桌面构建通过。隔离 Weston/Wayland + lavapipe smoke 实际开启 DEBUG 并确认后续 DEBUG 行，另在合成 workflow 身份上切换并保存 GAME small/large/medium。证据 `test-artifacts/debug-workflow-ui/`；操作记录从 `test-artifacts/operations/20260911T171855-e6d7ee77524a/` 起。初次编译暴露 plugin-group builder 调用错误并已修复；初次 smoke 缺少 PATH 中的 weston，补用已安装 store 路径后通过。最初空工作流 smoke 只证明命令分发，不能证明 GAME 变更，后续有载入工作流的 smoke 才证明切换保存。没有模型推理、真实 GPU 黑屏复现、Windows 或物理鼠标点击验证；没有提升生产就绪状态。
+
 ### 全链路 debug 日志
 
 `UTA_STUDIO_DEBUG=1` 让 `uta-analyze analyze` 将生命周期事件、worker 启动／命令意图、每个协议帧和退出状态即时写入 stderr；worker stderr 同时逐次读取转发，不受错误摘要的 1 MiB 内存上限截断。stdout 仍只承载机器结果。日志写入失败不终止 worker 排空；退出前收集 stderr 尾部。日志会包含本地路径、配置和转录文本，应作为本地诊断数据保管。
