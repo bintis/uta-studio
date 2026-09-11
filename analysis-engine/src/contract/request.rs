@@ -597,7 +597,9 @@ impl RequestedArtifacts {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutionPolicy {
-    /// Opt-in multi-GPU scheduling and per-analysis resource reuse.
+    /// Opt-in complete-model multi-GPU scheduling and per-analysis resource
+    /// reuse. When enabled, the Engine owns backend/device placement and
+    /// ignores manual route fields without modifying their persisted source.
     #[serde(default)]
     pub turbo_acceleration: bool,
     #[serde(default)]
@@ -606,7 +608,8 @@ pub struct ExecutionPolicy {
     /// pinned route unless an entry below overrides that model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requested_backend: Option<uta_runtime_manager::NativeBackend>,
-    /// Per-model backend choices take precedence and remain fail-closed.
+    /// Per-model backend choices take precedence and remain fail-closed in
+    /// ordinary mode. Super acceleration ignores them for automatic placement.
     /// Each model keeps independently pinned artifact and runtime provenance.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub model_backend_overrides: BTreeMap<String, uta_runtime_manager::NativeBackend>,
@@ -616,7 +619,7 @@ pub struct ExecutionPolicy {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requested_device: Option<uta_runtime_manager::NativeDeviceClass>,
     /// Per-model device-class choices, same precedence rule as
-    /// `model_backend_overrides`.
+    /// `model_backend_overrides`; inactive while Super acceleration is enabled.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub model_device_overrides: BTreeMap<String, uta_runtime_manager::NativeDeviceClass>,
 }

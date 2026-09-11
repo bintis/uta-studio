@@ -261,14 +261,16 @@ pub struct RequestedArtifactsWire {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionPolicyWire {
+    /// Complete-model automatic GPU placement. Manual route fields are absent
+    /// while enabled and return from persisted settings when disabled.
     #[serde(default)]
     pub turbo_acceleration: bool,
     #[serde(default)]
     pub runtime_policy: RuntimePolicyWire,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requested_backend: Option<super::NativeBackendWire>,
-    /// Model-specific choices take precedence over the global selection.
-    /// Missing entries retain each model's Runtime Manager-pinned route.
+    /// Model-specific choices take precedence over the global selection in
+    /// ordinary mode. Missing entries retain Runtime Manager's pinned route.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub model_backend_overrides: BTreeMap<String, super::NativeBackendWire>,
     /// Global device-class preference, orthogonal to `requested_backend`.

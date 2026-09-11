@@ -56,11 +56,11 @@ pub struct AppConfig {
     /// reuse of decoded audio and useful intermediates. Each exact request
     /// snapshots this value; changing it never changes a queued/running job.
     ///
-    /// This changes only which hardware runs an already-pinned route. It never
-    /// selects a different model, backend or precision, and it does not make
-    /// CPU a production lane: CPU stays the explicitly selected reference lane
-    /// and continues to do only the frontend, decode and post-processing work
-    /// that already runs there.
+    /// This preserves the selected workflow models and precision while the
+    /// Engine chooses their native backend and GPU route. Saved manual model,
+    /// backend and device choices remain persisted but inactive until this is
+    /// disabled. CPU is never an automatic production lane and continues to do
+    /// only the frontend, decode and post-processing work already assigned to it.
     #[serde(default)]
     pub turbo_acceleration: Option<bool>,
     /// Threads the explicitly selected CPU reference lane may use. Absent
@@ -70,12 +70,14 @@ pub struct AppConfig {
     #[serde(default)]
     pub cpu_thread_count: Option<u32>,
     /// Explicit model-specific backend choices. Missing entries use Runtime
-    /// Manager's pinned route and never imply fallback.
+    /// Manager's pinned route and never imply fallback. Super acceleration
+    /// preserves these entries but omits them from its automatically routed requests.
     #[serde(default)]
     pub model_backend_overrides: BTreeMap<String, String>,
     /// Explicit model-specific device-class preference (`cpu`, `gpu`,
     /// `integrated_gpu`), orthogonal to `model_backend_overrides`'s runtime
-    /// choice. CPU must be selected directly and is never a fallback.
+    /// choice. CPU must be selected directly and is never a fallback. These
+    /// saved choices are inactive while Super acceleration owns placement.
     #[serde(default)]
     pub model_device_overrides: BTreeMap<String, String>,
     /// Human-readable operator guidance retained in JSON because JSON has no
