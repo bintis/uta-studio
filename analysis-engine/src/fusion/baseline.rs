@@ -1406,3 +1406,7 @@ pub(crate) fn fuse_singing_evidence_with_challengers(
 #[cfg(test)]
 #[path = "baseline_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "segmentation_tests.rs"]
+mod segmentation_tests;
