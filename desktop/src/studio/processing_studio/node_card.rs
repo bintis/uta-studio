@@ -10,6 +10,7 @@ pub(super) struct NodeCardContext<'a> {
     pub(super) embedded: bool,
     pub(super) compact: bool,
     pub(super) allow_drag_reorder: bool,
+    pub(super) automatic_routing: bool,
     pub(super) definition: &'a app_core::WorkflowDefinition,
     pub(super) analyzer_binding: Option<&'a app_core::AnalyzerBinding>,
     pub(super) audio_sources: &'a [(app_core::WorkflowNodeId, String, String)],
@@ -631,7 +632,7 @@ pub(super) fn spawn_node_card(
                             } else {
                                 option.label.to_string()
                             };
-                            if current {
+                            if current || context.automatic_routing {
                                 disabled_action_button(choices, font.clone(), theme, label);
                             } else {
                                 action_button(
@@ -652,7 +653,11 @@ pub(super) fn spawn_node_card(
                     spawn_wrapped_text(
                         card,
                         font.clone(),
-                        "One real invocation is one execution card. Independent providers keep separate progress, logs, and model identity. Runtime readiness is resolved only in Plan Preview.",
+                        if context.automatic_routing {
+                            "Super acceleration preserves this model strategy and temporarily disables manual model changes while automatic backend/device placement is active."
+                        } else {
+                            "One real invocation is one execution card. Independent providers keep separate progress, logs, and model identity. Runtime readiness is resolved only in Plan Preview."
+                        },
                         7.5,
                         theme.muted_foreground,
                     );
@@ -714,7 +719,8 @@ pub(super) fn spawn_node_card(
                         } else {
                             option.label.to_string()
                         };
-                        if !current
+                        if !context.automatic_routing
+                            && !current
                             && workflow_model_can_be_selected(
                                 context.definition,
                                 &node.instance_id,
@@ -739,7 +745,11 @@ pub(super) fn spawn_node_card(
                 spawn_wrapped_text(
                     card,
                     font.clone(),
-                    "Choosing a provider already used by a sibling card swaps the providers while preserving each card's execution condition.",
+                    if context.automatic_routing {
+                        "Super acceleration preserves the selected model and temporarily disables manual model changes while automatic backend/device placement is active."
+                    } else {
+                        "Choosing a provider already used by a sibling card swaps the providers while preserving each card's execution condition."
+                    },
                     7.5,
                     theme.muted_foreground,
                 );

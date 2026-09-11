@@ -202,6 +202,16 @@ fn separation_picker_exposes_only_typed_executable_strategies() {
 }
 
 #[test]
+fn super_acceleration_disables_model_choice_without_rewriting_the_workflow() {
+    let cards = include_str!("node_card.rs");
+    let actions = include_str!("../actions_chrome.rs");
+    assert!(cards.contains("context.automatic_routing"));
+    assert!(cards.contains("temporarily disables manual model changes"));
+    assert!(actions.contains("Turn it off before changing the saved workflow model"));
+    assert!(actions.contains("Turn it off before changing the saved separation models"));
+}
+
+#[test]
 fn provider_is_secondary_metadata_and_plan_preview_remains_authoritative() {
     let metadata = provider_metadata(Some("rmvpe"));
     assert!(metadata.starts_with("Configured provider:"));

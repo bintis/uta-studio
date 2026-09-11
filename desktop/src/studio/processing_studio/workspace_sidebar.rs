@@ -448,6 +448,10 @@ pub(super) fn spawn_workflow_sidebar(
                                 embedded: false,
                                 compact: false,
                                 allow_drag_reorder: false,
+                                automatic_routing: session
+                                    .config
+                                    .turbo_acceleration
+                                    .unwrap_or(false),
                                 definition: &stored.definition,
                                 analyzer_binding: stored
                                     .definition

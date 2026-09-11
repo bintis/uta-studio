@@ -917,6 +917,10 @@ pub(crate) fn spawn_processing_studio(
                                                             embedded: true,
                                                             compact: true,
                                                             allow_drag_reorder: true,
+                                                            automatic_routing: session
+                                                                .config
+                                                                .turbo_acceleration
+                                                                .unwrap_or(false),
                                                             definition: &stored.definition,
                                                             analyzer_binding: analyzer_bindings
                                                                 .get(&member.instance_id)
@@ -942,6 +946,10 @@ pub(crate) fn spawn_processing_studio(
                                             embedded: false,
                                             compact: stage == 3,
                                             allow_drag_reorder: true,
+                                            automatic_routing: session
+                                                .config
+                                                .turbo_acceleration
+                                                .unwrap_or(false),
                                             definition: &stored.definition,
                                             analyzer_binding: analyzer_bindings
                                                 .get(&node.instance_id)
