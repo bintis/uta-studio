@@ -49,6 +49,8 @@ Runtime::Runtime(const std::string& selected, int index, const std::string& arit
     at::set_num_threads(2);
     const auto trace = std::getenv("UTA_STUDIO_LIBTORCH_TRACE_SYNC");
     trace_synchronization = trace && std::string(trace) == "1";
+    const auto stage_sync = std::getenv("UTA_STUDIO_LIBTORCH_STAGE_SYNC");
+    stage_synchronization = trace_synchronization || (stage_sync && std::string(stage_sync) == "1");
     const auto profile = std::getenv("UTA_STUDIO_LIBTORCH_PROFILE_SUBMISSION");
     profile_submission = profile && std::string(profile) == "1";
 }
@@ -63,14 +65,16 @@ void Runtime::synchronize() const {
 #endif
 }
 void Runtime::checkpoint(const std::string& stage) const {
-    if (!trace_synchronization) return;
+    if (!stage_synchronization) return;
     const auto timestamp = [] {
         return std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
     };
-    std::cerr << "[uta-libtorch-await] " << stage << " time_ns=" << timestamp() << std::endl;
+    if (trace_synchronization)
+        std::cerr << "[uta-libtorch-await] " << stage << " time_ns=" << timestamp() << std::endl;
     synchronize();
-    std::cerr << "[uta-libtorch-complete] " << stage << " time_ns=" << timestamp() << std::endl;
+    if (trace_synchronization)
+        std::cerr << "[uta-libtorch-complete] " << stage << " time_ns=" << timestamp() << std::endl;
 }
 const at::Tensor& Inputs::get(const std::string& name) const {
     const auto found = tensors.find(name);

@@ -12,7 +12,9 @@ struct Runtime {
     std::string precision;
     Runtime(const std::string& backend, int index, const std::string& precision);
     void synchronize() const;
-    // Opt-in fault localization; never enabled for performance measurements.
+    // Opt-in synchronization can run quietly; tracing adds fault-localization
+    // output and is never enabled for performance measurements.
+    bool stage_synchronization = false;
     bool trace_synchronization = false;
     // Process CPU/wall attribution around existing submission/completion only.
     bool profile_submission = false;

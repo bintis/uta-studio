@@ -179,7 +179,7 @@ public:
     }
 private:
     std::function<void(int64_t, int64_t)> tile_checkpoint(const std::string& stage) const {
-        if (!runtime->trace_synchronization) return {};
+        if (!runtime->stage_synchronization) return {};
         return [this, stage](int64_t start, int64_t count) {
             runtime->checkpoint(stage + ".start." + std::to_string(start) + ".rows." + std::to_string(count));
         };
@@ -271,7 +271,7 @@ private:
                 ? partitioned_mixed_attention(query, key, value, scale, [this] { check_cancel(); })
                 : runtime->backend == "libtorch_xpu"
                     ? layout_preserving_roformer_attention(query, key, value, scale, [&](const char* stage) {
-                        if (runtime->trace_synchronization) runtime->checkpoint(prefix + '.' + stage);
+                        if (runtime->stage_synchronization) runtime->checkpoint(prefix + '.' + stage);
                     })
                     : fused_attention(query, key, value, {}, false, false, scale))
             : dense_attention(query, key, value, {}, false, scale);

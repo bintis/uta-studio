@@ -106,6 +106,7 @@
             # kernel fence completed the same full workload without changing
             # its GPU-only graph or arithmetic.
             export AMD_SERIALIZE_KERNEL=3
+            export UTA_STUDIO_LIBTORCH_STAGE_SYNC=1
             export UTA_STUDIO_ROCM_ENVIRONMENT="''${UTA_STUDIO_ROCM_ENVIRONMENT:-$PWD/test-artifacts/libtorch-rocm/runtime}"
             if [ -f "$UTA_STUDIO_ROCM_ENVIRONMENT/.uta-studio-ready" ]; then
               export PATH="$UTA_STUDIO_ROCM_ENVIRONMENT/bin:$PATH"
