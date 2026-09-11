@@ -22,10 +22,7 @@ inline at::Tensor apply_rotary_interleaved(const at::Tensor& input, const Rotary
         cosine = cosine.unsqueeze(0);
         sine = sine.unsqueeze(0);
     }
-    auto shape = input.sizes().vec();
-    shape.back() /= 2;
-    shape.push_back(2);
-    auto paired = input.reshape(shape);
+    auto paired = input.reshape({input.size(0), input.size(1), input.size(2), input.size(-1) / 2, 2});
     auto even = paired.select(-1, 0), odd = paired.select(-1, 1);
     return at::stack({even * cosine - odd * sine, even * sine + odd * cosine}, -1).flatten(-2);
 }
