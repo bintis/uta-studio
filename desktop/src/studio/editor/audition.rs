@@ -691,6 +691,15 @@ fn artifact_reconciliation_needed(
         || audio_source.starts_with("artifact:")
 }
 
+fn failed_audio_status(
+    status: &mut uta_studio_audio::EditorAudioStatus,
+    error: String,
+) {
+    // Preserve the last confirmed position; errors cannot advance the clock.
+    status.playing = false;
+    status.error = Some(error);
+}
+
 pub(crate) fn sync_editor_audio(
     time: Res<Time>,
     mut timer: ResMut<EditorAudioSyncTimer>,
@@ -722,8 +731,7 @@ pub(crate) fn sync_editor_audio(
                 Err(error) => {
                     // A failed status query is not evidence of playback. Stop
                     // interpolation rather than animating a silent/error stream.
-                    editor.audio_status.playing = false;
-                    editor.audio_status.error = Some(error.clone());
+                    failed_audio_status(&mut editor.audio_status, error.clone());
                     editor.last_audio_sync = Instant::now();
                     status_error = Some(error);
                 }
@@ -807,6 +815,19 @@ pub(crate) fn sync_editor_audio(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_status_stops_interpolation_and_preserves_position() {
+        let mut status = uta_studio_audio::EditorAudioStatus {
+            playing: true,
+            position_secs: 12.5,
+            ..default()
+        };
+        failed_audio_status(&mut status, "missing decoder".to_string());
+        assert!(!status.playing);
+        assert_eq!(status.position_secs, 12.5);
+        assert_eq!(status.error.as_deref(), Some("missing decoder"));
+    }
 
     fn audio_revision(id: &str, active: bool, invalidated: bool) -> app_core::ArtifactRevision {
         app_core::ArtifactRevision {
