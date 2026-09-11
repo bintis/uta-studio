@@ -89,11 +89,62 @@ pub struct DeviceReport {
     pub kind: String,
 }
 
+/// The protocol stream, once claimed: a private duplicate of the original
+/// standard output. After the claim, file descriptor 1 is redirected to
+/// standard error so that native libraries which print to stdout (oneDNN
+/// verbose output, driver build logs) become diagnostics instead of
+/// corrupting the NDJSON protocol the Analysis Engine parses.
+static PROTOCOL_STREAM: std::sync::OnceLock<std::sync::Mutex<std::fs::File>> =
+    std::sync::OnceLock::new();
+
+/// Claims standard output for the protocol before any native library is
+/// loaded. Must run once, on the main thread, before the first frame.
+#[cfg(unix)]
+pub fn claim_protocol_stream() -> Result<(), String> {
+    use std::os::unix::io::FromRawFd;
+    if PROTOCOL_STREAM.get().is_some() {
+        return Ok(());
+    }
+    // SAFETY: plain POSIX descriptor duplication on the process's own
+    // standard streams; the duplicate is owned by the File below and
+    // descriptor 1 keeps a valid target (standard error) afterwards.
+    let (protocol, redirected) = unsafe { (libc::dup(1), libc::dup2(2, 1)) };
+    if protocol < 0 || redirected < 0 {
+        return Err("could not claim the worker protocol stream".to_string());
+    }
+    let file = unsafe { std::fs::File::from_raw_fd(protocol) };
+    PROTOCOL_STREAM
+        .set(std::sync::Mutex::new(file))
+        .map_err(|_| "worker protocol stream was already claimed".to_string())
+}
+
+#[cfg(not(unix))]
+pub fn claim_protocol_stream() -> Result<(), String> {
+    Ok(())
+}
+
 pub fn emit(frame: WorkerFrame<'_>) -> Result<(), String> {
-    let mut stdout = std::io::stdout().lock();
-    serde_json::to_writer(&mut stdout, &frame).map_err(|error| error.to_string())?;
-    stdout.write_all(b"\n").map_err(|error| error.to_string())?;
-    stdout.flush().map_err(|error| error.to_string())
+    let encoded = serde_json::to_vec(&frame).map_err(|error| error.to_string())?;
+    match PROTOCOL_STREAM.get() {
+        Some(stream) => {
+            let mut stream = stream
+                .lock()
+                .map_err(|_| "worker protocol stream is poisoned".to_string())?;
+            stream
+                .write_all(&encoded)
+                .and_then(|()| stream.write_all(b"\n"))
+                .and_then(|()| stream.flush())
+                .map_err(|error| error.to_string())
+        }
+        None => {
+            let mut stdout = std::io::stdout().lock();
+            stdout
+                .write_all(&encoded)
+                .and_then(|()| stdout.write_all(b"\n"))
+                .and_then(|()| stdout.flush())
+                .map_err(|error| error.to_string())
+        }
+    }
 }
 
 #[cfg(test)]

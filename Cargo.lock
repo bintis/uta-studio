@@ -6425,6 +6425,7 @@ name = "uta-ggml-worker"
 version = "0.8.4"
 dependencies = [
  "hound",
+ "libc",
  "serde",
  "serde_json",
  "sha2",

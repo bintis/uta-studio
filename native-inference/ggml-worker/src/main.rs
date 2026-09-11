@@ -118,6 +118,12 @@ fn main() {
         eprintln!("uta-ggml-worker requires --stdio-json");
         std::process::exit(2);
     }
+    // Native libraries may print to standard output; only protocol frames
+    // may reach the Analysis Engine, so claim the stream before loading any.
+    if let Err(error) = protocol::claim_protocol_stream() {
+        eprintln!("{error}");
+        std::process::exit(3);
+    }
     if emit(WorkerFrame::Ready {
         component: "uta-ggml-worker",
     })

@@ -270,12 +270,15 @@ manifest() {
   [ -f "$runtime_root/lib/libuta_libtorch.so" ] || fail "native library is not built; run build first"
   local manifest="$runtime_root/runtime-manifest.json" temporary
   temporary="$manifest.tmp"
-  # The Level Zero loader discovers the Intel GPU driver by name through the
-  # process library search path; naming the driver file directly instead
+  # Libraries the native stack opens lazily by name (the Level Zero loader,
+  # the GPU driver it discovers, the OpenCL ICD loader oneDNN asks for) are
+  # found only through the process library search path, so the manifest
+  # declares the runtime's own library directories followed by the system
+  # GPU driver directory. Naming the driver file directly instead
   # (ZE_ENABLE_ALT_DRIVERS) aborted inside the compute runtime on this host.
-  local driver_directory="" ocl_vendors=""
+  local library_path="$runtime_root/deps/lib:$runtime_root/torch/lib" ocl_vendors=""
   if [ -f /run/opengl-driver/lib/libze_intel_gpu.so.1 ]; then
-    driver_directory="/run/opengl-driver/lib"
+    library_path="$library_path:/run/opengl-driver/lib"
   fi
   if [ -d /run/opengl-driver/etc/OpenCL/vendors ]; then
     ocl_vendors="/run/opengl-driver/etc/OpenCL/vendors"
@@ -293,9 +296,7 @@ manifest() {
     printf '    "SYCL_CACHE_DIR": %s,\n' "$(json_string "$runtime_root/sycl-cache")"
     printf '    "ONEDNN_DEFAULT_FPMATH_MODE": "strict",\n'
     printf '    "DNNL_DEFAULT_FPMATH_MODE": "strict"'
-    if [ -n "$driver_directory" ]; then
-      printf ',\n    "LD_LIBRARY_PATH": %s' "$(json_string "$driver_directory")"
-    fi
+    printf ',\n    "LD_LIBRARY_PATH": %s' "$(json_string "$library_path")"
     if [ -n "$ocl_vendors" ]; then
       printf ',\n    "OCL_ICD_VENDORS": %s' "$(json_string "$ocl_vendors")"
     fi
