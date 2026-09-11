@@ -380,7 +380,7 @@ mod tests {
     }
 
     #[test]
-    fn tail_clip_and_decoder_threshold_contract_fail_closed() {
+    fn tail_clip_and_invalid_decoder_threshold_fail_closed() {
         let mut tail_evidence = evidence();
         assert!(tail_evidence.validate().is_ok());
         tail_evidence.notes[1].range.end += 1;
@@ -388,6 +388,8 @@ mod tests {
 
         let mut threshold_evidence = evidence();
         threshold_evidence.onset_threshold = 0.31;
+        assert!(threshold_evidence.validate().is_ok());
+        threshold_evidence.onset_threshold = f32::NAN;
         assert!(threshold_evidence.validate().is_err());
     }
 }
