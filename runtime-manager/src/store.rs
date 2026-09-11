@@ -72,7 +72,16 @@ impl StorePaths {
                 .with_runtime_override("ggml_vulkan", path.clone())
                 .with_runtime_override("uta-ggml-worker", path);
         }
-        if let Some(path) = std::env::var_os("UTA_STUDIO_FFMPEG_PATH").map(PathBuf::from) {
+        let ffmpeg_path = std::env::var_os("UTA_STUDIO_FFMPEG_PATH")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("PATH").and_then(|paths| {
+                    std::env::split_paths(&paths)
+                        .map(|directory| directory.join("ffmpeg"))
+                        .find(|path| executable_file(path))
+                })
+            });
+        if let Some(path) = ffmpeg_path {
             paths = paths.with_tool_override("ffmpeg", path);
         }
         for provider in uta_fusion_agent_adapter::Provider::ALL {

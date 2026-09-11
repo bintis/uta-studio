@@ -73,8 +73,9 @@ copy_library 'libggml.so.0*' 'libggml.so.0'
 copy_library 'libggml-base.so.0*' 'libggml-base.so.0'
 copy_library 'libggml-cpu.so*' 'libggml-cpu.so'
 copy_library 'libggml-vulkan.so*' 'libggml-vulkan.so'
+runtime_rpath="\$ORIGIN${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 for library in "${staging}"/lib/*; do
-    patchelf --set-rpath '$ORIGIN' "${library}"
+    patchelf --set-rpath "${runtime_rpath}" "${library}"
 done
 
 {
