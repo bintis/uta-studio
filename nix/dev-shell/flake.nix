@@ -28,7 +28,6 @@
             cmake
             ninja
             pkg-config
-            ffmpeg
             libglvnd
             libxkbcommon
             udev
@@ -41,7 +40,11 @@
             if [ -d "$HOME/.cargo/bin" ]; then
               export PATH="$HOME/.cargo/bin:$PATH"
             fi
-            export UTA_STUDIO_FFMPEG_PATH="${pkgs.ffmpeg}/bin/ffmpeg"
+            if [ -z "''${UTA_STUDIO_FFMPEG_PATH:-}" ]; then
+              if command -v ffmpeg >/dev/null 2>&1; then
+                export UTA_STUDIO_FFMPEG_PATH="$(command -v ffmpeg)"
+              fi
+            fi
             # Machine-protocol executables are discovered beside the Studio
             # binary. Do not pin them to target/debug here: doing so makes a
             # release Studio launched from this shell inherit a debug analyzer

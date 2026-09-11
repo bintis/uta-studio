@@ -298,7 +298,6 @@
               cmake
               ninja
               pkg-config
-              ffmpeg
               libglvnd
               libxkbcommon
               udev
@@ -319,7 +318,13 @@
               # nix profile) unless that PATH is captured explicitly here and
               # read back by the scanner as a preferred search path.
               export UTA_STUDIO_AGENT_SEARCH_PATH="$PATH"
-              export UTA_STUDIO_FFMPEG_PATH="${pkgs.ffmpeg}/bin/ffmpeg"
+              if [ -z "''${UTA_STUDIO_FFMPEG_PATH:-}" ]; then
+                if command -v ffmpeg >/dev/null 2>&1; then
+                  export UTA_STUDIO_FFMPEG_PATH="$(command -v ffmpeg)"
+                elif [ -x "${pkgs.ffmpeg}/bin/ffmpeg" ]; then
+                  export UTA_STUDIO_FFMPEG_PATH="${pkgs.ffmpeg}/bin/ffmpeg"
+                fi
+              fi
               export UTA_STUDIO_ANALYSIS_CLI_PATH="$PWD/target/debug/uta-analyze"
               export UTA_STUDIO_RUNTIME_CLI_PATH="$PWD/target/debug/uta-runtime"
               export UTA_STUDIO_GGML_RUNTIME_PATH="$PWD/target/debug/uta-ggml-worker"
