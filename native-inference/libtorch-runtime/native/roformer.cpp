@@ -281,7 +281,11 @@ private:
         const auto batch = sequence.size(0), length = sequence.size(1);
         const auto& cache = positions(length, time);
         const double scale = 1.0 / std::sqrt(static_cast<double>(head_dimension));
-        constexpr int64_t batch_tile = 8;
+        constexpr int64_t maximum_batch_tile = 8;
+        constexpr int64_t maximum_projection_rows = 1024;
+        const auto batch_tile = runtime->backend == "libtorch_rocm"
+            ? std::max<int64_t>(1, std::min<int64_t>(maximum_batch_tile, maximum_projection_rows / length))
+            : maximum_batch_tile;
         if (runtime->backend != "libtorch_rocm" || batch <= batch_tile)
             return attend_tile(sequence, prefix, cache, scale);
         auto output = at::empty_like(sequence);
