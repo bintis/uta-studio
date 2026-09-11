@@ -71,9 +71,16 @@ inline at::Tensor layout_preserving_roformer_attention(const at::Tensor& query, 
     checkpoint("key_conversion");
     auto value_half = value.to(at::kHalf);
     checkpoint("value_conversion");
+    const auto value_width = value_half.size(-1);
+    // Polar encoding doubles Q/K, but not V. Equal embedding widths let
+    // oneDNN use its fused path instead of a quadratic score workspace.
+    // Zero V columns cannot change existing output columns; Q/K, the complete
+    // context and the checkpoint's original (undoubled-width) scale stay intact.
+    if (query_half.size(-1) == key_half.size(-1) && value_width < query_half.size(-1))
+        value_half = at::constant_pad_nd(value_half, {0, query_half.size(-1) - value_width}, 0.0);
     auto attended = at::scaled_dot_product_attention(query_half, key_half, value_half, {}, 0.0, false, scale);
     checkpoint("sdpa");
-    return attended;
+    return attended.narrow(-1, 0, value_width);
 }
 inline at::Tensor layout_preserving_roformer_attention(const at::Tensor& query, const at::Tensor& key,
                                                       const at::Tensor& value, double scale) {

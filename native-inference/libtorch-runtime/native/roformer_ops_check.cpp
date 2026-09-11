@@ -205,6 +205,33 @@ void gating(const at::Device& device, int64_t batch, int64_t length, bool stride
     if (actual.scalar_type() != at::kFloat || !at::equal(input, original) || !at::equal(gates, original_gates))
         throw std::runtime_error("gating output type or input changed");
 }
+void polar_attention(const at::Device& device, int64_t batch, int64_t length) {
+    const int64_t heads = 8, width = 64;
+    auto options = at::TensorOptions().device(device).dtype(at::kFloat);
+    auto storage = (at::arange(batch * length * heads * width * 3, options) * 0.017).sin()
+        .reshape({batch, length, heads * width * 3});
+    auto pieces = storage.chunk(3, -1);
+    auto phase = at::arange(length, options).reshape({1, 1, length, 1})
+        * (at::arange(width, options) + 1.0).reciprocal();
+    auto rotate = [&](const at::Tensor& input, double bias) {
+        auto magnitude = at::softplus(input.reshape({batch, length, heads, width}).transpose(1, 2));
+        return at::stack({magnitude * (phase + bias).cos(), magnitude * (phase + bias).sin()}, -1).flatten(-2);
+    };
+    auto query = rotate(pieces[0], 0.0), key = rotate(pieces[1], 0.3);
+    auto value = pieces[2].reshape({batch, length, heads, width}).transpose(1, 2);
+    auto original_query = query.clone(), original_key = key.clone(), original_value = value.clone();
+    const double scale = 1.0 / std::sqrt(static_cast<double>(width));
+    auto actual = uta::torch_native::layout_preserving_roformer_attention(query, key, value, scale);
+    auto rounded = [](const at::Tensor& input) { return input.to(at::kHalf).to(at::kCPU).to(at::kDouble); };
+    // The independent oracle has the original, unequal Q/K and V widths.
+    auto reference = at::matmul(at::softmax(at::matmul(rounded(query), rounded(key).transpose(-1, -2)) * scale, -1), rounded(value));
+    std::cout << "polar_attention_shape=" << batch << ',' << heads << ',' << length << ",query_width=" << query.size(-1)
+              << ",value_width=" << width << std::endl;
+    compare(actual, reference, "polar-attention-double-oracle", 2e-3, 2e-6);
+    if (actual.scalar_type() != at::kHalf || !at::equal(query, original_query)
+        || !at::equal(key, original_key) || !at::equal(value, original_value))
+        throw std::runtime_error("polar attention changed input data or output rounding");
+}
 void attention(const at::Device& device, int64_t batch, int64_t length, bool timing) {
     const int64_t heads = 8, width = 64;
     auto options = at::TensorOptions().device(device).dtype(at::kFloat);
@@ -261,6 +288,17 @@ int main(int argc, char** argv) {
         if (device.is_cpu() || (argc > 2 && std::string(argv[2]) == "completion")) {
             completion(device);
             if (!device.is_cpu()) return 0;
+        }
+        if (device.is_cpu() || (argc > 2 && std::string(argv[2]) == "polar_attention")) {
+            if (device.is_xpu()) at::globalContext().setSDPUseMath(false);
+            polar_attention(device, 3, 17);
+            polar_attention(device, 17, 3);
+            polar_attention(device, 1, 1);
+            if (!device.is_cpu()) {
+                synchronize(device);
+                std::cout << "PolarFormer attention checks passed on " << device << std::endl;
+                return 0;
+            }
         }
         if (device.is_cpu() || (argc > 2 && std::string(argv[2]) == "norm_layout")) {
             normalization_layout(device, 3, 17, 256, false);
