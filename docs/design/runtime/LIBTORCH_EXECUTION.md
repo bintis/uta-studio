@@ -193,6 +193,25 @@ word timings; STARS uses a separate actual FireRed Chinese alignment branch with
 primary-provider substitution follows. Full details, exact commits/operations,
 timings and remaining integration work: [full-song results](../../LIBTORCH_XPU_FULLSONG_RESULTS.md).
 
+## AMD ROCm 10 all-resource validation — authorized 2026-09-11
+
+**IN_PROGRESS.** The user authorized an isolated Nix development environment using the current
+AMD stable combination, **ROCm 10.0.0 + PyTorch 2.13.0**, followed by serial real-audio execution
+of all eighteen resources on the Radeon 780M. The official multi-architecture packages explicitly
+provide `device-gfx1103`; the repository's pinned nixpkgs still provides ROCm 7.2.3 and is not used
+as evidence for this lane. Authorization receipt: `20260911T094255-176d942db7f9`.
+
+The development shell supplies Python and native build prerequisites, while AMD's stable wheel
+index supplies an isolated, device-specific ROCm/LibTorch tree under ignored test evidence. It must
+not alter the system driver, global Python, installed model store or an older private runtime. Record
+the exact package resolution and native runtime build before execution.
+
+First run all eighteen resources serially against a real twelve-second excerpt, preserving actual
+dependencies and explicit `libtorch_rocm` device selection. Inspect every failure without fallback
+or automatic retry. Only after the complete bounded sweep passes and its outputs are checked, run
+the same dependency-ordered diagnostic on the real full song. Keep previous XPU results separate;
+this work does not establish product routing, parity, listening quality or production readiness.
+
 ## Source references
 
 - Local measured motivation: `docs/ROFORMER_B580_LIBTORCH_XPU.md`.

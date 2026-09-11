@@ -666,6 +666,20 @@ Source media, installed assets and unrelated user changes remain untouched;
 no CPU/GGML inference fallback, Vulkan stress, workspace release checks or Nix
 packaging were performed. See [execution design](../../docs/design/runtime/LIBTORCH_EXECUTION.md).
 
+## All-resource LibTorch AMD ROCm 10 — IN_PROGRESS (2026-09-11)
+
+The user authorized an isolated Nix development environment for the current official
+**ROCm 10.0.0 + PyTorch 2.13.0** combination and the Radeon 780M `gfx1103` device package.
+The pinned nixpkgs ROCm 7.2.3 package is not the target. Authorization operation:
+`20260911T094255-176d942db7f9`; evidence root: `test-artifacts/amd-libtorch-rocm10/`.
+
+Execute all eighteen resources serially on explicit `libtorch_rocm` with real twelve-second audio
+and actual dependent outputs. Preserve failures and inspect results without CPU/GGML fallback or
+automatic retry. If and only if the bounded sweep passes, proceed to the real full song using the
+same dependency order. The isolated runtime must not replace the system driver, installed models,
+source media or prior XPU runtime/evidence. This lane does not promote product routing or readiness.
+See [LibTorch execution](../../docs/design/runtime/LIBTORCH_EXECUTION.md).
+
 ## Next actions
 
 1. Install the STARS and ROSVOT GGUF generations into the managed store with their manifests and
