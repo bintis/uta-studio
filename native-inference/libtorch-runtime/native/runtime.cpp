@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
+#include <thread>
 #if defined(UTA_LIBTORCH_ROCM)
 #include <hip/hip_runtime_api.h>
 #elif defined(UTA_LIBTORCH_XPU)
@@ -51,6 +52,8 @@ Runtime::Runtime(const std::string& selected, int index, const std::string& arit
     trace_synchronization = trace && std::string(trace) == "1";
     const auto stage_sync = std::getenv("UTA_STUDIO_LIBTORCH_STAGE_SYNC");
     stage_synchronization = trace_synchronization || (stage_sync && std::string(stage_sync) == "1");
+    const auto pacing = std::getenv("UTA_STUDIO_LIBTORCH_STAGE_PACING");
+    stage_pacing = pacing && std::string(pacing) == "1";
     const auto profile = std::getenv("UTA_STUDIO_LIBTORCH_PROFILE_SUBMISSION");
     profile_submission = profile && std::string(profile) == "1";
 }
@@ -73,6 +76,8 @@ void Runtime::checkpoint(const std::string& stage) const {
     if (trace_synchronization)
         std::cerr << "[uta-libtorch-await] " << stage << " time_ns=" << timestamp() << std::endl;
     synchronize();
+    if (stage_pacing)
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
     if (trace_synchronization)
         std::cerr << "[uta-libtorch-complete] " << stage << " time_ns=" << timestamp() << std::endl;
 }

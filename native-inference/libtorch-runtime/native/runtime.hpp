@@ -15,6 +15,7 @@ struct Runtime {
     // Opt-in synchronization can run quietly; tracing adds fault-localization
     // output and is never enabled for performance measurements.
     bool stage_synchronization = false;
+    bool stage_pacing = false;
     bool trace_synchronization = false;
     // Process CPU/wall attribution around existing submission/completion only.
     bool profile_submission = false;
