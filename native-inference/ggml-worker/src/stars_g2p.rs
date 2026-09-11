@@ -174,7 +174,10 @@ mod tests {
         ] {
             assert_eq!(asset.characters[&character], phones);
         }
-        let words = ["风吹沙蝶恋花千古佳话".to_string(), "你背上行囊离开家".to_string()];
+        let words = [
+            "风吹沙蝶恋花千古佳话".to_string(),
+            "你背上行囊离开家".to_string(),
+        ];
         let result = asset.phonemize_words(&words).unwrap();
         assert!(!result.phone_ids.is_empty());
         assert_eq!(result.phone_ids.len(), result.phone_to_word.len());

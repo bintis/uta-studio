@@ -16,14 +16,22 @@ struct Word {
     duration_micros: u64,
 }
 fn rmvpe_curve(frames: &[Value]) -> Result<Vec<f32>, String> {
-    frames.iter().enumerate().map(|(index, frame)| {
-        let hz = frame["hz"].as_f64().ok_or("RMVPE frame lacks frequency")?;
-        let time = frame["time"].as_f64().ok_or("RMVPE frame lacks time")?;
-        let voiced = frame["voiced"].as_bool().ok_or("RMVPE frame lacks voiced decision")?;
-        audio::finite([time, hz])?;
-        if (time - index as f64 * 0.01).abs() > 1.0e-6 { return Err("RMVPE frame timeline disagrees with its 10 ms cadence".into()); }
-        Ok(if voiced { hz as f32 } else { 0.0 })
-    }).collect()
+    frames
+        .iter()
+        .enumerate()
+        .map(|(index, frame)| {
+            let hz = frame["hz"].as_f64().ok_or("RMVPE frame lacks frequency")?;
+            let time = frame["time"].as_f64().ok_or("RMVPE frame lacks time")?;
+            let voiced = frame["voiced"]
+                .as_bool()
+                .ok_or("RMVPE frame lacks voiced decision")?;
+            audio::finite([time, hz])?;
+            if (time - index as f64 * 0.01).abs() > 1.0e-6 {
+                return Err("RMVPE frame timeline disagrees with its 10 ms cadence".into());
+            }
+            Ok(if voiced { hz as f32 } else { 0.0 })
+        })
+        .collect()
 }
 fn conditioning(request: &Request) -> Result<(Vec<f32>, Vec<Word>, usize), String> {
     let pitch = audio::read_json(required(&request.pitch, "real RMVPE evidence")?)?;
@@ -77,8 +85,11 @@ mod tests {
     use super::*;
     #[test]
     fn real_pitch_conditioning_keeps_uv_instead_of_voicing_every_raw_estimate() {
-        let frames = vec![json!({"time":0.0,"hz":440.,"voiced":true}), json!({"time":0.01,"hz":220.,"voiced":false})];
-        assert_eq!(rmvpe_curve(&frames).unwrap(), [440.,0.]);
+        let frames = vec![
+            json!({"time":0.0,"hz":440.,"voiced":true}),
+            json!({"time":0.01,"hz":220.,"voiced":false}),
+        ];
+        assert_eq!(rmvpe_curve(&frames).unwrap(), [440., 0.]);
         assert!(rmvpe_curve(&[json!({"time":1.0,"hz":220.,"voiced":true})]).is_err());
     }
 }

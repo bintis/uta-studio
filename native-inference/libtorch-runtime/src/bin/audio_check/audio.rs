@@ -106,7 +106,9 @@ pub fn publish_wave(
     file.flush()
         .and_then(|_| file.get_ref().sync_all())
         .map_err(|error| error.to_string())?;
-    let peak = samples.iter().fold(0.0_f32, |peak, value| peak.max(value.abs()));
+    let peak = samples
+        .iter()
+        .fold(0.0_f32, |peak, value| peak.max(value.abs()));
     let gain = pcm_gain(peak);
     let flac = root.join(format!("{name}.flac"));
     let output = ffmpeg()
@@ -149,7 +151,11 @@ pub fn publish_wave(
 }
 
 fn pcm_gain(peak: f32) -> f64 {
-    if peak >= 1.0 { f64::from(1.0 - f32::EPSILON) / f64::from(peak) } else { 1.0 }
+    if peak >= 1.0 {
+        f64::from(1.0 - f32::EPSILON) / f64::from(peak)
+    } else {
+        1.0
+    }
 }
 
 #[cfg(test)]
@@ -176,11 +182,22 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("uta-studio-audio-{}-{nonce}", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("uta-studio-audio-{}-{nonce}", std::process::id()));
         fs::create_dir(&path).unwrap();
         let root = Scratch(path);
         let source = root.0.join("source.wav");
-        let samples = [0.0, -0.0, 1.5, -1.25, 0.12345679, -0.23456789, 1.0e-7, -1.0e-7].repeat(64);
+        let samples = [
+            0.0,
+            -0.0,
+            1.5,
+            -1.25,
+            0.12345679,
+            -0.23456789,
+            1.0e-7,
+            -1.0e-7,
+        ]
+        .repeat(64);
         let spec = hound::WavSpec {
             channels: 2,
             sample_rate: 44100,
@@ -197,10 +214,17 @@ mod tests {
         assert_eq!(encoded[4] & 0x7f, 0);
         let geometry = u64::from_be_bytes(encoded[18..26].try_into().unwrap());
         assert_eq!(((geometry >> 36) & 31) + 1, 32);
-        let decoded = ffmpeg().arg("-i").arg(&flac)
+        let decoded = ffmpeg()
+            .arg("-i")
+            .arg(&flac)
             .args(["-f", "f64le", "-c:a", "pcm_f64le", "pipe:1"])
-            .output().unwrap();
-        assert!(decoded.status.success(), "{}", String::from_utf8_lossy(&decoded.stderr));
+            .output()
+            .unwrap();
+        assert!(
+            decoded.status.success(),
+            "{}",
+            String::from_utf8_lossy(&decoded.stderr)
+        );
         assert_eq!(decoded.stdout.len(), samples.len() * 8);
         let gain = publication["pcm_encode_gain"].as_f64().unwrap();
         for (bytes, sample) in decoded.stdout.chunks_exact(8).zip(samples) {
