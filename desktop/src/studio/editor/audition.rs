@@ -720,7 +720,9 @@ pub(crate) fn sync_editor_audio(
                     editor.last_audio_sync = Instant::now();
                 }
                 Err(error) => {
-                    editor.audio_status.playing = true;
+                    // A failed status query is not evidence of playback. Stop
+                    // interpolation rather than animating a silent/error stream.
+                    editor.audio_status.playing = false;
                     editor.audio_status.error = Some(error.clone());
                     editor.last_audio_sync = Instant::now();
                     status_error = Some(error);
@@ -791,8 +793,14 @@ pub(crate) fn sync_editor_audio(
         }
         invalidated.invalidate(UiDirtyRegion::Editor);
     }
-    if status_error.is_some() {
+    if status_error.is_some() && shell.notice != status_error {
+        if let Some(error) = status_error.as_ref() {
+            bevy::log::error!("{error}");
+        }
         shell.notice = status_error;
+        // The notice is rendered inside the editor tree. Only rebuild when
+        // it changes, not every status poll while a dependency is missing.
+        invalidated.invalidate(UiDirtyRegion::Editor);
     }
 }
 
