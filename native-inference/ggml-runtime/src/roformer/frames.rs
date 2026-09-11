@@ -16,7 +16,11 @@ pub(super) fn prepare_model_input(
     frequency_indices: &[usize],
 ) -> Result<Vec<f32>, String> {
     let mut output = vec![0.0_f32; frame_count * total_dimension];
-    for frame in 0..frame_count {
+    // Transpose frequency-major spectra in bounded frame strips. Each source
+    // run is contiguous; only a small set of destination rows stays active.
+    const FRAME_STRIP: usize = 32;
+    for begin in (0..frame_count).step_by(FRAME_STRIP) {
+        let end = (begin + FRAME_STRIP).min(frame_count);
         for (frequency_position, stereo_frequency) in frequency_indices.iter().copied().enumerate()
         {
             let raw_frequency = stereo_frequency / 2;
@@ -24,10 +28,12 @@ pub(super) fn prepare_model_input(
             if raw_frequency >= spectra[channel].n_freq {
                 return Err("RoFormer frequency index exceeds the STFT".to_string());
             }
-            let (real, imaginary) = spectra[channel].get(raw_frequency, frame);
-            let destination = frame * total_dimension + frequency_position * 2;
-            output[destination] = real;
-            output[destination + 1] = imaginary;
+            for frame in begin..end {
+                let (real, imaginary) = spectra[channel].get(raw_frequency, frame);
+                let destination = frame * total_dimension + frequency_position * 2;
+                output[destination] = real;
+                output[destination + 1] = imaginary;
+            }
         }
     }
     Ok(output)
@@ -163,6 +169,36 @@ pub(super) fn reflect_pad_track(input: &[f32], amount: usize) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn packed_features_preserve_every_storage_bit_across_strips_and_band_orders() {
+        for frame_count in [1, 31, 32, 33, 257, 1722] {
+            let mut spectra = [Spectrogram::zeros(11, frame_count), Spectrogram::zeros(11, frame_count)];
+            let encodings = [0, 0x80000000, 0x3f800001, 0x00000001, 0x7f800000, 0x7fc01234];
+            for (channel, spectrum) in spectra.iter_mut().enumerate() {
+                for (index, value) in spectrum.data.iter_mut().enumerate() {
+                    *value = f32::from_bits(encodings[(index + channel) % encodings.len()]);
+                }
+            }
+            let indices = [21, 0, 7, 7, 2, 1, 20];
+            let width = indices.len() * 2;
+            let actual = prepare_model_input(&spectra, frame_count, width, &indices).unwrap();
+            let mut expected = Vec::new();
+            for frame in 0..frame_count {
+                for frequency in indices {
+                    let (real, imaginary) = spectra[frequency % 2].get(frequency / 2, frame);
+                    expected.extend([real.to_bits(), imaginary.to_bits()]);
+                }
+            }
+            assert_eq!(actual.iter().map(|value| value.to_bits()).collect::<Vec<_>>(), expected);
+        }
+    }
+
+    #[test]
+    fn packed_features_report_an_out_of_range_frequency() {
+        let spectra = [Spectrogram::zeros(3, 33), Spectrogram::zeros(3, 33)];
+        assert!(prepare_model_input(&spectra, 33, 2, &[6]).unwrap_err().contains("frequency index"));
+    }
 
     #[test]
     fn overlap_add_preserves_identity_chunks() {
