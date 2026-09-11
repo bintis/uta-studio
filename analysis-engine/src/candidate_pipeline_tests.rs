@@ -397,6 +397,56 @@ fn timed_lyric_line_owns_notes_outside_a_collapsed_alignment_span() {
 }
 
 #[test]
+fn unresolved_words_do_not_shift_later_measured_words_into_an_earlier_line() {
+    let transcript = CanonicalLyrics {
+        text: "风吹沙\n风吹沙".to_string(),
+        language: Some("zh".to_string()),
+        authority: LyricsAuthority::CallerCanonical,
+        tokens: [(1_000_000, 4_000_000), (10_000_000, 13_000_000)]
+            .into_iter()
+            .enumerate()
+            .map(|(index, (start, end))| TranscriptTokenEvidence {
+                id: Some(format!("line-{index}")),
+                text: "风吹沙".to_string(),
+                range: Some(TimeRange::new(start, end).unwrap()),
+                confidence: None,
+            })
+            .collect(),
+        confidence: None,
+        source_experts: vec!["caller.canonical_lyrics".to_string()],
+        alternatives: Vec::new(),
+    };
+    // Only these words were actually measured. The intervening unresolved
+    // characters have no CanonicalWordBoundary and must not shift text offsets.
+    let words = [
+        ("first-wind", "风", 1_200_000, 1_500_000),
+        ("later-sand", "沙", 12_000_000, 12_300_000),
+    ]
+    .into_iter()
+    .map(|(id, text, start, end)| CanonicalWordBoundary {
+        word_id: id.to_string(),
+        text: text.to_string(),
+        range: TimeRange::new(start, end).unwrap(),
+        confidence: None,
+        disagreement: None,
+        source_experts: vec!["qwen3_forced_aligner_0_6b".to_string()],
+    })
+    .collect::<Vec<_>>();
+    assert_eq!(
+        timed_lyric_word_owner(TimeRange::new(11_000_000, 11_200_000).unwrap(), &transcript, &words),
+        Some("later-sand")
+    );
+    assert_eq!(
+        timed_lyric_word_owner(TimeRange::new(3_000_000, 3_200_000).unwrap(), &transcript, &words),
+        Some("first-wind")
+    );
+    assert_eq!(
+        timed_lyric_word_owner(TimeRange::new(6_000_000, 6_200_000).unwrap(), &transcript, &words),
+        None
+    );
+}
+
+#[test]
 fn selected_unlinked_notes_are_published_through_timed_lyric_ownership() {
     let (transcript, mut lyrics) =
         fuse_transcript_stage(&[transcript(TranscriptAuthority::CallerCanonical)], None).unwrap();
