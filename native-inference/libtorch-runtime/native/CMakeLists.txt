@@ -48,9 +48,10 @@ if(UTA_LIBTORCH_BACKEND STREQUAL "rocm")
     PATHS "${ROCM_ROOT}/lib/host-math/lib" NO_DEFAULT_PATH REQUIRED)
   # AOTriton requires the standard XZ ABI, not ROCm's renamed private symbols.
   find_library(native_lzma NAMES lzma REQUIRED)
+  get_filename_component(native_lzma_directory "${native_lzma}" DIRECTORY)
   target_link_libraries(uta_libtorch PRIVATE "-Wl,--no-as-needed"
     "${native_hip}" "${native_host_blas}" "${native_lzma}" "-Wl,--as-needed")
-  list(APPEND native_paths "${ROCM_ROOT}/lib" "${ROCM_ROOT}/lib/host-math/lib" "${ROCM_ROOT}/lib/rocm_sysdeps/lib" "${ROCM_ROOT}/lib/llvm/lib")
+  list(APPEND native_paths "${ROCM_ROOT}/lib" "${ROCM_ROOT}/lib/host-math/lib" "${ROCM_ROOT}/lib/rocm_sysdeps/lib" "${ROCM_ROOT}/lib/llvm/lib" "${native_lzma_directory}")
   if(EXISTS "${ROCM_CORE_ROOT}/lib")
     list(APPEND native_paths "${ROCM_CORE_ROOT}/lib")
   endif()
@@ -154,6 +155,10 @@ target_include_directories(uta-libtorch-roformer-ops-check SYSTEM PRIVATE
 foreach(component IN LISTS native_components)
   target_link_libraries(uta-libtorch-roformer-ops-check PRIVATE "-Wl,--no-as-needed" "${native_${component}}" "-Wl,--as-needed")
 endforeach()
+if(UTA_LIBTORCH_BACKEND STREQUAL "rocm")
+  target_link_libraries(uta-libtorch-roformer-ops-check PRIVATE
+    "-Wl,--no-as-needed" "${native_lzma}" "-Wl,--as-needed")
+endif()
 if(UTA_LIBTORCH_BACKEND STREQUAL "rocm" OR UTA_LIBTORCH_BACKEND STREQUAL "xpu")
   target_link_options(uta-libtorch-roformer-ops-check PRIVATE "-Wl,--disable-new-dtags")
 endif()
