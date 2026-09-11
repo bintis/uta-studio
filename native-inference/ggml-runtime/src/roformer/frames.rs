@@ -4,8 +4,8 @@
 //! the model's input layout, applying the predicted mask and inverting it, and
 //! the bounded overlap-add that turns a track into chunks and back.
 
-use crate::stft::{Spectrogram, compute_istft};
 use crate::stage_profile::StageProfile;
+use crate::stft::{Spectrogram, compute_istft};
 
 use super::Config;
 
@@ -40,14 +40,20 @@ pub(super) fn prepare_model_input(
 }
 
 fn accumulate_channel_mask(
-    mask: &[f32], frequency_indices: &[usize], stem: usize,
-    stride_time: usize, channel: usize, spectrum: &mut Spectrogram,
+    mask: &[f32],
+    frequency_indices: &[usize],
+    stem: usize,
+    stride_time: usize,
+    channel: usize,
+    spectrum: &mut Spectrogram,
 ) {
     let feature_count = frequency_indices.len() * 2;
     // Whole frequency rows outperform frame strips for this accumulation.
     // Keep the original band order, including overlapping mel bands.
     for (position, stereo_frequency) in frequency_indices.iter().copied().enumerate() {
-        if stereo_frequency % 2 != channel { continue; }
+        if stereo_frequency % 2 != channel {
+            continue;
+        }
         let frequency = stereo_frequency / 2;
         for frame in 0..spectrum.n_frames {
             let source = frame * stride_time + stem * feature_count + position * 2;
@@ -87,7 +93,12 @@ pub(super) fn reconstruct_stems(
         ];
         for channel in 0..2 {
             accumulate_channel_mask(
-                mask, &config.frequency_indices, stem, stride_time, channel, &mut channels[channel],
+                mask,
+                &config.frequency_indices,
+                stem,
+                stride_time,
+                channel,
+                &mut channels[channel],
             );
             for frequency in 0..frequency_count {
                 let denominator = config.bands_per_frequency[frequency].max(1) as f32;
@@ -185,9 +196,13 @@ mod tests {
     fn packed_features_preserve_every_storage_bit_across_strips_and_band_orders() {
         for frame_count in [1, 31, 32, 33, 257, 1722] {
             let mut spectra: [Spectrogram; 2] = std::array::from_fn(|_| Spectrogram {
-                data: vec![0.0; 11 * frame_count * 2], n_freq: 11, n_frames: frame_count,
+                data: vec![0.0; 11 * frame_count * 2],
+                n_freq: 11,
+                n_frames: frame_count,
             });
-            let encodings = [0, 0x80000000, 0x3f800001, 0x00000001, 0x7f800000, 0x7fc01234];
+            let encodings = [
+                0, 0x80000000, 0x3f800001, 0x00000001, 0x7f800000, 0x7fc01234,
+            ];
             for (channel, spectrum) in spectra.iter_mut().enumerate() {
                 for (index, value) in spectrum.data.iter_mut().enumerate() {
                     *value = f32::from_bits(encodings[(index + channel) % encodings.len()]);
@@ -203,16 +218,28 @@ mod tests {
                     expected.extend([real.to_bits(), imaginary.to_bits()]);
                 }
             }
-            assert_eq!(actual.iter().map(|value| value.to_bits()).collect::<Vec<_>>(), expected);
+            assert_eq!(
+                actual
+                    .iter()
+                    .map(|value| value.to_bits())
+                    .collect::<Vec<_>>(),
+                expected
+            );
         }
     }
 
     #[test]
     fn packed_features_report_an_out_of_range_frequency() {
         let spectra: [Spectrogram; 2] = std::array::from_fn(|_| Spectrogram {
-            data: vec![0.0; 3 * 33 * 2], n_freq: 3, n_frames: 33,
+            data: vec![0.0; 3 * 33 * 2],
+            n_freq: 3,
+            n_frames: 33,
         });
-        assert!(prepare_model_input(&spectra, 33, 2, &[6]).unwrap_err().contains("frequency index"));
+        assert!(
+            prepare_model_input(&spectra, 33, 2, &[6])
+                .unwrap_err()
+                .contains("frequency index")
+        );
     }
 
     #[test]
@@ -222,29 +249,56 @@ mod tests {
         let stems = 2;
         for frames in [1, 31, 32, 33, 257, 1722] {
             let values = [1.0e8_f32, 1.0, -1.0e8, -0.0, 1.0e-30, -1.0e-30, 0.25];
-            let mask = (0..frames * width * stems).map(|index| values[index % values.len()]).collect::<Vec<_>>();
+            let mask = (0..frames * width * stems)
+                .map(|index| values[index % values.len()])
+                .collect::<Vec<_>>();
             let original = mask.iter().map(|value| value.to_bits()).collect::<Vec<_>>();
             for stem in 0..stems {
                 for channel in 0..2 {
-                    let mut actual = Spectrogram { data: vec![0.0; 3 * frames * 2], n_freq: 3, n_frames: frames };
+                    let mut actual = Spectrogram {
+                        data: vec![0.0; 3 * frames * 2],
+                        n_freq: 3,
+                        n_frames: frames,
+                    };
                     let mut expected = vec![0.0_f32; actual.data.len()];
                     // Scalar oracle visits a complete frame at a time; every
                     // frequency keeps its original (non-associative) band sum.
                     for frame in 0..frames {
                         for (position, frequency) in indices.iter().copied().enumerate() {
-                            if frequency % 2 != channel { continue; }
+                            if frequency % 2 != channel {
+                                continue;
+                            }
                             let source = frame * width * stems + stem * width + position * 2;
                             let destination = (frequency / 2 * frames + frame) * 2;
                             expected[destination] += mask[source];
                             expected[destination + 1] += mask[source + 1];
                         }
                     }
-                    accumulate_channel_mask(&mask, &indices, stem, width * stems, channel, &mut actual);
-                    assert_eq!(actual.data.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
-                        expected.iter().map(|value| value.to_bits()).collect::<Vec<_>>());
+                    accumulate_channel_mask(
+                        &mask,
+                        &indices,
+                        stem,
+                        width * stems,
+                        channel,
+                        &mut actual,
+                    );
+                    assert_eq!(
+                        actual
+                            .data
+                            .iter()
+                            .map(|value| value.to_bits())
+                            .collect::<Vec<_>>(),
+                        expected
+                            .iter()
+                            .map(|value| value.to_bits())
+                            .collect::<Vec<_>>()
+                    );
                 }
             }
-            assert_eq!(mask.iter().map(|value| value.to_bits()).collect::<Vec<_>>(), original);
+            assert_eq!(
+                mask.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
+                original
+            );
         }
     }
 

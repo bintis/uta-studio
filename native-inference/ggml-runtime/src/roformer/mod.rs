@@ -712,7 +712,13 @@ impl Model {
             )
         );
         self.profile.record("download", mark);
-        let stems = reconstruct_stems(&mask, &spectra, frame_samples, &self.config, &mut self.profile);
+        let stems = reconstruct_stems(
+            &mask,
+            &spectra,
+            frame_samples,
+            &self.config,
+            &mut self.profile,
+        );
         self.profile.chunk_done();
         stems
     }

@@ -161,7 +161,11 @@ mod tests {
     #[test]
     fn premeasured_stages_are_opt_in_and_accumulate_exact_durations() {
         let mut profile = StageProfile {
-            label: "test", enabled: false, stages: Vec::new(), chunks: 0, started: None,
+            label: "test",
+            enabled: false,
+            stages: Vec::new(),
+            chunks: 0,
+            started: None,
         };
         profile.record_duration("upload", Duration::from_millis(3));
         assert!(profile.stages.is_empty());
@@ -169,10 +173,13 @@ mod tests {
         profile.record_duration("upload", Duration::from_millis(3));
         profile.record_duration("compute", Duration::from_millis(7));
         profile.record_duration("upload", Duration::from_millis(5));
-        assert_eq!(profile.stages, vec![
-            ("upload", Duration::from_millis(8), 2),
-            ("compute", Duration::from_millis(7), 1),
-        ]);
+        assert_eq!(
+            profile.stages,
+            vec![
+                ("upload", Duration::from_millis(8), 2),
+                ("compute", Duration::from_millis(7), 1),
+            ]
+        );
     }
 
     #[test]
