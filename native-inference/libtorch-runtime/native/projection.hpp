@@ -39,10 +39,31 @@ inline int64_t bounded_projection_row_tile(const at::Tensor& input, const at::Te
 // out of the queued ROCm projection path.
 inline void projection_out(at::Tensor& output, const at::Tensor& input,
                            const at::Tensor& weight, const at::Tensor& bias) {
-    if (bias.defined())
-        at::addmm_out(output, bias, input, weight.transpose(0, 1));
-    else
-        at::mm_out(output, input, weight.transpose(0, 1));
+    constexpr int64_t reduction_tile = 128;
+    const auto width = input.size(1);
+    if (width <= reduction_tile) {
+        if (bias.defined())
+            at::addmm_out(output, bias, input, weight.transpose(0, 1));
+        else
+            at::mm_out(output, input, weight.transpose(0, 1));
+        return;
+    }
+    // Each output receives every reduction channel. Ordered partial addmm
+    // contractions only bound the submitted GEMM geometry; no value is
+    // omitted and the caller-owned output remains on the selected GPU.
+    for (int64_t begin = 0; begin < width; begin += reduction_tile) {
+        const auto count = std::min<int64_t>(reduction_tile, width - begin);
+        const auto input_columns = input.narrow(1, begin, count);
+        const auto weight_columns = weight.narrow(1, begin, count).transpose(0, 1);
+        if (begin == 0) {
+            if (bias.defined())
+                at::addmm_out(output, bias, input_columns, weight_columns);
+            else
+                at::mm_out(output, input_columns, weight_columns);
+        } else {
+            at::addmm_out(output, output, input_columns, weight_columns);
+        }
+    }
 }
 
 // Same shared-weight linear map, writing into caller-owned contiguous storage.
@@ -120,7 +141,10 @@ inline at::Tensor tiled_feed_forward(
     for (int64_t start = 0; start < rows; start += row_tile) {
         check_cancel();
         const auto count = std::min<int64_t>(row_tile, rows - start);
-        auto hidden = at::gelu(at::linear(matrix.narrow(0, start, count), input_weight, input_bias), "none");
+        const auto input_rows = matrix.narrow(0, start, count);
+        auto hidden = at::empty({count, input_weight.size(0)}, input.options());
+        projection_out(hidden, input_rows, input_weight, input_bias);
+        hidden = at::gelu(hidden, "none");
         auto output_rows = output.narrow(0, start, count);
         projection_out(output_rows, hidden, output_weight, output_bias);
         if (checkpoint_tile) checkpoint_tile(start, count);
