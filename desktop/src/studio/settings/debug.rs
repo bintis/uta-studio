@@ -8,7 +8,7 @@ static LOG_FILTER: OnceLock<LogFilterHandle> = OnceLock::new();
 
 fn normal_log_filter() -> EnvFilter {
     EnvFilter::new(format!(
-        "info,{}",
+        "info,{},calloop::sources=info",
         crate::studio::startup::studio_log_filter()
     ))
 }
