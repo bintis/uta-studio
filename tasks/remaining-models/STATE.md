@@ -666,7 +666,7 @@ Source media, installed assets and unrelated user changes remain untouched;
 no CPU/GGML inference fallback, Vulkan stress, workspace release checks or Nix
 packaging were performed. See [execution design](../../docs/design/runtime/LIBTORCH_EXECUTION.md).
 
-## All-resource LibTorch AMD ROCm 10 — HALTED AFTER SIXTH GPU RESET (2026-09-11)
+## All-resource LibTorch AMD ROCm 10 — HALTED AFTER SEVENTH GPU RESET (2026-09-11)
 
 **Zero of eighteen resources qualified; the full-song phase was not started.** The isolated Nix
 shell and official **ROCm 10.0.0 + PyTorch 2.13.0** packages, including the Radeon 780M `gfx1103`
@@ -779,12 +779,20 @@ surface, not a stable causal stage.
 Commit `7934e08` removes that band-split lifetime pattern on ROCm. It preallocates one contiguous
 `[band,time,channel]` destination, writes every band projection directly into its own slice, removes
 the sixty retained projection outputs and final stack allocation/copy, and gives trace mode a
-per-band synchronization point. The corrected native build passed. No GPU execution followed the
-sixth recorded reset, so this remains a built candidate rather than a verified repair.
+per-band synchronization point. In the authorized trace, all **60/60** band projections and the
+combined band-split checkpoint completed.
+
+The same trace then completed the first two 1024-row QKV projection tiles and failed on the third,
+`start=2048, rows=1024`; the final sample records `amdgpu-reset-dev`. The actual input is
+`[8,801,384]`, so flattening into 1024-row tiles crosses independent batch boundaries. Commit
+`b26ca72` instead keeps each complete 801-row sequence together, producing eight batch-aligned
+`801 x 384 -> 1536` contractions without removing data. The exact three-dimensional oracle was
+added and the native build passed. It has not been GPU-executed after this seventh reset, so it is a
+built candidate rather than a verified repair.
 
 The sweep remains **three passed, one failed, fourteen not run**. No subsequent model was launched
 and full-song execution was not started. Do not resume AMD ROCm model, oracle or stress execution
-without another explicit human decision after this sixth code-triggered GPU reset. CPU/GGML
+without another explicit human decision after this seventh code-triggered GPU reset. CPU/GGML
 fallback remains prohibited. See [LibTorch execution](../../docs/design/runtime/LIBTORCH_EXECUTION.md).
 
 ## Next actions

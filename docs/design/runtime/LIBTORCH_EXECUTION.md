@@ -193,7 +193,7 @@ word timings; STARS uses a separate actual FireRed Chinese alignment branch with
 primary-provider substitution follows. Full details, exact commits/operations,
 timings and remaining integration work: [full-song results](../../LIBTORCH_XPU_FULLSONG_RESULTS.md).
 
-## AMD ROCm 10 all-resource validation — halted after sixth GPU reset 2026-09-11
+## AMD ROCm 10 all-resource validation — halted after seventh GPU reset 2026-09-11
 
 **RESUMED AT ZERO OF EIGHTEEN FOR THE ORIGINAL TWELVE-SECOND SWEEP.** The authorized isolated environment resolves the official AMD stable
 combination, **ROCm 10.0.0 + PyTorch 2.13.0**, with the Radeon 780M `device-gfx1103` package. The
@@ -297,13 +297,20 @@ records a separate `amdgpu-reset-dev`.
 
 Commit `7934e08` replaces the ROCm band-split lifetime pattern with one preallocated contiguous
 `[band,time,channel]` destination. Each band GEMM writes directly into its slice, eliminating sixty
-retained outputs and the final stack allocation/copy; trace mode can synchronize each band. The
-native build passed. No GPU oracle or model execution followed the sixth recorded reset, so this is
-still an unverified candidate repair.
+retained outputs and the final stack allocation/copy; trace mode synchronizes each band. The next
+Denoise trace completed all **60/60** band projections and the combined band-split checkpoint.
+
+That trace then completed QKV projection rows `0..1023` and `1024..2047` before an unspecified launch
+failure on `start=2048, rows=1024`; the final sample records another `amdgpu-reset-dev`. The actual
+QKV input shape is `[8,801,384]`, so the 1024-row flattening crosses independent batches. Commit
+`b26ca72` uses the complete 801-row penultimate sequence axis whenever it fits under the work bound,
+producing eight batch-aligned contractions without truncating data. Its exact three-dimensional
+oracle was added and the native build passed. No GPU execution followed this seventh reset, so the
+change remains an unverified candidate.
 
 The bounded result remains **three passed, one failed, fourteen not run**. Full-song execution was
 not started. Further AMD ROCm model, oracle or stress execution requires another explicit human
-decision after this sixth reset. CPU/GGML fallback remains prohibited. Previous XPU results remain
+decision after this seventh reset. CPU/GGML fallback remains prohibited. Previous XPU results remain
 separate, and this work establishes no product routing, whole-model parity, listening quality,
 driver stability or production readiness.
 
