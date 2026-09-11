@@ -20,10 +20,26 @@ int main(int argc, char** argv) {
         at::set_num_threads(2);
         at::globalContext().setFloat32Precision(at::Float32Backend::GENERIC, at::Float32Op::ALL, at::Float32Precision::IEEE);
         const auto device = at::Device(at::kCUDA, 0);
-        for (const auto rows : {17, 801, 2051, 6408, 60000}) {
-            const int64_t width = rows == 60000 || rows == 6408 ? 384 : rows == 801 ? 1536 : 63;
-            const int64_t channels = rows == 60000 || rows == 6408 || rows == 801 ? 1536 : 97;
-            const auto input = rows == 6408
+        struct ProjectionShape {
+            int64_t rows;
+            int64_t width;
+            int64_t channels;
+            bool batched;
+            bool split;
+        };
+        const std::vector<ProjectionShape> projection_shapes{
+            {17, 63, 97, false, false},
+            {801, 1536, 1536, false, false},
+            {801, 1536, 37, false, false},
+            {2051, 63, 97, false, false},
+            {6408, 384, 1536, true, true},
+            {60000, 384, 1536, false, false},
+        };
+        for (const auto& projection_shape : projection_shapes) {
+            const auto rows = projection_shape.rows;
+            const auto width = projection_shape.width;
+            const auto channels = projection_shape.channels;
+            const auto input = projection_shape.batched
                 ? fixture({8, 801, width}, 0.31)
                 : fixture({rows, width}, 0.31);
             const auto matrix = input.reshape({rows, width});
@@ -32,7 +48,7 @@ int main(int argc, char** argv) {
             const auto device_input = input.to(device), device_weight = weight.to(device), device_bias = bias.to(device);
             const auto row_tile = uta::torch_native::bounded_projection_row_tile(device_input, device_weight);
             at::Tensor device_actual;
-            if (rows == 6408) {
+            if (projection_shape.split) {
                 const auto weight_parts = device_weight.chunk(3, 0);
                 const auto bias_parts = device_bias.chunk(3, 0);
                 std::vector<at::Tensor> output_parts;
@@ -68,8 +84,9 @@ int main(int argc, char** argv) {
             const auto nmse = squared_error / std::max(reference_energy, 1e-30);
             const bool passed = nmse <= 1e-10 && maximum <= 5e-5;
             std::cout << std::setprecision(12) << "{\"event\":\""
-                      << (rows == 6408 ? "split_qkv_projection_check" : "tiled_projection_check")
+                      << (projection_shape.split ? "split_qkv_projection_check" : "tiled_projection_check")
                       << "\",\"backend\":\"rocm\",\"rows\":" << rows
+                      << ",\"input_channels\":" << width << ",\"output_channels\":" << channels
                       << ",\"row_tile\":" << row_tile << ",\"compared_elements\":" << compared << ",\"nmse\":" << nmse
                       << ",\"maximum_absolute_error\":" << maximum << ",\"passed\":" << (passed ? "true" : "false") << "}\n" << std::flush;
             if (!passed) throw std::runtime_error("projection disagrees with complete double CPU reference");
