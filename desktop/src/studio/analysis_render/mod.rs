@@ -5,6 +5,7 @@ mod inspect;
 mod model_panel;
 mod nodes;
 mod overview;
+mod separation_quality;
 mod stage_bands;
 mod viewport_controls;
 
@@ -15,5 +16,6 @@ pub(crate) use inspect::*;
 pub(crate) use model_panel::*;
 pub(crate) use nodes::*;
 pub(crate) use overview::*;
+pub(crate) use separation_quality::*;
 pub(crate) use stage_bands::*;
 pub(crate) use viewport_controls::*;

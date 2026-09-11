@@ -1550,6 +1550,15 @@ fn spawn_analysis_session_surface(
                         }
                     },
                 );
+                if is_separation_capability(selected_capability) {
+                    spawn_separation_quality_inspection(
+                        session_card,
+                        font.clone(),
+                        theme,
+                        task.live.as_ref().and_then(|live| live.engine.as_ref()),
+                        selected_node_id,
+                    );
+                }
             }
         });
 }
