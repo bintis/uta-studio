@@ -1,4 +1,6 @@
 mod decoder;
+#[cfg(test)]
+mod device_tests;
 mod encoder;
 mod fbank;
 mod transcript;

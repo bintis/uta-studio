@@ -10,6 +10,16 @@ use crate::{GgmlRuntime, path_c_string};
 
 use super::tokenizer::Tokenizer;
 
+/// Typed host metadata, independent of any inference runtime or device.
+/// Both GGUF readers supply the same model configuration and tokenizer data.
+pub trait Metadata {
+    fn required_string(&self, key: &str) -> Result<String, String>;
+    fn required_usize(&self, key: &str) -> Result<usize, String>;
+    fn required_f32(&self, key: &str) -> Result<f32, String>;
+    fn string_array(&self, key: &str) -> Result<Vec<String>, String>;
+    fn i32_array(&self, key: &str) -> Result<Vec<i32>, String>;
+}
+
 macro_rules! ggml {
     ($api:expr, $name:ident($($argument:expr),* $(,)?)) => {{
         // SAFETY: the metadata reader owns a live GGUF context for every call.
@@ -59,7 +69,7 @@ pub struct Config {
 }
 
 impl Config {
-    fn read(metadata: &MetadataReader<'_>) -> Result<Self, String> {
+    pub fn read(metadata: &impl Metadata) -> Result<Self, String> {
         let architecture = metadata.required_string("general.architecture")?;
         let integer = |key: &str| metadata.required_usize(key);
         let float = |key: &str| metadata.required_f32(key);
@@ -225,6 +235,9 @@ impl MetadataReader<'_> {
         }
     }
 
+}
+
+impl Metadata for MetadataReader<'_> {
     fn required_string(&self, key: &str) -> Result<String, String> {
         let index = self.key_index(key)?;
         if ggml!(self.api, gguf_get_kv_type(self.gguf, index)) != GGUF_TYPE_STRING {

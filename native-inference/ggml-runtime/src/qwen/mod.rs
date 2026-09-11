@@ -1,6 +1,8 @@
 pub mod aligner;
 mod alignment_windows;
 pub mod asr;
+#[cfg(test)]
+mod asr_device_tests;
 pub mod decoder;
 pub mod encoder;
 pub mod frontend;

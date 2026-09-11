@@ -4,7 +4,7 @@
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 
-use super::model::MetadataReader;
+use super::model::Metadata;
 
 pub struct Tokenizer {
     ids: HashMap<String, u32>,
@@ -17,7 +17,7 @@ pub struct Tokenizer {
 }
 
 impl Tokenizer {
-    pub(crate) fn from_gguf(metadata: &MetadataReader<'_>) -> Result<Self, String> {
+    pub fn from_gguf(metadata: &impl Metadata) -> Result<Self, String> {
         let tokens = metadata.string_array("tokenizer.ggml.tokens")?;
         let merges = metadata.string_array("tokenizer.ggml.merges")?;
         let types = metadata.i32_array("tokenizer.ggml.token_type")?;
