@@ -24,7 +24,7 @@ The separated-architecture handoff supersedes earlier monolithic Singing/Audio d
 - Studio owns product workflow/control-plane behavior and does not prepare model tensors.
 - Studio communicates with backend components through packaged CLI machine protocols; it does not import backend implementation crates.
 - Production resolution is fail-closed: installed, validated, and usable are distinct states.
-- Every model's inference is Rust-owned graph construction over the pinned upstream GGML shared-library ABI. Vulkan is the default; CPU is explicit experimental mode, and GPU/integrated-GPU failures never fall back to it.
+- The current packaged product route uses Rust-owned graph construction over the pinned upstream GGML shared-library ABI. Separately authorized [native LibTorch execution](runtime/LIBTORCH_EXECUTION.md) has full-song XPU diagnostic evidence, not product routing readiness. Vulkan remains the product default; CPU is explicit experimental mode, and GPU/integrated-GPU failures never fall back to it.
 - Normal Studio analysis sends `RuntimePolicy::Production`; missing installation, runtime, model implementation, or structural requirements fail closed.
 - Runtime generations are immutable and atomically published/leased.
 - Candidate analysis never overwrites Authored chart truth.
@@ -60,7 +60,7 @@ Older linked specifications may contain historical model examples. The current e
 ### Runtime and API contracts
 
 - `docs/design/runtime/SUPER_ACCELERATION.md` — active opt-in multi-GPU scheduling, preloading and per-analysis residency work; not a completed acceleration claim.
-- `docs/design/runtime/LIBTORCH_EXECUTION.md` — separately authorized native LibTorch implementation alongside GGML and bounded AMD/XPU evidence; not production routing readiness.
+- `docs/design/runtime/LIBTORCH_EXECUTION.md` — separately authorized native LibTorch implementation alongside GGML, bounded AMD evidence and all-resource real full-song XPU execution; not production routing readiness.
 
 - `docs/design/runtime/NATIVE_RUNTIME_LOCK_SPEC_v1.0.json` — native runtime identity/lock specification.
 - `docs/design/api/API_CONTRACT_CONCLUSIONS_v1.0.md` — durable API reuse/extension conclusions.

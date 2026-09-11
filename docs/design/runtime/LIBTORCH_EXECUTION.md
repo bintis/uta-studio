@@ -4,7 +4,7 @@
 
 Authorized on 2026-09-10: implement independent native LibTorch execution for all seventeen current catalog resources, retaining GGML as a separate backend. This authorization supersedes the former single-GGML model-computation restriction for this work only. Native-only inference, the Studio/Analysis Engine/Runtime Manager process boundaries, read-only source media, and explicit device selection remain unchanged.
 
-Status: **implementation in progress; bounded native model-plan GPU evidence exists, but no complete-pipeline or production qualification**. Original unrelated working-tree changes are preserved. Development evidence is under `test-artifacts/libtorch-models/` and the operation recorder.
+Status: **all eighteen resources completed real full-song XPU diagnostic execution; product routing and production qualification remain incomplete**. The original seventeen-resource authorization count is historical. See [current full-song results](../../LIBTORCH_XPU_FULLSONG_RESULTS.md) for actual dependencies, repairs, output checks and unresolved quality/host-stability questions. Original unrelated working-tree changes are preserved.
 
 The motivation is `docs/ROFORMER_B580_LIBTORCH_XPU.md`: native ATen/oneDNN outperformed GGML Vulkan for the tested projection and full-context attention operators. Those measurements are not whole-model speedups and do not establish audio parity. No multiplication of operator ratios is used to predict production throughput.
 
@@ -24,6 +24,7 @@ The following are implementation targets, not claims that a model has already pa
 | Resource | Native execution and reuse | Precision and correctness focus |
 | --- | --- | --- |
 | `bs_roformer_leap_xe90_vocals` | Band split and mask projections, alternating full-context time/frequency SDPA; shared-weight contiguous projections may fold batches; retain chunk scratch and resident weights; emit vocals and the instrumental residual from one invocation. | FP32 norm/residual/projection reference; explicit FP16 SDPA rounding; compare both complete stems and reconstruction. |
+| `bs_roformer_leap_xe90_instrumental` | Independent installed XE90 instrumental checkpoint; native mask output plus vocal residual, not a second name for the vocal checkpoint. | Complete instrumental waveform, residual reconstruction and checkpoint-specific output checks. |
 | `bs_polarformer_public_instrumental` | Separate PolarFormer plan honoring its own band/position/mask geometry rather than assuming the XE90 graph; bounded overlap-add and one shared input spectrum. | Compare instrumental and vocal residual; preserve the model's actual positional transform and complex-mask convention. |
 | `melband_roformer_harmony` | Mel-band gather/project, alternating axis attention and mask estimation; reuse overlap-add/frontend work; emit lead plus residual. | Model-specific band overlaps, complex masks and exact output length; do not infer parity from XE90. |
 | `melband_roformer_denoise_aufr33` | Native mel-band RoFormer with its own dimensions/depth and chunk geometry; resident weights and fused SDPA. | Complete denoised waveform comparison and boundary checks. |
@@ -148,7 +149,7 @@ diagnosis. Successful exit does not establish later host stability.
 
 ## All-resource real full-song XPU validation — authorized 2026-09-11
 
-**IN_PROGRESS.** The user authorized all models' real full-song XPU execution and
+**FULL-SONG EXECUTION COMPLETE; production/routing not qualified.** The user authorized all models' real full-song XPU execution and
 fixing diagnosed problems before continuing. The current catalog and native
 factory both contain **eighteen** resources, including the independent XE90
 instrumental checkpoint. Earlier seventeen-resource counts and the earlier
@@ -174,6 +175,24 @@ Vulkan Super restart, counter pressure or power/clock changes. This is model
 qualification work, not authorization to claim Studio routing or production
 readiness. Missing completion records remain unknown.
 
+Outcome: **18/18** completed the full 216.88-second source on B580, including
+full Qwen/FireRed decoding, real forced alignment and real conditioned STARS/ROSVOT.
+Native speech adapters, RMVPE unvoiced conditioning, complete Chinese G2P data,
+PolarFormer equal-width fused attention and actual 32-bit FLAC publication were
+implemented and verified. Harmony also passes its recorded earlier 12-second
+failure input under current code. Complete output/publication evidence is in
+`test-artifacts/libtorch-xpu-fullsong-real/summary.json` and `flac-verification.json`.
+All 193,404,960 decoded publication values were checked; no current publication
+clips. Final focused Rust checks: 123 passed, seven explicitly ignored.
+
+The first PolarFormer full-song attempt reported device loss and retains its
+missing outer completion record; current corrected execution does not establish
+driver root cause or host stability. Qwen has English guesses and 128 unresolved
+word timings; STARS uses a separate actual FireRed Chinese alignment branch with
+46 unresolved words. No invented conditions, model quality claim or automatic
+primary-provider substitution follows. Full details, exact commits/operations,
+timings and remaining integration work: [full-song results](../../LIBTORCH_XPU_FULLSONG_RESULTS.md).
+
 ## Source references
 
 - Local measured motivation: `docs/ROFORMER_B580_LIBTORCH_XPU.md`.
@@ -182,4 +201,4 @@ readiness. Missing completion records remain unknown.
 - PyTorch native C++ interface: https://docs.pytorch.org/cppdocs/
 - PyTorch ROCm/CUDA-interface semantics: https://docs.pytorch.org/docs/main/notes/hip.html
 
-Exact installed runtime versions, model results and remaining blockers will be appended after execution; none are inferred from package availability or historical operator measurements.
+Exact runtime/model execution results and remaining blockers are recorded in the linked full-song report; none are inferred from package availability or historical operator measurements.

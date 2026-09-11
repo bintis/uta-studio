@@ -628,21 +628,43 @@ power-loss cause remains unresolved; process success does not prove later host
 stability. Observe bounded runs and inspect anomalies rather than automatically
 retrying. Installed assets and unrelated user changes remain untouched.
 
-## All-resource real full-song LibTorch XPU — IN_PROGRESS (2026-09-11)
+## All-resource real full-song LibTorch XPU — EXECUTION COMPLETE (2026-09-11)
 
-The user authorized real full-song execution for every model and repair of
-diagnosed failures before continuing. Current source contains eighteen catalog
-and native resource entries, including XE90 instrumental; older seventeen-model
-counts above are historical. ROCm RMVPE has a later successful 30-second run after
-`901c134`, but that does not qualify XPU. Use the existing Chinese song
-`崔子格 - 卜卦.flac` read-only with actual dependency outputs, not synthetic
-pitch/transcript/phonemes. Evidence: `test-artifacts/libtorch-xpu-fullsong-real/`;
-authorization `20260911T063344-cba0c64793b8`. First implement the missing native
-speech host adapters and isolated real-audio diagnostics, then serially execute,
-diagnose/commit/verify repairs and record complete outputs. Preserve all prior
-failures, current precision/chunk semantics, source/installed assets and other
-users' processes. No blind retries, Vulkan/counter stress or production promotion.
-See [LibTorch execution](../../docs/design/runtime/LIBTORCH_EXECUTION.md).
+**18/18 resources completed the real 216.88-second Chinese song on B580 XPU.**
+This includes independent XE90 vocal/instrumental checkpoints, all six separators,
+RMVPE/FCPE/Basic Pitch, GAME small/medium/large, real dual-input JBM555, full Qwen and
+FireRed transcription, real forced alignment, and actual conditioned STARS/ROSVOT.
+Older seventeen-resource counts and bounded-only XPU descriptions above are
+historical. Authorization: `20260911T063344-cba0c64793b8`.
+
+Evidence: `test-artifacts/libtorch-xpu-fullsong-real/summary.json`; durable
+[per-model results, fixes and limitations](../../docs/LIBTORCH_XPU_FULLSONG_RESULTS.md).
+Native speech wrappers and diagnostics were implemented; real RMVPE unvoiced
+conditioning, complete STARS Chinese readings, PolarFormer unequal-width attention
+and FLAC clipping/effective-depth issues were repaired in separate commits.
+Final current publications are under `publications/`: 12 FLACs (ten full-song stems
+plus two Harmony regression stems), all actually 32-bit and fully decoded/compared;
+193,404,960 values, max absolute encoding error 2.3283064365386963e-10, zero clipping.
+Focused final Rust checks: 123 passed, seven explicitly ignored; native CPU/XPU
+primitive checks and three offline lexicon tests also pass. No inference was
+repeated just to republish saved audio.
+
+The original PolarFormer full-song run returned DEVICE_LOST after two chunks;
+its child observer records exit 1 but its outer recorder completion is absent.
+`58f05b5` preserves full attention context/scale while zero-extending V for fused
+SDPA; corrected full-song execution completes in 46.626 s with 3,421,512 KiB peak
+sampled resident VRAM. Kernel logs are permission-blocked, not proof of no reset
+or later host stability. Harmony passes this song and its recorded old 12-second
+failure input under current code. Prior failures and sample-read gaps remain.
+
+**Remaining:** transcription accuracy/listening and whole-model numerical parity;
+128 unresolved Qwen word timings; STARS uses an explicit FireRed Chinese alignment
+branch with 46 unresolved words, not fabricated conditions or product substitution.
+Runtime Manager/Analysis Engine still have no formal LibTorch product route.
+Do not promote `integration_ready`/`production_ready` from diagnostic execution.
+Source media, installed assets and unrelated user changes remain untouched;
+no CPU/GGML inference fallback, Vulkan stress, workspace release checks or Nix
+packaging were performed. See [execution design](../../docs/design/runtime/LIBTORCH_EXECUTION.md).
 
 ## Next actions
 
