@@ -22,6 +22,16 @@ inline int64_t bounded_projection_row_tile(const at::Tensor& weight) {
     return std::max<int64_t>(1, std::min<int64_t>(maximum_rows, maximum_multiply_accumulates / work_per_row));
 }
 
+inline int64_t bounded_projection_row_tile(const at::Tensor& input, const at::Tensor& weight) {
+    const auto row_tile = bounded_projection_row_tile(weight);
+    if (input.dim() <= 2 || input.size(-1) <= 0 || input.size(-2) <= 0) return row_tile;
+    const auto rows = input.numel() / input.size(-1);
+    const auto sequence_rows = input.size(-2);
+    // Keep a complete independent sequence together when it fits in the work
+    // bound instead of making a flattened tile straddle adjacent batches.
+    return rows > row_tile && sequence_rows <= row_tile ? sequence_rows : row_tile;
+}
+
 // Write directly into an already allocated contiguous row slice. Avoiding an
 // asynchronous temporary linear result plus copy keeps its allocator lifetime
 // out of the queued ROCm projection path.

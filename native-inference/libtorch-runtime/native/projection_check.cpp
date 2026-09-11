@@ -23,20 +23,28 @@ int main(int argc, char** argv) {
         for (const auto rows : {17, 801, 2051, 6408, 60000}) {
             const int64_t width = rows == 60000 || rows == 6408 ? 384 : rows == 801 ? 1536 : 63;
             const int64_t channels = rows == 60000 || rows == 6408 || rows == 801 ? 1536 : 97;
-            const auto input = fixture({rows, width}, 0.31);
+            const auto input = rows == 6408
+                ? fixture({8, 801, width}, 0.31)
+                : fixture({rows, width}, 0.31);
+            const auto matrix = input.reshape({rows, width});
             const auto weight = fixture({channels, width}, 1.07);
             const auto bias = fixture({channels}, 0.73);
             const auto device_input = input.to(device), device_weight = weight.to(device), device_bias = bias.to(device);
-            const auto row_tile = uta::torch_native::bounded_projection_row_tile(device_weight);
-            const auto actual = uta::torch_native::tiled_projection(device_input, device_weight, device_bias, [] {}, row_tile).to(at::kCPU);
-            if (actual.sizes() != at::IntArrayRef({rows, channels})) throw std::runtime_error("projection output shape differs");
+            const auto row_tile = uta::torch_native::bounded_projection_row_tile(device_input, device_weight);
+            const auto device_actual = uta::torch_native::tiled_projection(
+                device_input, device_weight, device_bias, [] {}, row_tile);
+            auto output_shape = input.sizes().vec();
+            output_shape.back() = channels;
+            if (device_actual.sizes() != at::IntArrayRef(output_shape))
+                throw std::runtime_error("projection output shape differs");
+            const auto actual = device_actual.reshape({rows, channels}).to(at::kCPU);
             double squared_error = 0.0, reference_energy = 0.0, maximum = 0.0;
             int64_t compared = 0;
             // Compare every output row with double CPU contractions; bounded
             // host reference tiles avoid an unnecessary second full output copy.
             for (int64_t start = 0; start < rows; start += 1024) {
                 const auto count = std::min<int64_t>(1024, rows - start);
-                const auto expected = at::linear(input.narrow(0,start,count).to(at::kDouble), weight.to(at::kDouble), bias.to(at::kDouble));
+                const auto expected = at::linear(matrix.narrow(0,start,count).to(at::kDouble), weight.to(at::kDouble), bias.to(at::kDouble));
                 const auto observed = actual.narrow(0,start,count).to(at::kDouble);
                 if (!at::isfinite(observed).all().item<bool>()) throw std::runtime_error("nonfinite GPU projection output");
                 const auto difference = observed - expected;

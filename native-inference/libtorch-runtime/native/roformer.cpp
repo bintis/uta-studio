@@ -103,7 +103,7 @@ public:
             if (projected_bands.defined()) {
                 auto output = projected_bands.select(0, static_cast<int64_t>(band));
                 tiled_projection_into(output, normalized, weight, bias, [this] { check_cancel(); },
-                                      bounded_projection_row_tile(weight),
+                                      bounded_projection_row_tile(normalized, weight),
                                       tile_checkpoint("roformer.band_split." + std::to_string(band)));
             } else {
                 bands.push_back(project(normalized, weight, bias));
@@ -192,7 +192,7 @@ private:
     at::Tensor project(const at::Tensor& input, const at::Tensor& weight, const at::Tensor& bias = {}) const {
         if (runtime->backend != "libtorch_rocm") return at::linear(input, weight, bias);
         const auto rows = input.numel() / input.size(-1);
-        const auto row_tile = bounded_projection_row_tile(weight);
+        const auto row_tile = bounded_projection_row_tile(input, weight);
         if (rows <= row_tile) return at::linear(input, weight, bias);
         return tiled_projection(input, weight, bias, [this] { check_cancel(); }, row_tile,
                                 tile_checkpoint("roformer.projection"));
