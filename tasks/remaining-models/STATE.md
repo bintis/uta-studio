@@ -666,7 +666,7 @@ Source media, installed assets and unrelated user changes remain untouched;
 no CPU/GGML inference fallback, Vulkan stress, workspace release checks or Nix
 packaging were performed. See [execution design](../../docs/design/runtime/LIBTORCH_EXECUTION.md).
 
-## All-resource LibTorch AMD ROCm 10 — PAUSED AFTER SINGLE-CHUNK PASS (2026-09-11)
+## All-resource LibTorch AMD ROCm 10 — BOUNDED SWEEP RESUMED (2026-09-11)
 
 **Zero of eighteen resources qualified; the full-song phase was not started.** The isolated Nix
 shell and official **ROCm 10.0.0 + PyTorch 2.13.0** packages, including the Radeon 780M `gfx1103`
@@ -711,9 +711,12 @@ the timing is not a clean performance measurement and reset recovery is not esta
 `single-chunk/observation/result.json`, `single-chunk/case/evidence.json`,
 `single-chunk/flac-verification.json`, and `single-chunk/observation-summary.json`.
 
-The one-run authorization is consumed. Do not run another AMD ROCm model, operator stress check,
-remaining bounded resource or full-song execution without new explicit human authorization. Do not
-substitute CPU or GGML. See [LibTorch execution](../../docs/design/runtime/LIBTORCH_EXECUTION.md).
+The user subsequently authorized resuming the original twelve-second sweep; receipt:
+`20260911T110231-4ad310e0db43`. Execute all eighteen resources serially, beginning with the corrected
+Leap path. Record and inspect each model independently, without automatic retry or CPU/GGML fallback.
+The prior reset and abnormal busy evidence remain material limitations. Full-song ROCm execution
+remains unauthorized unless and until all eighteen bounded resources pass. See
+[LibTorch execution](../../docs/design/runtime/LIBTORCH_EXECUTION.md).
 
 ## Next actions
 

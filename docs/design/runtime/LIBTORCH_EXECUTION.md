@@ -193,9 +193,9 @@ word timings; STARS uses a separate actual FireRed Chinese alignment branch with
 primary-provider substitution follows. Full details, exact commits/operations,
 timings and remaining integration work: [full-song results](../../LIBTORCH_XPU_FULLSONG_RESULTS.md).
 
-## AMD ROCm 10 all-resource validation — paused after single-chunk pass 2026-09-11
+## AMD ROCm 10 all-resource validation — bounded sweep resumed 2026-09-11
 
-**HALTED AT ZERO OF EIGHTEEN.** The authorized isolated environment resolves the official AMD stable
+**RESUMED AT ZERO OF EIGHTEEN FOR THE ORIGINAL TWELVE-SECOND SWEEP.** The authorized isolated environment resolves the official AMD stable
 combination, **ROCm 10.0.0 + PyTorch 2.13.0**, with the Radeon 780M `device-gfx1103` package. The
 repository's pinned ROCm 7.2.3 is not evidence for this lane. The private environment remained under
 ignored test evidence and did not alter the system driver, global Python, installed model store,
@@ -234,10 +234,12 @@ single-chunk pass, not a clean throughput measurement or proof that the earlier 
 is resolved. The original twelve-second sweep remains zero of eighteen and full-song execution was
 not started. Evidence: `test-artifacts/amd-libtorch-rocm10/single-chunk/`.
 
-The one-run authorization is consumed. No remaining bounded resource or full-song ROCm execution may
-run without new explicit human authorization. CPU/GGML fallback remains prohibited. Previous XPU
-results stay separate, and this work establishes no product routing, whole-model parity, listening
-quality, driver stability or production readiness.
+The user subsequently authorized resuming all eighteen twelve-second resource checks; receipt:
+`20260911T110231-4ad310e0db43`. Execute them serially with separate operation/evidence records,
+beginning with corrected Leap, and inspect any failure without automatic retry. CPU/GGML fallback
+remains prohibited. Full-song ROCm execution stays conditional on all eighteen bounded passes.
+Previous XPU results remain separate, and this work establishes no product routing, whole-model
+parity, listening quality, driver stability or production readiness.
 
 ## Source references
 
