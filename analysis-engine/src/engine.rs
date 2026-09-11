@@ -1090,18 +1090,21 @@ impl AnalysisEngine {
                 .as_ref()
                 .expect("enabled conditioned execution has context")
                 .clone();
-            Some(owner.start(request.execution_policy.turbo_acceleration, move || {
-                conditioned_models::run_stars(context, run_stars_notes, run_stars_technique)
-            })?)
+            Some(
+                owner.start(request.execution_policy.turbo_acceleration, move || {
+                    conditioned_models::run_stars(context, run_stars_notes, run_stars_technique)
+                })?,
+            )
         } else {
             None
         };
         let rosvot_task = if run_conditioned_rosvot {
-            let context = conditioned_context
-                .expect("enabled conditioned execution has context");
-            Some(owner.start(request.execution_policy.turbo_acceleration, move || {
-                conditioned_models::run_rosvot(context)
-            })?)
+            let context = conditioned_context.expect("enabled conditioned execution has context");
+            Some(
+                owner.start(request.execution_policy.turbo_acceleration, move || {
+                    conditioned_models::run_rosvot(context)
+                })?,
+            )
         } else {
             None
         };

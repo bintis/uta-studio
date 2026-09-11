@@ -80,10 +80,8 @@ pub(super) fn run_stars(
         config,
         &context.cancellation,
     )?;
-    let evidence = parse_advanced_note_evidence(
-        typed_worker_output(&outputs, "stars_evidence")?,
-        "stars",
-    )?;
+    let evidence =
+        parse_advanced_note_evidence(typed_worker_output(&outputs, "stars_evidence")?, "stars")?;
     let technique_evidence = if include_technique {
         Some(
             evidence
@@ -104,9 +102,7 @@ pub(super) fn run_stars(
     })
 }
 
-pub(super) fn run_rosvot(
-    context: ConditionedModelContext,
-) -> EngineResult<AdvancedNoteEvidence> {
+pub(super) fn run_rosvot(context: ConditionedModelContext) -> EngineResult<AdvancedNoteEvidence> {
     let (input, _) = workflow_bound_audio(
         context.plan.workflow_execution.as_ref(),
         "notes.rosvot",
@@ -136,8 +132,5 @@ pub(super) fn run_rosvot(
         config,
         &context.cancellation,
     )?;
-    parse_advanced_note_evidence(
-        typed_worker_output(&outputs, "rosvot_evidence")?,
-        "rosvot",
-    )
+    parse_advanced_note_evidence(typed_worker_output(&outputs, "rosvot_evidence")?, "rosvot")
 }
