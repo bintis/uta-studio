@@ -239,10 +239,10 @@ pub fn run() {
                 .run_if(analysis_log_viewer_closed),
         )
         .add_systems(Update, fit_analysis_graph_to_viewport.after(rebuild_ui))
-        .add_systems(Update, sync_editor_audio)
+        .add_systems(Update, sync_editor_audio.before(rebuild_ui))
         .add_systems(Update, sync_library_audio)
-        .add_systems(Update, update_editor_geometry)
-        .add_systems(Update, update_editor_playhead)
+        .add_systems(Update, update_editor_geometry.after(rebuild_ui))
+        .add_systems(Update, update_editor_playhead.after(rebuild_ui))
         .add_systems(Update, update_editor_shortcuts_panel_visibility)
         .add_systems(Update, update_library_player_ui)
         .run();

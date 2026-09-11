@@ -1068,6 +1068,8 @@ pub(crate) fn update_editor_playhead(
     }
     let label = format_editor_clock(editor.visible_position, editor.audio_status.duration_secs);
     for mut text in &mut clocks {
-        **text = label.clone();
+        if text.0 != label {
+            **text = label.clone();
+        }
     }
 }

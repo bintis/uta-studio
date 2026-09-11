@@ -708,7 +708,13 @@ type ActionButtons<'w, 's> = Query<
         Option<&'static mut BorderColor>,
         Option<&'static RestingButtonBorder>,
     ),
-    Or<(Added<Button>, Changed<Interaction>)>,
+    (
+        Or<(Added<Button>, Changed<Interaction>)>,
+        // This Button captures timeline gestures, not a clickable control.
+        // Tinting the entire canvas on hover/press flashes it whenever a
+        // rebuild resets Interaction before next frame's hit testing.
+        Without<EditorTimelineSurface>,
+    ),
 >;
 
 pub(crate) fn update_button_visuals(
@@ -747,6 +753,27 @@ pub(crate) fn update_button_visuals(
                 resting_border,
                 &theme,
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod editor_surface_tests {
+    use super::*;
+
+    #[test]
+    fn timeline_capture_surface_never_receives_button_hover_tint() {
+        let mut app = App::new();
+        app.insert_resource(StudioTheme::new(false));
+        app.add_systems(Update, update_button_visuals);
+        let resting = Color::srgb(0.1, 0.12, 0.14);
+        let surface = app.world_mut().spawn((
+            Button, EditorTimelineSurface, BackgroundColor(resting),
+        )).id();
+        for interaction in [Interaction::None, Interaction::Hovered, Interaction::Pressed] {
+            app.world_mut().entity_mut(surface).insert(interaction);
+            app.update();
+            assert_eq!(app.world().get::<BackgroundColor>(surface).unwrap().0, resting);
         }
     }
 }
