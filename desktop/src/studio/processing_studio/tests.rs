@@ -20,8 +20,8 @@ fn workflow_model_choices_allow_clicks_except_current_or_super_owned() {
 }
 
 #[test]
-fn game_size_changes_update_the_compiled_provider() {
-    let mut definition = app_core::default_workflow_definition();
+fn game_size_changes_update_the_validated_provider() {
+    let mut definition = app_core::default_workflow("isolated-game-choice");
     for model in ["game_1_0_3_small", "game_1_0_3_large", "game_1_0_3_medium"] {
         app_core::set_workflow_node_model(
             &mut definition, &app_core::WorkflowNodeId::new("game_notes"), model,
