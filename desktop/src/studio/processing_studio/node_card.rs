@@ -110,10 +110,10 @@ pub(super) fn workflow_node_can_be_removed(
     app_core::remove_workflow_node(&mut candidate, node_id).is_ok()
 }
 
-pub(super) fn workflow_model_choice_enabled(automatic_routing: bool, current: bool) -> bool {
+pub(super) fn workflow_model_choice_enabled(current: bool) -> bool {
     // Let the mutation return its real validation error through the dispatcher.
     // A failed trial compile must not silently remove the user's click target.
-    !automatic_routing && !current
+    !current
 }
 
 pub(super) fn uses_binary_preprocessing_switch(capability: &app_core::NodeCapability) -> bool {
@@ -629,7 +629,7 @@ pub(super) fn spawn_node_card(
                             } else {
                                 option.label.to_string()
                             };
-                            if current || context.automatic_routing {
+                            if current {
                                 disabled_action_button(choices, font.clone(), theme, label);
                             } else {
                                 action_button(
@@ -651,7 +651,7 @@ pub(super) fn spawn_node_card(
                         card,
                         font.clone(),
                         if context.automatic_routing {
-                            "Super acceleration preserves this model strategy and temporarily disables manual model changes while automatic backend/device placement is active."
+                            "Choose the separation strategy here. Super acceleration assigns its backend and device, not its models. Save Workflow to apply it to future analysis."
                         } else {
                             "One real invocation is one execution card. Independent providers keep separate progress, logs, and model identity. Runtime readiness is resolved only in Plan Preview."
                         },
@@ -716,7 +716,7 @@ pub(super) fn spawn_node_card(
                         } else {
                             option.label.to_string()
                         };
-                        if workflow_model_choice_enabled(context.automatic_routing, current) {
+                        if workflow_model_choice_enabled(current) {
                             action_button(
                                 choices,
                                 font.clone(),
@@ -736,7 +736,7 @@ pub(super) fn spawn_node_card(
                     card,
                     font.clone(),
                     if context.automatic_routing {
-                        "Model size is locked while Super acceleration is on. Turn it off in Settings → Models & runtime to change the size. Your saved selection is preserved."
+                        "Choose a model size, then Save Workflow. Super acceleration assigns the backend and device for your chosen model. Existing chart data is unchanged."
                     } else {
                         "Choose a model size, then Save Workflow. Changes apply only to future analysis, not existing chart data. If a change is invalid, its reason is shown above."
                     },

@@ -189,7 +189,7 @@ old line-level output cannot manufacture character timings. 21J remains `NEEDS_R
 
 ## Workflow contract
 
-- Workflow model-size choices no longer become silently unclickable because a trial compile failed: non-current ordinary choices dispatch to the real mutation and display its validation error. Super acceleration still owns the existing manual-selection lock; its explanation now links to Settings → Models & runtime, whose Back action resumes the same in-memory workflow draft, selection and viewport. GAME small/large/medium switching and saving passed an isolated Wayland command-dispatch smoke, not a model-inference or physical-pointer test.
+- Workflow model-size choices no longer become silently unclickable because a trial compile failed: non-current choices dispatch to the real mutation and display its validation error. After the user's 2026-09-11 correction, Super acceleration owns only backend/device placement; Workflow models, GAME sizes and separation strategies remain editable while it is enabled. Settings → Models & runtime's Back action resumes the same in-memory workflow draft, selection and viewport. GAME small/large/medium switching and saving passed an isolated Wayland command-dispatch smoke, not a model-inference or physical-pointer test.
 - Settings → General includes **DEBUG**: a persistent full retained-log snapshot plus live desktop DEBUG and uncapped backend stderr capture. This is local opt-in capture, not retroactive recovery or a kernel/power-loss guarantee. See [capture scope and verification](ROFORMER_OPERATION_RECORDING.md#settings-debug桌面黑屏排查).
 
 - Current Studio workflow schema is 7.

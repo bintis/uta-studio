@@ -13,9 +13,11 @@ execution is implemented and covered by CPU/protocol tests. GPU validation remai
 is no production qualification or measured end-to-end speed claim for this scheduler.**
 
 Reuse the existing stable `turbo_acceleration` setting, default off. Settings > Models & runtime
-owns it. While enabled, global/per-model runtime and device controls plus Processing Studio model
-choices are visibly disabled; saved manual choices are preserved and become active again when the
-mode is turned off. Super requests omit those manual route fields so the Engine owns placement.
+owns it. While enabled, global/per-model runtime and device controls are visibly disabled;
+saved manual routes are preserved and become active again when the mode is turned off.
+Workflow model, size and separation strategy choices remain editable (2026-09-11 user correction):
+Super assigns placement for the selected work, not the model identity. Super requests omit manual
+backend/device route fields so the Engine owns placement.
 Save errors are visible and do not leave the UI claiming an unsaved change. Each new exact request
 snapshots the value; changing the preference does not mutate already queued/running requests.
 

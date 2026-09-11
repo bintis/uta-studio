@@ -11,12 +11,10 @@ use super::{
 };
 
 #[test]
-fn workflow_model_choices_allow_clicks_except_current_or_super_owned() {
+fn workflow_model_choices_depend_on_selection_not_runtime_routing() {
     use super::node_card::workflow_model_choice_enabled;
-    assert!(workflow_model_choice_enabled(false, false));
-    assert!(!workflow_model_choice_enabled(false, true));
-    assert!(!workflow_model_choice_enabled(true, false));
-    assert!(!workflow_model_choice_enabled(true, true));
+    assert!(workflow_model_choice_enabled(false));
+    assert!(!workflow_model_choice_enabled(true));
 }
 
 #[test]
@@ -234,13 +232,10 @@ fn separation_picker_exposes_only_typed_executable_strategies() {
 }
 
 #[test]
-fn super_acceleration_disables_model_choice_without_rewriting_the_workflow() {
+fn super_acceleration_explains_routing_without_locking_model_choices() {
     let cards = include_str!("node_card.rs");
-    let actions = include_str!("../actions_chrome.rs");
-    assert!(cards.contains("context.automatic_routing"));
-    assert!(cards.contains("temporarily disables manual model changes"));
-    assert!(actions.contains("Turn it off before changing the saved workflow model"));
-    assert!(actions.contains("Turn it off before changing the saved separation models"));
+    assert!(cards.contains("Super acceleration assigns the backend and device for your chosen model"));
+    assert!(cards.contains("not its models"));
 }
 
 #[test]

@@ -407,12 +407,7 @@ pub(crate) fn apply_chrome_action(
             invalidated.invalidate(UiDirtyRegion::Analysis);
         }
         UiCommand::Analysis(AnalysisCommand::SetWorkflowNodeModel(node_id, model_id)) => {
-            if studio.shell.config.turbo_acceleration.unwrap_or(false) {
-                studio.shell.notice = Some(
-                    "Super acceleration is active. Turn it off before changing the saved workflow model."
-                        .to_string(),
-                );
-            } else if let Some(workflow) = studio.analysis.workflow.as_mut() {
+            if let Some(workflow) = studio.analysis.workflow.as_mut() {
                 match app_core::set_workflow_node_model(
                     &mut workflow.definition,
                     &app_core::WorkflowNodeId::new(node_id),
@@ -433,12 +428,7 @@ pub(crate) fn apply_chrome_action(
             invalidated.invalidate(UiDirtyRegion::Analysis);
         }
         UiCommand::Analysis(AnalysisCommand::SetWorkflowSeparationStrategy(node_id, strategy)) => {
-            if studio.shell.config.turbo_acceleration.unwrap_or(false) {
-                studio.shell.notice = Some(
-                    "Super acceleration is active. Turn it off before changing the saved separation models."
-                        .to_string(),
-                );
-            } else if let Some(workflow) = studio.analysis.workflow.as_mut() {
+            if let Some(workflow) = studio.analysis.workflow.as_mut() {
                 match app_core::set_workflow_separation_strategy(
                     &mut workflow.definition,
                     &app_core::WorkflowNodeId::new(node_id),
