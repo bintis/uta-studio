@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 pub const RUNTIME_LOCK_JSON: &str = include_str!("../../native-inference/runtime-lock.json");
 
 pub const GGML_RUNTIME_RECIPE_SHA256: &str =
-    "083b9b01482ad012f96cae8acd9d4da40f5c11fecbfcfbe8a200ecc1cea3ae9d";
+    "fd238ace2d64c95054c2e281c2e2790d8bb7f7c13b19c49fa02acf20a71fa3d3";
 /// Identity of `native-inference/libtorch-runtime/runtime-recipe.json`. It is
 /// provenance metadata carried in resolved routes, not a verification gate.
 pub const LIBTORCH_XPU_RUNTIME_RECIPE_SHA256: &str =

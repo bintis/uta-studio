@@ -13,6 +13,12 @@
     "cpu_fallback": false,
     "local_patches": [
       {
+        "file": "native-inference/ggml-worker/patches/vulkan-spirv-headers.patch",
+        "sha256": "45dbbb8dc1cb8510885304b42e8a36e670a8c59223eb9534fce5143827695f1c",
+        "scope": "GGML Vulkan build include propagation only",
+        "reason": "Latest-source compilation found SPIRV-Headers with CMake but failed to include spirv/unified1/spirv.hpp outside system include paths. Consume the imported interface target so its include directory reaches ggml-vulkan. Shader execution and runtime behavior are unchanged."
+      },
+      {
         "file": "native-inference/ggml-worker/patches/0001-vulkan-keep-f32-matmul-in-f32.patch",
         "sha256": "a261f78f446a891d609653e4c8ed8efc2b8c97fac4793a33dee8aa1afb4e2f2c",
         "scope": "ggml Vulkan backend only",
