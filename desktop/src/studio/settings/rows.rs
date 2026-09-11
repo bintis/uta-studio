@@ -127,37 +127,37 @@ pub(crate) fn spawn_select_setting_row_enabled(
                     ));
                 }
                 select.with_children(|button| {
-                        spawn_text(
-                            button,
-                            font.clone(),
-                            if enabled {
-                                settings_select_label(kind, current)
-                            } else {
-                                "Automatic scheduler"
-                            },
-                            10.0,
-                            if enabled {
-                                theme.foreground
-                            } else {
-                                theme.muted_foreground.with_alpha(0.66)
-                            },
-                        );
-                        button.spawn(Node {
-                            flex_grow: 1.0,
-                            ..default()
-                        });
-                        spawn_icon(
-                            button,
-                            icons.clone(),
-                            UiIcon::ChevronDown,
-                            14.0,
-                            if enabled {
-                                theme.muted_foreground
-                            } else {
-                                theme.muted_foreground.with_alpha(0.36)
-                            },
-                        );
+                    spawn_text(
+                        button,
+                        font.clone(),
+                        if enabled {
+                            settings_select_label(kind, current)
+                        } else {
+                            "Automatic scheduler"
+                        },
+                        10.0,
+                        if enabled {
+                            theme.foreground
+                        } else {
+                            theme.muted_foreground.with_alpha(0.66)
+                        },
+                    );
+                    button.spawn(Node {
+                        flex_grow: 1.0,
+                        ..default()
                     });
+                    spawn_icon(
+                        button,
+                        icons.clone(),
+                        UiIcon::ChevronDown,
+                        14.0,
+                        if enabled {
+                            theme.muted_foreground
+                        } else {
+                            theme.muted_foreground.with_alpha(0.36)
+                        },
+                    );
+                });
                 if open {
                     control
                         .spawn((

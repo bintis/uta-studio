@@ -40,7 +40,10 @@ fn routing_changes_save_before_updating_visible_state() {
     )
     .unwrap();
     assert_eq!(
-        config.model_device_overrides.get("rmvpe").map(String::as_str),
+        config
+            .model_device_overrides
+            .get("rmvpe")
+            .map(String::as_str),
         Some("integrated_gpu")
     );
 }

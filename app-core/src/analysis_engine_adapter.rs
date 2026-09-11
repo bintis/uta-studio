@@ -715,9 +715,10 @@ pub fn compile_analyze_request(
                         if !valid_identifier(&model_id) {
                             return Err(format!("invalid model backend override id: {model_id}"));
                         }
-                        let backend = NativeBackendWire::parse_setting(&backend).ok_or_else(|| {
-                            format!("unsupported backend {backend} for model {model_id}")
-                        })?;
+                        let backend =
+                            NativeBackendWire::parse_setting(&backend).ok_or_else(|| {
+                                format!("unsupported backend {backend} for model {model_id}")
+                            })?;
                         Ok((model_id, backend))
                     })
                     .collect::<Result<_, String>>()?

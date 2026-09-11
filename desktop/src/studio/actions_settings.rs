@@ -219,9 +219,7 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
                         "Could not save settings: {error}. The visible selection was not changed."
                     )),
                     Ok(()) => Some(match kind {
-                        SettingsSelectKind::UiLanguage => {
-                            "Interface language updated.".to_string()
-                        }
+                        SettingsSelectKind::UiLanguage => "Interface language updated.".to_string(),
                         SettingsSelectKind::ComputeBackend => format!(
                             "Compute backend set to {}. It applies to future analysis requests; per-model runtime choices below take precedence, and an unavailable backend fails in Plan Preview without fallback.",
                             settings_select_label(*kind, value)
@@ -387,22 +385,23 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
             invalidated.invalidate(UiDirtyRegion::Settings);
         }
         UiCommand::Settings(SettingsCommand::ToggleTurboAcceleration) => {
-            studio.shell.notice = Some(match toggle_turbo_acceleration(
-                &mut studio.shell.config,
-                AppConfig::save,
-            ) {
-                Ok(()) => {
-                    studio.dialogs.open_settings_select = None;
-                    studio.dialogs.open_model_runtime_select = None;
-                    if studio.shell.config.turbo_acceleration.unwrap_or(false) {
+            studio.shell.notice = Some(
+                match toggle_turbo_acceleration(&mut studio.shell.config, AppConfig::save) {
+                    Ok(()) => {
+                        studio.dialogs.open_settings_select = None;
+                        studio.dialogs.open_model_runtime_select = None;
+                        if studio.shell.config.turbo_acceleration.unwrap_or(false) {
                         "Super acceleration saved. Automatic complete-model scheduling applies to future requests; manual route choices are preserved and temporarily disabled."
                     } else {
                         "Super acceleration disabled. Saved manual backend and device choices are active again for future requests."
                     }
                     .to_string()
-                }
-                Err(error) => format!("Could not save super acceleration: {error}. The setting was not changed."),
-            });
+                    }
+                    Err(error) => format!(
+                        "Could not save super acceleration: {error}. The setting was not changed."
+                    ),
+                },
+            );
             invalidated.invalidate(UiDirtyRegion::Settings);
         }
         UiCommand::Settings(SettingsCommand::SetAnalysisQuality(quality)) => {
