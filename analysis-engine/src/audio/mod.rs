@@ -2,6 +2,9 @@ mod acoustic;
 mod decode;
 mod quality;
 pub(crate) mod reuse;
+mod separation;
+
+pub(crate) use separation::separated_stem_measurement;
 
 pub use acoustic::analyze_acoustic_evidence;
 pub(crate) use decode::decode_audio_with_cancellation;

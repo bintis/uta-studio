@@ -25,6 +25,7 @@ pub(super) struct DenoiseTask<'a> {
 pub(super) struct DualSeparationOutput {
     pub(super) vocals: SeparationOutput,
     pub(super) instrumental: SeparationOutput,
+    pub(super) quality: crate::contract::SeparationQualityEvidence,
 }
 
 pub(super) struct LeadIsolationOutput {
@@ -470,6 +471,7 @@ pub(super) fn run_ggml_dual_separation(
     }
     let vocal = typed_worker_output(&outputs, "guide_vocals")?.to_path_buf();
     let instrumental = typed_worker_output(&outputs, "instrumental")?.to_path_buf();
+    let mut measurements = Vec::new();
     for (artifact, path) in [("guide_vocals", &vocal), ("instrumental", &instrumental)] {
         if outputs
             .iter()
@@ -481,7 +483,13 @@ pub(super) fn run_ggml_dual_separation(
                 format!("GGML separator output {artifact} is not lossless FLAC"),
             ));
         }
-        let facts = decode_audio(task.ffmpeg, artifact, path)?.facts;
+        let decoded = decode_audio(task.ffmpeg, artifact, path)?;
+        measurements.push(crate::audio::separated_stem_measurement(
+            artifact,
+            &PathBuf::from(format!("stems/{artifact}.flac")),
+            &decoded,
+        ));
+        let facts = decoded.facts;
         if facts.sample_rate != 44_100
             || facts.channels != 2
             || facts.frame_count == 0
@@ -529,6 +537,13 @@ pub(super) fn run_ggml_dual_separation(
         )
     })?;
     Ok(DualSeparationOutput {
+        quality: crate::contract::SeparationQualityEvidence {
+            node_id: presentation_node_id.unwrap_or("audio.extract_vocals").to_string(),
+            model_id: model_id.to_string(),
+            measurement: "decoded_separation_output".to_string(),
+            reference_status: "unavailable_no_ground_truth_stems".to_string(),
+            stems: measurements,
+        },
         vocals: SeparationOutput {
             role: crate::contract::AudioRole::GuideVocals,
             artifact: artifact_ref_for_existing(task.output_root, &vocal_relative, "audio/flac")?,

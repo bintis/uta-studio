@@ -105,6 +105,8 @@ pub struct AnalysisDiagnostics {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_quality: Option<AudioQualityReport>,
     #[serde(default)]
+    pub separation_quality: Vec<super::SeparationQualityEvidence>,
+    #[serde(default)]
     pub evidence: serde_json::Value,
 }
 

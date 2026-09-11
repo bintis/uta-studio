@@ -348,6 +348,7 @@ impl AnalysisEngine {
                     .find(|decoded| decoded.facts.source_id == source.id)
             })
             .cloned();
+        let mut separation_quality = Vec::new();
         let mut isolation_profiles = None;
         let mut workflow_audio = BTreeMap::new();
         record_workflow_audio(
@@ -428,6 +429,7 @@ impl AnalysisEngine {
                 presentation_node_id.as_deref(),
                 cancellation,
             )?;
+            separation_quality.push(output.quality);
             if has_capability(&plan, "audio.extract_vocals") {
                 analysis_input = output_root.join(&output.vocals.artifact.path);
                 guide_vocal_profile =
@@ -1470,6 +1472,7 @@ impl AnalysisEngine {
                     .as_ref()
                     .map(|(_, report)| report.clone()),
                 audio_quality: Some(audio_quality),
+                separation_quality,
                 evidence: serde_json::json!({
                     "acoustic": acoustic_artifact,
                     "acoustic_algorithm": ACOUSTIC_DSP_VERSION,
