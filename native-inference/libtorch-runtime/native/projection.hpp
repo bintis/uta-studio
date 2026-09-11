@@ -21,16 +21,14 @@ namespace uta::torch_native {
 inline int64_t bounded_projection_row_tile(const at::Tensor& weight) {
     if (weight.dim() != 2 || weight.size(0) <= 0 || weight.size(1) <= 0)
         throw std::invalid_argument("bounded projection requires a nonempty matrix weight");
-    constexpr int64_t maximum_rows = 1024;
-    constexpr int64_t maximum_wide_reduction_rows = 256;
-    // This is the largest tile geometry already exercised by the complete
-    // projection oracle: 1024 rows by 384 inputs by 1536 outputs. A square
-    // 1536-channel mask projection is consequently limited to 256 rows.
-    constexpr int64_t maximum_multiply_accumulates = 1024LL * 384 * 1536;
+    // Real gfx1103 execution requires small, synchronized dispatches even
+    // when total contraction work would permit a larger GEMM. Every row and
+    // every reduction channel remains present in the resulting tiles.
+    constexpr int64_t maximum_rows = 64;
+    constexpr int64_t maximum_multiply_accumulates = 64LL * 384 * 1536;
     if (weight.size(0) > maximum_multiply_accumulates / weight.size(1)) return 1;
     const auto work_per_row = weight.size(0) * weight.size(1);
-    const auto geometry_rows = weight.size(1) >= 1536 ? maximum_wide_reduction_rows : maximum_rows;
-    return std::max<int64_t>(1, std::min<int64_t>(geometry_rows, maximum_multiply_accumulates / work_per_row));
+    return std::max<int64_t>(1, std::min<int64_t>(maximum_rows, maximum_multiply_accumulates / work_per_row));
 }
 
 inline int64_t bounded_projection_row_tile(const at::Tensor& input, const at::Tensor& weight) {
