@@ -48,13 +48,25 @@ def snapshot(proc=Path("/proc"), drm=Path("/sys/class/drm")):
         if not re.fullmatch(r"card\d+", card.name):
             continue
         device = card / "device"
-        gpu = {"card": card.name, "device_path": str(device.resolve()), "fields": {}}
+        gpu = {"card": card.name, "device_path": str(device.resolve()),
+               "fields": {}, "hwmon": []}
         for name in ("vendor", "device", "gpu_busy_percent", "mem_busy_percent"):
             try:
                 gpu["fields"][name] = read_text(device / name)
             except OSError as exc:
                 gpu["fields"][name] = None
                 error("gpu:" + name, exc)
+        for monitor in sorted((device / "hwmon").glob("hwmon*")):
+            readings = {"path": str(monitor.resolve()), "fields": {}}
+            for pattern in ("name", "temp*_input", "temp*_label", "power*_average",
+                            "power*_input", "freq*_input", "in*_input"):
+                for field in sorted(monitor.glob(pattern)):
+                    try:
+                        readings["fields"][field.name] = read_text(field)
+                    except OSError as exc:
+                        error("gpu_hwmon:" + field.name, exc)
+            if readings["fields"]:
+                gpu["hwmon"].append(readings)
         result["gpu_devices"].append(gpu)
 
     clients = {}
