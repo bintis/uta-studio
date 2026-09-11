@@ -16,6 +16,31 @@ using Clock = std::chrono::steady_clock;
 void synchronize(const at::Device& device) {
     if (!device.is_cpu()) c10::impl::VirtualGuardImpl(device.type()).synchronizeDevice(device.index());
 }
+void completion(const at::Device& device) {
+    int queries = 0, pauses = 0;
+    uta::torch_native::await_roformer_completion([&] { return ++queries == 3; }, [&] { ++pauses; });
+    if (queries != 3 || pauses != 2) throw std::runtime_error("completion must pause between unfinished queries");
+    uta::torch_native::await_roformer_completion([] { return true; }, [&] { ++pauses; });
+    if (pauses != 2) throw std::runtime_error("completed work must not pause");
+    bool caught = false;
+    queries = 0;
+    try {
+        uta::torch_native::await_roformer_completion([&]() -> bool {
+            ++queries;
+            throw std::runtime_error("query fixture error");
+        }, [&] { ++pauses; });
+    } catch (const std::runtime_error&) { caught = true; }
+    if (!caught || queries != 1 || pauses != 2) throw std::runtime_error("completion error must propagate without retry");
+    auto input = at::arange(8192, at::TensorOptions().device(device).dtype(at::kFloat));
+    for (int pass = 0; pass < 3; ++pass) {
+        auto output = input * 0.5 + pass;
+        uta::torch_native::wait_for_roformer_work(device);
+        synchronize(device); // required full-device completion remains intact
+        auto expected = at::arange(8192, at::TensorOptions().dtype(at::kFloat)) * 0.5 + pass;
+        if (!at::equal(output.to(at::kCPU), expected)) throw std::runtime_error("event completion output mismatch");
+    }
+    std::cout << "completion_values_equal=true query_errors_propagate=true device=" << device << std::endl;
+}
 at::Tensor decomposed(const at::Tensor& input, const at::Tensor& cosine, const at::Tensor& sine) {
     auto shape = input.sizes().vec();
     shape.back() /= 2;
@@ -233,6 +258,10 @@ int main(int argc, char** argv) {
         c10::DeviceGuard guard(device);
         at::globalContext().setFloat32Precision(at::Float32Backend::GENERIC, at::Float32Op::ALL, at::Float32Precision::IEEE);
         at::globalContext().setAllowTF32OneDNN(false);
+        if (device.is_cpu() || (argc > 2 && std::string(argv[2]) == "completion")) {
+            completion(device);
+            if (!device.is_cpu()) return 0;
+        }
         if (device.is_cpu() || (argc > 2 && std::string(argv[2]) == "norm_layout")) {
             normalization_layout(device, 3, 17, 256, false);
             normalization_layout(device, 17, 3, 384, false);

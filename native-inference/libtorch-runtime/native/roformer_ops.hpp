@@ -1,7 +1,27 @@
 #pragma once
 #include <ATen/ATen.h>
+#include <c10/core/Event.h>
+#include <c10/core/impl/VirtualGuardImpl.h>
+#include <chrono>
+#include <thread>
 
 namespace uta::torch_native {
+// Wait only for already-submitted work. The API's full-device synchronization
+// must still run afterwards for all streams and asynchronous error propagation.
+// This is not a load/idle gate and never resubmits work on an error.
+template<class Ready, class Pause>
+inline void await_roformer_completion(Ready&& ready, Pause&& pause) {
+    while (!ready()) pause();
+}
+inline void wait_for_roformer_work(const at::Device& device) {
+    if (!device.is_xpu()) return;
+    c10::impl::VirtualGuardImpl guard(device.type());
+    c10::Event completion(device.type(), c10::EventFlag::PYTORCH_DEFAULT);
+    completion.record(guard.getStream(device));
+    await_roformer_completion([&] { return completion.query(); }, [] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    });
+}
 // Keep the checkpoint's epsilon and FP32 reduction; avoid materializing square,
 // scaled-input and affine intermediates for every transformer normalization.
 inline at::Tensor fused_roformer_normalization(const at::Tensor& input, const at::Tensor& weight) {
