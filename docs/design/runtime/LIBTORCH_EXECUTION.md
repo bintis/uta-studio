@@ -193,9 +193,9 @@ word timings; STARS uses a separate actual FireRed Chinese alignment branch with
 primary-provider substitution follows. Full details, exact commits/operations,
 timings and remaining integration work: [full-song results](../../LIBTORCH_XPU_FULLSONG_RESULTS.md).
 
-## AMD ROCm 10 all-resource validation — Denoise reproduced, 4/18 bounded 2026-09-11
+## AMD ROCm 10 scoped validation — lightweight models 9/9 passed 2026-09-11
 
-**FOUR OF EIGHTEEN PASSED IN THE ORIGINAL TWELVE-SECOND SWEEP; FOURTEEN REMAIN UNRUN.** The authorized isolated environment resolves the official AMD stable
+**THE USER-SCOPED LIGHTWEIGHT LANE PASSED NINE OF NINE REAL TWELVE-SECOND RUNS.** The authorized isolated environment resolves the official AMD stable
 combination, **ROCm 10.0.0 + PyTorch 2.13.0**, with the Radeon 780M `device-gfx1103` package. The
 repository's pinned ROCm 7.2.3 is not evidence for this lane. The private environment remained under
 ignored test evidence and did not alter the system driver, global Python, installed model store,
@@ -337,10 +337,27 @@ RMS `0.1319012501`, zero clipping/out-of-range values and zero reconstruction er
 files are byte-identical. Maximum sampled edge temperature was 36 and 39 degrees Celsius. Evidence:
 `test-artifacts/amd-libtorch-rocm10/grouped-attention/denoise/` and `reproduction/`.
 
-Denoise is now a reproduced bounded functional pass. The result is **four passed, fourteen not run**;
-full-song execution was not started. CPU/GGML fallback remains prohibited. Previous XPU results
-remain separate, and this work establishes no driver root cause, broad host stability, acceptable
-throughput, product routing, whole-model parity, listening quality or production readiness.
+Denoise is now a reproduced bounded functional pass.
+
+The user then excluded all six audio separation/cleanup resources, Qwen ASR, the Qwen aligner and
+FireRed from further AMD execution. The resulting lightweight scope passed **9/9** real twelve-second
+runs with explicit `libtorch_rocm`: FCPE `0.403 s`, RMVPE `0.408 s`, Basic Pitch `0.306 s`, GAME
+small/medium/large `7.137 / 10.114 / 19.122 s`, dual-input JBM555 `0.972 s`, ROSVOT `0.712 s`, and
+STARS `1.387 s`. All process exits were zero, observed boots were unchanged and all numeric evidence
+values were finite. The result includes complete frame/note evidence and STARS technique/style heads.
+
+Conditioned models used this sweep's AMD RMVPE output and a retained previous XPU alignment over a
+decoded-waveform-identical twelve-second source; no Qwen model executed in this scope. A first ROSVOT
+setup invocation rejected the product alignment representation before inference. The isolated native
+representation retained all measured intervals and timing issues, after which ROSVOT and STARS used
+18 resolved words and excluded five unresolved words as designed. Postflight reported AMD use at 0%
+and no task process remained. Evidence:
+`test-artifacts/amd-libtorch-rocm10/lightweight-sweep/summary.json`.
+
+The active requested scope is complete at **nine passed of nine**. No full-song execution was started.
+CPU/GGML fallback remains prohibited. Previous XPU and historical audio results remain separate, and
+this work establishes no driver root cause, broad host stability, acceptable throughput, product
+routing, whole-model parity, listening quality or production readiness.
 
 ## Product route — implemented and selectable (2026-09-11)
 

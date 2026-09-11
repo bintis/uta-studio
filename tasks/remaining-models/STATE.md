@@ -666,9 +666,9 @@ Source media, installed assets and unrelated user changes remain untouched;
 no CPU/GGML inference fallback, Vulkan stress, workspace release checks or Nix
 packaging were performed. See [execution design](../../docs/design/runtime/LIBTORCH_EXECUTION.md).
 
-## All-resource LibTorch AMD ROCm 10 — DENOISE REPRODUCED, SWEEP 4/18 (2026-09-11)
+## Scoped LibTorch AMD ROCm 10 — LIGHTWEIGHT MODELS 9/9 PASSED (2026-09-11)
 
-**Four of eighteen bounded resources passed; fourteen remain unrun and the full-song phase was not started.** The isolated Nix
+**The user-scoped lightweight lane passed nine of nine resources; full-song execution was not started.** The isolated Nix
 shell and official **ROCm 10.0.0 + PyTorch 2.13.0** packages, including the Radeon 780M `gfx1103`
 device package, were installed only under ignored test evidence. They did not replace the system
 driver, global Python, installed model store, source media or prior runtime. Authorization operation:
@@ -822,9 +822,29 @@ Read-only hwmon samples measured maximum edge temperatures of 36 and 39 degrees 
 
 Denoise is therefore a reproduced bounded functional pass, not the former one-off success. It does
 not establish driver root cause, broad host stability, throughput acceptability, whole-model parity,
-listening quality or production readiness. The sweep is now **four passed, fourteen not run**. No
-later resource was launched and full-song execution was not started. CPU/GGML fallback remains
-prohibited. See [LibTorch execution](../../docs/design/runtime/LIBTORCH_EXECUTION.md).
+listening quality or production readiness.
+
+The user then narrowed further AMD execution to lightweight models, explicitly excluding all six
+audio separation/cleanup resources and the two Qwen resources plus FireRed. Nine real twelve-second
+runs completed with `libtorch_rocm` and no fallback: FCPE `0.403 s`, RMVPE `0.408 s`, Basic Pitch
+`0.306 s`, GAME small/medium/large `7.137 / 10.114 / 19.122 s`, dual-input JBM555 `0.972 s`,
+ROSVOT `0.712 s` and STARS `1.387 s`. Every process exited zero with an unchanged observed boot,
+and every numeric evidence value was finite. Outputs contain 1,201 FCPE frames, 1,201 RMVPE frames,
+1,033 Basic Pitch frames, 24/23/22 GAME notes, three JBM555 notes, 23 ROSVOT notes, and 28 STARS
+notes plus 51 technique and eight style segments.
+
+ROSVOT and STARS used the current AMD RMVPE result and a retained alignment from the previous XPU
+execution of the byte-identical decoded source; Qwen was not executed in this sweep. The first
+ROSVOT setup attempt rejected the product `items` representation before inference. A derived native
+checker representation retained every measured interval and timing issue; the corrected isolated run
+passed, with 18 resolved words and five unresolved words intentionally unused. This is an input-shape
+setup record, not a model or GPU failure. Postflight AMD use was 0% and no task process remained.
+Evidence: `test-artifacts/amd-libtorch-rocm10/lightweight-sweep/summary.json`.
+
+The active requested scope is **nine passed of nine**. The six audio resources and three excluded
+speech resources are not pending in this scope, no full-song execution was launched, and no result
+promotes driver stability, whole-model parity, listening quality or production readiness. CPU/GGML
+fallback remains prohibited. See [LibTorch execution](../../docs/design/runtime/LIBTORCH_EXECUTION.md).
 
 ## LibTorch XPU production route — IMPLEMENTED (2026-09-11)
 
