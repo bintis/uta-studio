@@ -1,6 +1,6 @@
 # Remaining Models + Final Feature Closure — State
 
-**Updated:** 2026-09-09 (after the Intel B580 sweep)
+**Updated:** 2026-09-11 (after the same-device Radeon 780M GGML/ROCm comparison)
 **Owner:** Rust + upstream-GGML migration
 
 This file stores current effective state only. Historical execution evidence remains in its original records; current source and focused tests override stale historical conclusions. Durable cross-cutting conclusions live in `docs/KEY_CONCLUSIONS.md`.
@@ -25,8 +25,8 @@ The backend alignment is complete: every authorized model runs through that boun
 | `game_1_0_3_medium` | `notes.game` | NEEDS_REVIEW | yes | no | Default note provider. Component graphs have bounded historical parity, and a 32-second AMD 780M run exercised dynamic 30-second chunking with 2-second overlap and 97 ordered notes. |
 | `game_1_0_3_large` | `notes.game` | NEEDS_REVIEW | yes | no | Selectable GAME size. A real 6-second AMD 780M worker request produced schema 4 evidence with 17 notes. Reference vectors and long-input coverage remain for this size. |
 | `jbm555_cectc_80` | `notes.jbm555` | NEEDS_REVIEW | yes | no | Mandatory mix + prepared-vocal dual input. CPU and AMD 780M runs matched the historical reference's single note, range, and MIDI; all score differences were below `0.0005`. Broader-material coverage remains. |
-| `stars` | `notes.stars`, `technique.analyze` | NEEDS_REVIEW | yes | no | Timed-transcript-conditioned note/technique evidence; depends on `rmvpe`. Stage C and Stage E were validated against checkpoint-truth oracles on CPU and AMD 780M. A full B580 worker run completed with 24 notes plus technique evidence. It required the migrated GGUF; the installed container fails to load. Reference comparison remains. |
-| `rosvot` | `notes.rosvot` | NEEDS_REVIEW | yes | no | Timed-transcript-conditioned note evidence; depends on `rmvpe`. CPU, AMD 780M, and B580 worker runs completed; the B580 run produced 15 notes. It required a regenerated migrated GGUF; the installed container fails to load. Reference comparison and long-input coverage remain. |
+| `stars` | `notes.stars`, `technique.analyze` | NEEDS_REVIEW | yes | no | Timed-transcript-conditioned note/technique evidence; depends on `rmvpe`. Stage C and Stage E were validated against checkpoint-truth oracles on CPU and AMD 780M. A real 12-second Radeon 780M GGML worker run now completes with 28 notes, 51 technique segments and eight style segments from the installed migrated GGUF. Reference comparison remains. |
+| `rosvot` | `notes.rosvot` | NEEDS_REVIEW | yes | no | Timed-transcript-conditioned note evidence; depends on `rmvpe`. CPU, AMD 780M, and B580 worker runs completed. The same-source 12-second Radeon 780M comparison produced 2,250 valid frames and 23 notes from the installed migrated GGUF. Reference comparison and long-input coverage remain. |
 | `firered_asr2_aed` | `speech.transcribe.challenger` | NEEDS_REVIEW | yes | no | Optional transcript challenger with a three-file named artifact set (`firered-f32.gguf`, `cmvn.ark`, `dict.txt`). Two defects were found and fixed: the encoder dropped its subsample output projection bias, and the subsampling convolutions used upstream's F16 im2col. With those plus the Vulkan F32 matmul patch, the encoder parity test passes on the CPU lane (`0.000555` from the checkpoint oracle), the AMD 780M (`0.000194`) and the Intel B580 (`0.000197`), and the whole chain transcribes the reference fixture as `你好世界` with tokens `[1202, 2246, 1019, 4710]` on all three, matching the historical implementation exactly. Long-input and broader-material coverage remain. |
 | `qwen3_asr_1_7b` | `speech.transcribe` | NEEDS_REVIEW | yes | no | Primary transcription. The pinned `Qwen3-ASR-1.7B-F16.gguf` is installed in the model store through `uta-runtime import`, generation `8719ea947b78b28301a6705c2c480bd7f62da369ea9a4a7520c8a85b3560b179`, and `uta-runtime resolve` reports `production_pinned` with no readiness reasons. Real AMD 780M and Intel B580 runs completed. Broader language/material coverage and performance measurement remain. |
 | `qwen3_forced_aligner_0_6b` | `speech.align` | NEEDS_REVIEW | yes | no | Word-level forced alignment with a Rust-owned timestamp decoder. Decoder parity was validated on CPU and AMD 780M against the official reference, and a B580 worker run produced four timed word items. Broader material coverage remains. |
@@ -158,7 +158,7 @@ Passing focused suites on the current tree:
 
 `cargo check --locked -p uta-ggml-runtime -p uta-ggml-worker --all-targets` is warning-free.
 
-Real AMD 780M smoke evidence exists for RMVPE, FCPE, Leap, PolarFormer, Denoise, Dereverb, Harmony, Basic Pitch, GAME small/medium/large, JBM555, ROSVOT, Qwen ASR, the Qwen aligner decoder, and the STARS/FireRed stages and model loads listed above.
+Real AMD 780M smoke evidence exists for RMVPE, FCPE, Leap, PolarFormer, Denoise, Dereverb, Harmony, Basic Pitch, GAME small/medium/large, JBM555, ROSVOT, STARS, Qwen ASR, the Qwen aligner decoder, and the FireRed stages and model load listed above.
 
 Real Intel Arc B580 evidence now exists for fifteen of the seventeen models: Basic Pitch, JBM555, FCPE, RMVPE, ROSVOT, STARS, GAME small/medium/large, PolarFormer, Leap, Denoise, Dereverb, Harmony, and the Qwen aligner all executed on the discrete B580 and published their typed artifact with `backend: ggml_vulkan`. Every published audio artifact is FLAC, 44.1 kHz, stereo, exactly 12.000 s, and non-silent. The boot ID stayed `582d1c5a-d3c9-44b6-b2d1-a1dd0f1a0fb6` across the whole sweep, so no host reset occurred during these bounded runs; that does not retire the previously recorded whole-machine power-off failures. Evidence: `test-artifacts/b580-all-models-20260909T0910Z/`.
 
@@ -845,6 +845,39 @@ The active requested scope is **nine passed of nine**. The six audio resources a
 speech resources are not pending in this scope, no full-song execution was launched, and no result
 promotes driver stability, whole-model parity, listening quality or production readiness. CPU/GGML
 fallback remains prohibited. See [LibTorch execution](../../docs/design/runtime/LIBTORCH_EXECUTION.md).
+
+## Same-device Radeon 780M GGML Vulkan comparison — 9/9 passed (2026-09-11)
+
+The same nine 12-second workloads subsequently completed through the pinned GGML Vulkan worker on
+physical Vulkan index 1, explicitly resolved as `Vulkan1`, AMD Radeon 780M, RADV and
+`integrated_gpu`. Every model was resident before its measured run; no CPU, B580 or LibTorch route
+was selected. JBM555 used the same real mix and guide-vocal pair. ROSVOT and STARS used the same 18
+resolved words, excluded the same five unresolved words, and consumed this sweep's Radeon GGML
+RMVPE evidence without executing Qwen.
+
+Prepared-worker run wall times were FCPE `0.201 s`, RMVPE `0.503 s`, Basic Pitch `0.370 s`, GAME
+small/medium/large `0.648 / 1.211 / 2.282 s`, JBM555 `0.331 s`, ROSVOT `0.281 s`, and STARS
+`0.811 s`. Against the prior same-machine ROCm measurements, GGML was faster for FCPE (`2.01x`),
+all GAME sizes (`11.01x / 8.35x / 8.38x`), JBM555 (`2.94x`), ROSVOT (`2.53x`) and STARS
+(`1.71x`); ROCm was faster for RMVPE (`1.23x`) and Basic Pitch (`1.21x`). The GGML measurement
+includes canonical-WAV decode/copy and evidence publication, whereas the retained ROCm execution
+clock excludes initial resampling, so these are practical same-device comparisons rather than an
+identical-boundary kernel benchmark.
+
+All nine GGML outputs were finite and reported `backend: ggml_vulkan`. Frame, voiced-decision,
+note, technique and style counts match the prior ROCm evidence in all nine rows; this count/shape
+agreement is not strict numerical parity. The first orchestration completed seven models before
+ROSVOT rejected a native-checker-only RMVPE JSON shape before inference. Replacing it with the full
+worker evidence from this sweep let ROSVOT and STARS pass; this was an ordinary input-shape correction,
+not a GPU failure. The boot stayed unchanged, sampled AMD utilization reached 90%, sampled edge
+temperature reached 52 degrees Celsius, postflight utilization was 0%, and no task process remained.
+
+For the unexecuted 216.88-second song, linear extrapolation for non-GAME models and eight real GAME
+windows estimates `78.25 s` for all three GAME variants together, versus `366.68 s` from the ROCm
+measurements. Selecting GAME medium only estimates `54.81 s` versus `156.61 s`. Runtime/model load
+is excluded, and these are estimates rather than AMD full-song executions. Evidence:
+`test-artifacts/amd-libtorch-rocm10/lightweight-sweep/amd-ggml-comparison/summary.json`,
+`fullsong-estimates.json`, and `output-shape-comparison.json` in that directory.
 
 ## LibTorch XPU production route — IMPLEMENTED (2026-09-11)
 

@@ -359,6 +359,46 @@ CPU/GGML fallback remains prohibited. Previous XPU and historical audio results 
 this work establishes no driver root cause, broad host stability, acceptable throughput, product
 routing, whole-model parity, listening quality or production readiness.
 
+## Same-device Radeon 780M GGML Vulkan comparison — 9/9 passed (2026-09-11)
+
+The same nine lightweight workloads were then run through the pinned Rust/GGML worker on explicit
+physical Vulkan index 1. Worker preparation and execution both identify AMD Radeon 780M,
+RADV and the integrated-GPU class; resident weights were loaded before each measured request. The
+12-second canonical audio and GGUF model workloads match the ROCm sweep. JBM555 retains its real
+mix plus guide-vocal inputs, while ROSVOT and STARS retain 18 resolved words and five excluded
+unresolved words and use the current sweep's GGML RMVPE evidence. Qwen was not run.
+
+| Model | GGML prepared-run wall | Prior ROCm execution | Same-device result |
+| --- | ---: | ---: | --- |
+| FCPE | 0.201 s | 0.403 s | GGML 2.01x faster |
+| RMVPE | 0.503 s | 0.408 s | ROCm 1.23x faster |
+| Basic Pitch | 0.370 s | 0.306 s | ROCm 1.21x faster |
+| GAME small | 0.648 s | 7.137 s | GGML 11.01x faster |
+| GAME medium | 1.211 s | 10.114 s | GGML 8.35x faster |
+| GAME large | 2.282 s | 19.122 s | GGML 8.38x faster |
+| JBM555 | 0.331 s | 0.972 s | GGML 2.94x faster |
+| ROSVOT | 0.281 s | 0.712 s | GGML 2.53x faster |
+| STARS | 0.811 s | 1.387 s | GGML 1.71x faster |
+
+The boundaries are close but not identical: GGML time starts with a prepared worker's run request
+and includes canonical-WAV decode/copy plus validated JSON publication; ROCm time includes the model
+adapter, postprocessing, model destruction and publication but excludes initial source resampling.
+The ratios are therefore practical whole-adapter comparisons, not kernel-only speedups. All nine
+GGML artifacts are finite, report `backend: ggml_vulkan`, and match the prior ROCm frame, voiced,
+note, technique and style counts. Count/shape agreement is not strict tensor parity.
+
+The first serial operation completed seven rows, then ROSVOT rejected the native checker's
+schema-less RMVPE JSON before inference. A bounded resume supplied the complete GGML worker RMVPE
+evidence and completed ROSVOT and STARS. No model or GPU failure followed. The observed boot remained
+unchanged; sampled AMD utilization peaked at 90%, edge temperature at 52 degrees Celsius, and
+postflight utilization was 0% with no task process left.
+
+For 216.88 seconds, linear non-GAME scaling plus eight GAME windows estimates `78.25 s` if all three
+GAME variants run, compared with `366.68 s` from ROCm. A workflow selecting GAME medium estimates
+`54.81 s` versus `156.61 s`. These exclude runtime/model load and are extrapolations, not full-song
+runs. Evidence is under
+`test-artifacts/amd-libtorch-rocm10/lightweight-sweep/amd-ggml-comparison/`.
+
 ## Product route — implemented and selectable (2026-09-11)
 
 The user authorized promoting the native LibTorch XPU implementation to a production route on
