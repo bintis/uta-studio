@@ -166,7 +166,7 @@ pub(crate) fn placement_for(model_id: &str) -> ModelPlacement {
 }
 
 fn profiles() -> &'static [TaskProfile] {
-    &[
+    static PROFILES: &[TaskProfile] = &[
         // Audio preparation remains a serial dependency chain. Complete heavy
         // models strongly favor the B580 LibTorch XPU route in current evidence.
         profile(
@@ -297,7 +297,8 @@ fn profiles() -> &'static [TaskProfile] {
             300,
             281,
         ),
-    ]
+    ];
+    PROFILES
 }
 
 const fn profile(
