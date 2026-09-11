@@ -24,10 +24,21 @@ fn game_size_changes_update_the_validated_provider() {
     let mut definition = app_core::default_workflow("isolated-game-choice");
     for model in ["game_1_0_3_small", "game_1_0_3_large", "game_1_0_3_medium"] {
         app_core::set_workflow_node_model(
-            &mut definition, &app_core::WorkflowNodeId::new("game_notes"), model,
-        ).unwrap();
-        assert_eq!(definition.nodes.iter().find(|node| node.instance_id.as_str() == "game_notes")
-            .unwrap().model_id.as_deref(), Some(model));
+            &mut definition,
+            &app_core::WorkflowNodeId::new("game_notes"),
+            model,
+        )
+        .unwrap();
+        assert_eq!(
+            definition
+                .nodes
+                .iter()
+                .find(|node| node.instance_id.as_str() == "game_notes")
+                .unwrap()
+                .model_id
+                .as_deref(),
+            Some(model)
+        );
     }
 }
 

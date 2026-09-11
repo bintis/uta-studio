@@ -1,6 +1,6 @@
 mod analysis;
-mod dialogs;
 mod debug;
+mod dialogs;
 mod general;
 mod jobs;
 mod labels;
@@ -14,8 +14,8 @@ mod types;
 mod tests;
 
 pub(crate) use analysis::*;
-pub(crate) use dialogs::*;
 pub(crate) use debug::*;
+pub(crate) use dialogs::*;
 pub(crate) use general::*;
 pub(crate) use jobs::*;
 pub(crate) use labels::*;

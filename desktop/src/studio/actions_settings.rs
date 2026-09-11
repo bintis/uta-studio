@@ -102,9 +102,12 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
         UiCommand::App(AppCommand::StartDebugLogging) => {
             let context = format!(
                 "Uta! Studio {}\nOS: {} / {}\nWindow: {window:?}\nRoute: {:?}\nSettings: {}\n",
-                env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH,
+                env!("CARGO_PKG_VERSION"),
+                std::env::consts::OS,
+                std::env::consts::ARCH,
                 studio.shell.route,
-                serde_json::to_string_pretty(&studio.shell.config).unwrap_or_else(|error| error.to_string()),
+                serde_json::to_string_pretty(&studio.shell.config)
+                    .unwrap_or_else(|error| error.to_string()),
             );
             studio.shell.notice = Some(start_debug_log_job(debug_log, context));
             invalidated.invalidate(UiDirtyRegion::Settings);
