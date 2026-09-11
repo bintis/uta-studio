@@ -122,9 +122,7 @@ impl Game {
                     .ok_or_else(|| "GAME chunk seam overflows".to_string())?,
             );
             for mut note in result.notes {
-                let midpoint = note
-                    .offset_micros
-                    .saturating_add(note.duration_micros / 2);
+                let midpoint = note.offset_micros.saturating_add(note.duration_micros / 2);
                 if midpoint < left_cut || midpoint >= right_cut {
                     continue;
                 }
@@ -236,11 +234,7 @@ impl Game {
             params.note_threshold,
         )?;
         let durations = count_region_durations(&regions, region_count)?;
-        let notes = notes_from_region_durations(
-            &durations,
-            &decoded.values,
-            &decoded.presence,
-        )?;
+        let notes = notes_from_region_durations(&durations, &decoded.values, &decoded.presence)?;
         Ok(GameInferOutput {
             notes,
             boundaries,
@@ -324,9 +318,12 @@ fn append_stitched_note(
                     && (previous.pitch_midi - note.pitch_midi).abs() <= SEAM_MERGE_MAX_SEMITONES
             });
             if seam_continuation {
-                let total_weight = previous.duration_micros.checked_add(note.duration_micros).ok_or_else(
-                    || "GAME chunk stitching produced invalid seam weights".to_string(),
-                )?;
+                let total_weight = previous
+                    .duration_micros
+                    .checked_add(note.duration_micros)
+                    .ok_or_else(|| {
+                        "GAME chunk stitching produced invalid seam weights".to_string()
+                    })?;
                 if total_weight == 0 {
                     return Err("GAME chunk stitching produced invalid seam weights".to_string());
                 }
@@ -515,12 +512,8 @@ mod tests {
         // region 1 never occupies a frame. The previous fail-closed check
         // aborted the whole song here.
         let durations = vec![0, 0, 3, 2];
-        let notes = notes_from_region_durations(
-            &durations,
-            &[50.0, 60.0, 62.0],
-            &[1, 1, 0],
-        )
-        .unwrap();
+        let notes =
+            notes_from_region_durations(&durations, &[50.0, 60.0, 62.0], &[1, 1, 0]).unwrap();
         assert_eq!(notes.len(), 2);
         assert_eq!(notes[0].offset_micros, 0);
         assert_eq!(notes[0].duration_micros, 30_000);
@@ -538,12 +531,9 @@ mod tests {
     #[test]
     fn skipped_region_ids_keep_a_contiguous_microsecond_timeline() {
         let durations = vec![0, 4, 0, 0, 6];
-        let notes = notes_from_region_durations(
-            &durations,
-            &[60.0, 61.0, 62.0, 64.0],
-            &[1, 1, 1, 1],
-        )
-        .unwrap();
+        let notes =
+            notes_from_region_durations(&durations, &[60.0, 61.0, 62.0, 64.0], &[1, 1, 1, 1])
+                .unwrap();
         assert_eq!(notes.len(), 2);
         assert_eq!(notes[0].duration_micros, 40_000);
         assert_eq!(notes[1].offset_micros, 40_000);
@@ -553,8 +543,7 @@ mod tests {
 
     #[test]
     fn unused_region_ids_yield_no_notes_instead_of_a_worker_error() {
-        let notes =
-            notes_from_region_durations(&[5, 0, 0], &[60.0, 61.0], &[1, 1]).unwrap();
+        let notes = notes_from_region_durations(&[5, 0, 0], &[60.0, 61.0], &[1, 1]).unwrap();
         assert!(notes.is_empty());
     }
 

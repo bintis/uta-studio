@@ -24,7 +24,8 @@ type ModelOpen = unsafe extern "C" fn(*mut Runtime, *const c_char, *const c_char
 type ModelFree = unsafe extern "C" fn(*mut Model);
 type ModelMetadata = unsafe extern "C" fn(*const Model) -> *const c_char;
 type ModelCancel = unsafe extern "C" fn(*mut Model, i32);
-type ModelForward = unsafe extern "C" fn(*mut Model, *const c_char, *const Tensor, usize) -> *mut ResultHandle;
+type ModelForward =
+    unsafe extern "C" fn(*mut Model, *const c_char, *const Tensor, usize) -> *mut ResultHandle;
 type ResultCount = unsafe extern "C" fn(*const ResultHandle) -> usize;
 type ResultTensor = unsafe extern "C" fn(*const ResultHandle, usize, *mut Tensor) -> i32;
 type ResultTimings = unsafe extern "C" fn(*const ResultHandle, *mut crate::Timings) -> i32;
@@ -53,23 +54,40 @@ impl Api {
         // runtime path. Symbols are declared by native/api.h, not inferred from
         // a filename or a backend of a different native library.
         unsafe {
-            let library = libloading::Library::new(path).map_err(|error| format!("cannot load native LibTorch runtime {}: {error}", path.display()))?;
+            let library = libloading::Library::new(path).map_err(|error| {
+                format!(
+                    "cannot load native LibTorch runtime {}: {error}",
+                    path.display()
+                )
+            })?;
             macro_rules! symbol {
                 ($name:literal, $type:ty) => {
-                    *library.get::<$type>(concat!("uta_libtorch_", $name, "\0").as_bytes())
-                        .map_err(|error| format!("native LibTorch runtime lacks {}: {error}", $name))?
+                    *library
+                        .get::<$type>(concat!("uta_libtorch_", $name, "\0").as_bytes())
+                        .map_err(|error| {
+                            format!("native LibTorch runtime lacks {}: {error}", $name)
+                        })?
                 };
             }
             let size = symbol!("tensor_layout_size", LayoutSize);
-            if size() != size_of::<Tensor>() { return Err("native LibTorch tensor ABI layout does not match Rust".to_string()); }
+            if size() != size_of::<Tensor>() {
+                return Err("native LibTorch tensor ABI layout does not match Rust".to_string());
+            }
             Ok(Self {
-                build_info: symbol!("build_info", BuildInfo), last_error: symbol!("last_error", LastError),
-                runtime_create: symbol!("runtime_create", RuntimeCreate), runtime_free: symbol!("runtime_free", RuntimeFree),
-                model_open: symbol!("model_open", ModelOpen), model_free: symbol!("model_free", ModelFree),
-                model_metadata: symbol!("model_metadata", ModelMetadata), model_cancel: symbol!("model_cancel", ModelCancel),
-                model_forward: symbol!("model_forward", ModelForward), result_count: symbol!("result_count", ResultCount),
-                result_tensor: symbol!("result_tensor", ResultTensor), result_timings: symbol!("result_timings", ResultTimings),
-                result_free: symbol!("result_free", ResultFree), _library: library,
+                build_info: symbol!("build_info", BuildInfo),
+                last_error: symbol!("last_error", LastError),
+                runtime_create: symbol!("runtime_create", RuntimeCreate),
+                runtime_free: symbol!("runtime_free", RuntimeFree),
+                model_open: symbol!("model_open", ModelOpen),
+                model_free: symbol!("model_free", ModelFree),
+                model_metadata: symbol!("model_metadata", ModelMetadata),
+                model_cancel: symbol!("model_cancel", ModelCancel),
+                model_forward: symbol!("model_forward", ModelForward),
+                result_count: symbol!("result_count", ResultCount),
+                result_tensor: symbol!("result_tensor", ResultTensor),
+                result_timings: symbol!("result_timings", ResultTimings),
+                result_free: symbol!("result_free", ResultFree),
+                _library: library,
             })
         }
     }
@@ -78,8 +96,11 @@ impl Api {
         // loaded. Copy before any other native call can overwrite it.
         unsafe {
             let pointer = (self.last_error)();
-            if pointer.is_null() { "native LibTorch returned an error without diagnostic text".to_string() }
-            else { CStr::from_ptr(pointer).to_string_lossy().into_owned() }
+            if pointer.is_null() {
+                "native LibTorch returned an error without diagnostic text".to_string()
+            } else {
+                CStr::from_ptr(pointer).to_string_lossy().into_owned()
+            }
         }
     }
 }

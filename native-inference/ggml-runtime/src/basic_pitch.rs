@@ -840,7 +840,11 @@ mod tests {
 /// The callback is the only learned-computation boundary and may be any native backend.
 pub mod host {
     use super::*;
-    pub fn process_wav(input_path: &Path, mut progress: impl FnMut(u64, u64), mut run_window: impl FnMut(&[f32]) -> Result<WindowActivations, String>) -> Result<Vec<ActivationFrame>, String> {
+    pub fn process_wav(
+        input_path: &Path,
+        mut progress: impl FnMut(u64, u64),
+        mut run_window: impl FnMut(&[f32]) -> Result<WindowActivations, String>,
+    ) -> Result<Vec<ActivationFrame>, String> {
         let audio = read_f32_wav(input_path, SAMPLE_RATE, 1)?;
         if audio.len() < FFT_HOP_SAMPLES {
             return Err("Basic Pitch requires at least one 256-sample frame".to_string());
