@@ -1006,6 +1006,46 @@ explicitly unavailable. No cached or later cleanup audio is substituted. Focused
 no new model/GPU execution, model installation, source mutation or release checks. Full details,
 verification receipts and next steps: [MIMO separation](../../docs/design/audio-analysis/MIMO_SEPARATION.md).
 
+## Model quality controls — IMPLEMENTED, bounded verification complete (2026-09-11)
+
+The user required real per-model quality controls, explicitly **Overlap**, after upstream research.
+Settings → Analysis now lists all eighteen resources and exposes only implemented native parameters:
+independent overlap for all six RoFormer/PolarFormer separation/cleanup models; GAME steps and
+boundary/voicing thresholds; RMVPE/FCPE voicing; JBM555 onset/offset; STARS/ROSVOT boundaries;
+Qwen ASR and FireRed window token budgets. Basic Pitch's raw-activation route and Qwen timestamp
+classifier explain why upstream MIDI/generation controls do not apply. Upstream batch support is
+reported separately; no fake native batch slider or script/network fallback was added.
+
+Both native routes consume the controls; all audio preparation branches are wired. Super preserves
+quality settings, and exact request snapshots plus existing Step 1 cache recipes include them.
+Changing overlap cannot reuse a stem produced under another setting; live publication uses the running
+request snapshot. Model-file overlap defaults are displayed as **Default**, not guessed. Factor-one
+no-overlap processing no longer fades seams to zero. Settings provide minus/editable-value/plus,
+Apply/Enter, per-model reset and visible transactional save errors; source media and installed assets
+are untouched. Source/search ledger: [Model quality settings](../../docs/MODEL_QUALITY_SETTINGS.md).
+
+Final focused operation `20260911T190236-c2f2a2b4c21f` passed 293 Engine tests (one ignored), 40 worker,
+two parameter, 466 app-core (one ignored), 257 desktop, 134 GGML host (38 explicit native tests ignored)
+and 79 LibTorch host tests (one ignored), plus the desktop debug build. CLI/worker debug builds passed
+`20260911T190742-1ad670dc5764`; four packaged CLI tests passed `20260911T190836-14230df22400`.
+Targeted formatting and docs check passed `20260911T190752-a01ed826fe55`. Earlier bad shell invocation,
+fixture-shape/default assumptions, Bevy focus API compile error and UI-source inspection failures remain
+recorded; they were repaired before these passes.
+
+Isolated Weston/Wayland + lavapipe smoke `20260911T190432-34a5e04cce0e` completed 42 dispatch steps:
+all eighteen models selected, sixteen independently saved, overlap adjust/Apply/reset/error/clamp checked,
+Super still enabled. Persisted JSON matches the report. Fresh-process 1000×900 reload smoke
+`20260911T190543-3e438c424b08` retained GAME steps and wrapped controls; 1440×1000 and narrow screenshots,
+reports and machine-reviewed summary are under `test-artifacts/model-quality-settings/ui/`.
+This is command-dispatch/rendering coverage, not physical keyboard/mouse or real inference evidence.
+
+Clippy is **not clean**: strict operation `20260911T190549-8b3413d9d182` stopped at existing
+`backend_cli/process.rs` and `debug_logging.rs` warnings. Advisory review `20260911T190630-a5638229fc5f`
+also found an existing denied permission-literal lint in `log_storage.rs:369` plus Settings models/widgets
+warnings; none were in this task's changed logic. Unrelated work remains intact. No GPU/model run,
+real-song quality measurement, listening, Windows, installed executable replacement or release packaging;
+`integration_ready`/`production_ready` model qualifications are unchanged.
+
 ## Next actions
 
 1. Install the STARS and ROSVOT GGUF generations into the managed store with their manifests and

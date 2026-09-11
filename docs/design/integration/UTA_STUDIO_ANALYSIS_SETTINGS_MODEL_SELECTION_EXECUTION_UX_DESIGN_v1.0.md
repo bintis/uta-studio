@@ -14,6 +14,12 @@
 
 # 1. Purpose
 
+**Current implementation update (2026-09-11):** model-owned overlap, sampling and decoder controls
+are now represented by `execution_policy.model_settings` and consumed by both packaged native routes.
+They live in Settings → Analysis, survive Super scheduling and participate in exact stem-cache recipes.
+See [supported controls and upstream search](../../MODEL_QUALITY_SETTINGS.md). The earlier target-only
+parameter wording below does not override that implemented scope; no native batching control is claimed.
+
 This document closes the product/UX gaps left intentionally open by the Studio reintegration design.
 
 It freezes how a user chooses analysis behavior, how model preferences are represented, what may be reordered, how execution order is presented, where advanced audio-analysis controls live, how global/song/run overrides interact, and how Runtime Manager policy vetoes an unavailable or unvalidated model without silently changing user intent.

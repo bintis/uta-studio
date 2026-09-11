@@ -215,6 +215,20 @@ old line-level output cannot manufacture character timings. 21J remains `NEEDS_R
 - Every separation execution invocation has typed dual outputs (`vocal`, `instrumental`) and one progress/failure identity.
 - A capability with one executable provider has no fake model selector. Settings expose only the owning concepts and current provider facts.
 
+## Model-owned quality settings (2026-09-11)
+
+Settings → Analysis exposes real per-model controls rather than only quality presets. All six
+RoFormer/PolarFormer separation/cleanup resources have independent **Overlap**; GAME steps and
+thresholds, pitch/conditioned-note sensitivity and ASR token budgets reach both native routes.
+Super keeps these quality choices. Exact request snapshots and stem-cache recipes include tuning,
+so a changed overlap cannot silently reuse the earlier separation. Default overlap comes from the
+model file; no-overlap synthesis avoids faded gaps. All eighteen resources are represented; Basic
+Pitch's raw activations and Qwen's timestamp classifier explain unavailable controls, and upstream
+batching is not mislabeled as implemented native batching. No real model/GPU or quality benchmark
+was run. Focused host/command tests and isolated 42-step Wayland plus narrow reload smoke pass;
+Clippy remains blocked by unrelated logging/UI lints. See [support/search ledger](MODEL_QUALITY_SETTINGS.md)
+and [verification scope](../tasks/remaining-models/STATE.md#model-quality-controls--implemented-bounded-verification-complete-2026-09-11).
+
 ## Audio and export
 
 - Source media is read-only.
