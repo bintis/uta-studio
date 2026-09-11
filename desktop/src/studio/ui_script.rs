@@ -930,6 +930,7 @@ mod tests {
             )
             .is_err()
         );
+        assert!(parse_ui_command("ui.settings.request_clear_cache", &serde_json::json!({"scope": ["logs"]})).is_err());
         let request = UiAction::from(SettingsCommand::ConfirmClearCache).api_request();
         assert_eq!(request.access, "destructive");
     }
