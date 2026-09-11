@@ -56,6 +56,8 @@ fn enable_detailed_logging() -> Result<(), String> {
 #[derive(Resource, Default)]
 pub(crate) struct DebugLogJob {
     receiver: Option<Mutex<mpsc::Receiver<Result<std::path::PathBuf, String>>>>,
+    capture_active: bool,
+    reported_error: Option<String>,
 }
 
 pub(crate) fn start_debug_log_job(job: &mut DebugLogJob, context: String) -> String {
@@ -81,6 +83,12 @@ pub(crate) fn poll_debug_log_job(
     mut shell: ResMut<ShellState>,
     mut invalidated: ResMut<UiInvalidated>,
 ) {
+    if job.capture_active && let Some(error) = app_core::debug_logging_error()
+        && job.reported_error.as_ref() != Some(&error) {
+        shell.notice = Some(format!("DEBUG live capture failed: {error}"));
+        job.reported_error = Some(error);
+        invalidated.invalidate(UiDirtyRegion::Settings);
+    }
     let Some(receiver) = job.receiver.as_ref() else {
         return;
     };
@@ -95,6 +103,10 @@ pub(crate) fn poll_debug_log_job(
         Err(_) => Err("Debug log export status channel was poisoned".to_string()),
     };
     job.receiver = None;
+    if result.is_ok() {
+        job.capture_active = true;
+        job.reported_error = None;
+    }
     shell.notice = Some(match result {
         Ok(path) => format!(
             "DEBUG logs: {} — detailed capture stays on until exit. Reproduce the issue now; earlier filtered events cannot be recovered. Logs may contain local paths and lyrics; nothing is uploaded.",
@@ -103,4 +115,58 @@ pub(crate) fn poll_debug_log_job(
         Err(error) => format!("DEBUG log export failed: {error}"),
     });
     invalidated.invalidate(UiDirtyRegion::Settings);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn job_app(result: Result<std::path::PathBuf, String>) -> App {
+        let (sender, receiver) = mpsc::channel();
+        sender.send(result).unwrap();
+        let mut app = App::new();
+        app.insert_resource(DebugLogJob {
+            receiver: Some(Mutex::new(receiver)),
+            ..default()
+        });
+        app.insert_resource(ShellState {
+            config: app_core::AppConfig::default(),
+            route: StudioRoute::Settings,
+            documentation: DocumentationState::default(),
+            settings_tab: SettingsTab::General,
+            notice: None,
+            settings_scroll_offsets: [0.0; 4],
+        });
+        app.insert_resource(UiInvalidated::default());
+        app.add_systems(Update, poll_debug_log_job);
+        app
+    }
+
+    #[test]
+    fn completed_export_displays_location_and_capture_scope() {
+        let mut app = job_app(Ok(std::path::PathBuf::from("isolated-debug-output")));
+        app.update();
+        let notice = app.world().resource::<ShellState>().notice.as_deref().unwrap();
+        assert!(notice.contains("isolated-debug-output"));
+        assert!(notice.contains("until exit"));
+        assert!(app.world().resource::<DebugLogJob>().receiver.is_none());
+    }
+
+    #[test]
+    fn failed_export_displays_error_without_reporting_success() {
+        let mut app = job_app(Err("isolated disk error".to_string()));
+        app.update();
+        let notice = app.world().resource::<ShellState>().notice.as_deref().unwrap();
+        assert!(notice.contains("failed: isolated disk error"));
+        assert!(!app.world().resource::<DebugLogJob>().capture_active);
+    }
+
+    #[test]
+    fn debug_command_is_a_registered_mutation() {
+        let command = AppCommand::StartDebugLogging;
+        let request = UiAction::from(command).api_request();
+        assert_eq!(request.command, "ui.app.start_debug_logging");
+        assert_eq!(request.access, "mutation");
+        assert!(include_str!("general.rs").contains("Some((\"DEBUG\", UiAction::from(AppCommand::StartDebugLogging)))"));
+    }
 }
