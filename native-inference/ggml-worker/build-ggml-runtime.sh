@@ -26,6 +26,7 @@ rm -rf -- "${ggml_source}"
 mv -- "${source_staging}" "${ggml_source}"
 trap - EXIT
 actual_commit="$(git -C "${ggml_source}" rev-parse HEAD)"
+git -C "${ggml_source}" status --porcelain > "${work}/source-status.txt"
 
 # Apply the declared backend fixes to the private current-source checkout.
 # A conflicting patch must be rebased; never silently drop precision fixes or
@@ -50,6 +51,9 @@ cmake -S "${ggml_source}" -B "${build}" \
     -DGGML_BACKEND_DL=ON \
     -DGGML_CPU=ON \
     -DGGML_VULKAN=ON \
+    -DGGML_VULKAN_RUN_TESTS=OFF \
+    -DGGML_BUILD_TESTS=OFF \
+    -DGGML_BUILD_EXAMPLES=OFF \
     -DGGML_CUDA=OFF \
     -DGGML_SYCL=OFF \
     -DGGML_NATIVE=OFF \
@@ -59,6 +63,7 @@ cmake --build "${build}" --target ggml -j"${jobs}"
 staging="${destination}.staging"
 trap 'rm -rf -- "${staging}"' EXIT
 mkdir -p "${staging}/lib"
+cp "${work}/source-status.txt" "${staging}/source-status.txt"
 copy_library() {
     local pattern="$1" destination_name="$2"
     local source_path

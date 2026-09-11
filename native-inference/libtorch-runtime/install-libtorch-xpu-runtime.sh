@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # Build the current upstream LibTorch source for Uta! Studio's native XPU route.
 # Run explicitly inside bash dev.sh with Intel's SYCL compiler/oneMKL SDK in
-# CMAKE_PREFIX_PATH/PATH. Python is an upstream build-time code generator only;
+# CMAKE_PREFIX_PATH/PATH and SYCL_ROOT/CMPLR_ROOT. The interpreter may be set
+# with UTA_STUDIO_LIBTORCH_BUILD_PYTHON and needs upstream codegen modules
+# (including PyYAML). Python is an upstream build-time code generator only;
 # BUILD_PYTHON=OFF and the installed worker never starts an interpreter.
 #
 # UTA_STUDIO_XPU_LIBRARY_DIRS: colon-separated SDK runtime library directories
-# (SYCL/Unified Runtime, oneMKL, OpenMP/TBB and their provider resources).
+# (SYCL/Unified Runtime, oneMKL, OpenMP/TBB and their provider resources,
+# plus Level Zero/OpenCL loaders and ordinary non-libc dependencies).
 # These are copied, not moved. System GPU drivers remain system-owned.
 # UTA_STUDIO_LIBTORCH_SOURCE_DIR optionally supplies a local source checkout;
 # otherwise acquire clones the latest upstream default branch, recursively.
