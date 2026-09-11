@@ -37,6 +37,16 @@ pub struct GameEncoderOutput {
     pub segmenter_embeddings: ResidentEmbedding,
     pub estimator_embeddings: ResidentEmbedding,
 }
+struct SegmenterRun<'model> {
+    model: &'model Game,
+    features: &'model ResidentEmbedding,
+    language: i32,
+}
+impl SegmenterRun<'_> {
+    fn compute(&mut self, noise: &[i32], time: f32) -> Result<Vec<f32>, String> {
+        self.model.segmenter_logits(self.features, noise, time, self.language)
+    }
+}
 pub struct Game {
     model: Model,
     config: GameConfig,
@@ -126,6 +136,17 @@ impl Game {
             );
         }
         Ok(())
+    }
+    fn prepare_segmenter<'model>(
+        &'model self,
+        features: &'model ResidentEmbedding,
+        _frames: usize,
+        language: i32,
+    ) -> Result<SegmenterRun<'model>, String> {
+        let generation = self.generation.lock()
+            .map_err(|_| "GAME resident feature ownership lock was poisoned".to_string())?;
+        self.check_features(features, *generation, FeatureKind::Segmenter)?;
+        Ok(SegmenterRun { model: self, features, language })
     }
     pub fn segmenter_logits(
         &self,
