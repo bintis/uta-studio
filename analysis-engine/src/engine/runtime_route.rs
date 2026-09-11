@@ -62,39 +62,36 @@ pub(super) fn qwen_alignment_words(
     transcript: &CanonicalLyrics,
     segments: &[crate::artifact::TranscriptAudioSegment],
 ) -> EngineResult<Vec<serde_json::Value>> {
+    let language = transcript
+        .language
+        .as_deref()
+        .unwrap_or("und")
+        .split(['-', '_'])
+        .next()
+        .unwrap_or("und")
+        .to_ascii_lowercase();
+    let character_units = matches!(language.as_str(), "zh" | "yue" | "ja" | "ko");
     let units = if !transcript.tokens.is_empty() {
+        // Caller tokens may be entire LRC lines, not alignment words. Keep
+        // their canonical identity and timing upstairs, but measure each
+        // lexical unit inside the same original audio scope. Splitting the
+        // scope by character count would invent timings and lose sung context.
         transcript
             .tokens
             .iter()
-            .enumerate()
-            .map(|(index, token)| {
-                (
-                    token
-                        .id
-                        .clone()
-                        .unwrap_or_else(|| format!("aligned-word-{index}")),
-                    token.text.clone(),
-                    token.range,
-                )
+            .flat_map(|token| {
+                alignment_text_units(&token.text, character_units)
+                    .into_iter()
+                    .map(move |text| (text, token.range))
             })
             .collect::<Vec<_>>()
     } else {
-        let language = transcript
-            .language
-            .as_deref()
-            .unwrap_or("und")
-            .split(['-', '_'])
-            .next()
-            .unwrap_or("und")
-            .to_ascii_lowercase();
-        let character_units = matches!(language.as_str(), "zh" | "yue" | "ja" | "ko");
         alignment_text_units(&transcript.text, character_units)
             .into_iter()
-            .enumerate()
-            .map(|(index, text)| (format!("aligned-word-{index}"), text, None))
+            .map(|text| (text, None))
             .collect()
     };
-    if units.is_empty() || units.iter().any(|(_, text, _)| text.trim().is_empty()) {
+    if units.is_empty() || units.iter().any(|(text, _)| text.trim().is_empty()) {
         return Err(EngineError::new(
             EngineErrorCode::MissingRequiredInput,
             "Qwen forced alignment requires non-empty canonical transcript units",
@@ -104,7 +101,9 @@ pub(super) fn qwen_alignment_words(
     let mut character_offset = 0;
     Ok(units
         .into_iter()
-        .map(|(id, text, caller_range)| {
+        .enumerate()
+        .map(|(index, (text, caller_range))| {
+            let id = format!("aligned-word-{index}");
             let characters = text
                 .chars()
                 .filter(|character| !character.is_whitespace())
