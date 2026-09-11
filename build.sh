@@ -37,4 +37,18 @@ cargo build --release --locked \
     -p uta-ggml-worker --bin uta-ggml-worker \
     "$@"
 
+# Embed the runtime library search paths into the produced ELF binaries so they
+# can be executed directly from outside the Nix development shell (e.g. from
+# a desktop launcher or a normal user terminal) without missing libwayland,
+# libxkbcommon, libvulkan, libglvnd, or GPU driver libraries.
+if command -v patchelf >/dev/null 2>&1 && [ -n "${LD_LIBRARY_PATH:-}" ]; then
+    for binary in "$repo_root/target/release"/uta-*; do
+        if [ -f "$binary" ] && [ -x "$binary" ]; then
+            existing_rpath="$(patchelf --print-rpath "$binary" 2>/dev/null || true)"
+            new_rpath="${existing_rpath:+${existing_rpath}:}${LD_LIBRARY_PATH}"
+            patchelf --set-rpath "$new_rpath" "$binary"
+        fi
+    done
+fi
+
 printf '\nBuilt Studio and packaged protocols in: %s\n' "$repo_root/target/release"
