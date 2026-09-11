@@ -666,9 +666,9 @@ Source media, installed assets and unrelated user changes remain untouched;
 no CPU/GGML inference fallback, Vulkan stress, workspace release checks or Nix
 packaging were performed. See [execution design](../../docs/design/runtime/LIBTORCH_EXECUTION.md).
 
-## All-resource LibTorch AMD ROCm 10 — HALTED AFTER EIGHTH GPU RESET (2026-09-11)
+## All-resource LibTorch AMD ROCm 10 — DENOISE REPRODUCED, SWEEP 4/18 (2026-09-11)
 
-**Zero of eighteen resources qualified; the full-song phase was not started.** The isolated Nix
+**Four of eighteen bounded resources passed; fourteen remain unrun and the full-song phase was not started.** The isolated Nix
 shell and official **ROCm 10.0.0 + PyTorch 2.13.0** packages, including the Radeon 780M `gfx1103`
 device package, were installed only under ignored test evidence. They did not replace the system
 driver, global Python, installed model store, source media or prior runtime. Authorization operation:
@@ -793,13 +793,38 @@ tile. This falsifies cross-batch tile boundaries as the cause. Commit `e8b06e9` 
 ROCm attention subproblem itself to at most 1024 projected sequence rows. The 801/1722-row time axes
 run one independent batch at a time, while short frequency axes retain up to eight batches. This
 reduces simultaneous normalized/QKV/attention intermediates without removing any context or value.
-The native build passed but no GPU execution followed the eighth reset, so it remains an unverified
-candidate.
+The native build passed. Its real trace completed 44 long-axis attention batches before the next
+QKV failure, and splitting Q/K/V moved later failures to normalization rather than eliminating them.
+Valid serialization settings, quiet stage fences, pacing, smaller projection rows and reduction
+channel tiles likewise moved the synchronization surface without making the workload repeatable.
+One fenced run completed, but its immediate reproduction reset and therefore was not accepted.
 
-The sweep remains **three passed, one failed, fourteen not run**. No subsequent model was launched
-and full-song execution was not started. Do not resume AMD ROCm model, oracle or stress execution
-without another explicit human decision after this eighth code-triggered GPU reset. CPU/GGML
-fallback remains prohibited. See [LibTorch execution](../../docs/design/runtime/LIBTORCH_EXECUTION.md).
+Commits `b4de134a` and `458bea82` then introduced an in-process HIPRTC F32 contraction kernel with
+arbitrary two-dimensional strides. RoFormer projection and FFN paths use it on ROCm without CPU
+fallback, weight conversion or arithmetic truncation. Production-scheduled projection/FFN oracles
+passed **10/10**, including the exact strided QKV geometry, a 60,000-row projection and complete
+FFNs against double CPU references. Commit `3ac97dfa` generalized the same kernel to independent
+head/batch groups and replaced both mixed-attention contractions, `Q x K^T` and
+`softmax(scores) x V`; all complete-context, mask, causal and GQA attention oracles passed **6/6**.
+Every custom contraction is synchronized and paced. The rejected `AMD_SERIALIZE_KERNEL=3` shell
+setting was removed; PyTorch had treated it as an invalid boolean.
+
+The first fully custom run still reset after excessive single-batch dispatches. Commit `2809b81`
+removed the obsolete rocBLAS-era single-batch workaround and groups at most eight independent
+attention batches, while projections remain internally bounded to 256 rows and every sequence keeps
+its full K/V context. The real 12-second Denoise request then completed all **6/6 chunks twice** on
+Radeon 780M `gfx1103`, once with synchronization trace and once without it. Execution times were
+504.331 and 501.916 seconds; sampled peak resident GTT was 1,778,396 KiB in both runs. Each exact
+output contains 1,058,400 finite samples with peak `0.8360749483`, RMS `0.1319012501`, zero out-of-range
+or clipped samples and reconstruction error zero. The two complete F32 outputs are byte-identical.
+Read-only hwmon samples measured maximum edge temperatures of 36 and 39 degrees Celsius. Evidence:
+`grouped-attention/denoise/` and `grouped-attention/reproduction/`.
+
+Denoise is therefore a reproduced bounded functional pass, not the former one-off success. It does
+not establish driver root cause, broad host stability, throughput acceptability, whole-model parity,
+listening quality or production readiness. The sweep is now **four passed, fourteen not run**. No
+later resource was launched and full-song execution was not started. CPU/GGML fallback remains
+prohibited. See [LibTorch execution](../../docs/design/runtime/LIBTORCH_EXECUTION.md).
 
 ## LibTorch XPU production route — IMPLEMENTED (2026-09-11)
 
