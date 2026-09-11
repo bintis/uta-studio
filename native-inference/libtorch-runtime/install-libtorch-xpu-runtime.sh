@@ -169,18 +169,39 @@ unpack() {
   log "native dependency libraries: $(find "$runtime_root/deps/lib" -name '*.so*' | wc -l)"
 }
 
+elf_is_x86_64() {
+  # ELF header: class byte 4 == 2 (64-bit) and e_machine bytes 18-19 == 0x3e.
+  [ -f "$1" ] || return 1
+  [ "$(od -An -tx1 -j4 -N1 "$1" | tr -d ' ')" = "02" ] || return 1
+  [ "$(od -An -tx1 -j18 -N2 "$1" | tr -d ' ')" = "3e00" ]
+}
+
+newest_x86_64_root() {
+  # newest_x86_64_root GLOB-PREFIX LIBRARY: the newest store root whose
+  # library is a 64-bit x86 ELF (32-bit builds of the same package exist).
+  local root
+  for root in $(ls -d /nix/store/$1 2>/dev/null | grep -v '\.drv' | sort -V | tac); do
+    if elf_is_x86_64 "$(readlink -f "$root/lib/$2")"; then
+      printf '%s\n' "$root"
+      return 0
+    fi
+  done
+  return 1
+}
+
 ensure_level_zero_loader() {
   # The Unified Runtime Level Zero adapter loads libze_loader.so.1 by name.
   # The Intel wheels above do not ship it; take it from an explicit root or
   # the system's Level Zero package.
-  if ls "$runtime_root/deps/lib"/libze_loader.so.1* >/dev/null 2>&1; then
+  if elf_is_x86_64 "$(readlink -f "$runtime_root/deps/lib/libze_loader.so.1" 2>/dev/null || true)"; then
     return 0
   fi
   local root="${UTA_STUDIO_LEVEL_ZERO_ROOT:-}"
   if [ -z "$root" ]; then
-    root="$(ls -d /nix/store/*-level-zero-*/ 2>/dev/null | grep -v '\.drv' | sort -V | tail -n 1 || true)"
+    root="$(newest_x86_64_root '*-level-zero-*' libze_loader.so.1 || true)"
   fi
-  if [ -n "$root" ] && ls "$root"/lib/libze_loader.so* >/dev/null 2>&1; then
+  if [ -n "$root" ] && elf_is_x86_64 "$(readlink -f "$root/lib/libze_loader.so.1")"; then
+    rm -f "$runtime_root/deps/lib"/libze_loader.so*
     cp -a "$root"/lib/libze_loader.so* "$runtime_root/deps/lib/"
     log "Level Zero loader copied from $root"
   else
@@ -193,15 +214,16 @@ ensure_opencl_loader() {
   # even when execution runs on the Level Zero stream. Take the system ICD
   # loader when the wheels do not provide one; vendors resolve through
   # OCL_ICD_VENDORS at run time.
-  if ls "$runtime_root/deps/lib"/libOpenCL.so.1* >/dev/null 2>&1 \
-    || ls "$runtime_root/torch/lib"/libOpenCL.so.1* >/dev/null 2>&1; then
+  if elf_is_x86_64 "$(readlink -f "$runtime_root/deps/lib/libOpenCL.so.1" 2>/dev/null || true)" \
+    || elf_is_x86_64 "$(readlink -f "$runtime_root/torch/lib/libOpenCL.so.1" 2>/dev/null || true)"; then
     return 0
   fi
   local root="${UTA_STUDIO_OPENCL_LOADER_ROOT:-}"
   if [ -z "$root" ]; then
-    root="$(ls -d /nix/store/*-ocl-icd-*/ 2>/dev/null | grep -v '\.drv' | sort -V | tail -n 1 || true)"
+    root="$(newest_x86_64_root '*-ocl-icd-*' libOpenCL.so.1 || true)"
   fi
-  if [ -n "$root" ] && ls "$root"/lib/libOpenCL.so* >/dev/null 2>&1; then
+  if [ -n "$root" ] && elf_is_x86_64 "$(readlink -f "$root/lib/libOpenCL.so.1")"; then
+    rm -f "$runtime_root/deps/lib"/libOpenCL.so*
     cp -a "$root"/lib/libOpenCL.so* "$runtime_root/deps/lib/"
     log "OpenCL ICD loader copied from $root"
   else
