@@ -52,7 +52,7 @@
               src = ./native-inference/libtorch-runtime/native;
               filter = path: type: true;
             };
-            nativeBuildInputs = with pkgs; [ cmake ninja unzip ];
+            nativeBuildInputs = with pkgs; [ cmake ninja unzip binutils ];
             dontUnpack = true;
             # The CMake hook must not configure the source before the archives
             # are unpacked; the build phase configures explicitly.
@@ -67,7 +67,7 @@
               runtime=$out/share/uta-studio/runtime/libtorch-xpu
               mkdir -p "$runtime/torch" "$runtime/deps/lib" "$runtime/lib" staging/torch staging/deps
               unzip -q "$torchWheel" 'torch/include/*' 'torch/lib/*' 'torch/share/cmake/*' -d staging/torch
-              mv staging/torch/torch/include staging/torch/torch/lib staging/torch/torch/share "$runtime/torch/"
+              mv staging/torch/torch/lib "$runtime/torch/"
               rm -f "$runtime/torch/lib/libtorch_python.so"
               for wheel in $dependencyWheels; do
                 unzip -q -o "$wheel" -d staging/deps
@@ -76,12 +76,15 @@
                 cp -a "$directory"/. "$runtime/deps/lib/"
               done < <(find staging/deps -type d -name lib -print0)
               find "$runtime/deps/lib" \( -name '*.py' -o -name '*.pyc' -o -name '*.cpython-*.so' \) -delete
+              bash ${./native-inference/libtorch-runtime/compact-native-libraries.sh} "$runtime/torch/lib"
+              bash ${./native-inference/libtorch-runtime/compact-native-libraries.sh} "$runtime/deps/lib"
               cp -a ${pkgs.level-zero}/lib/libze_loader.so* "$runtime/deps/lib/"
               cp -a ${pkgs.ocl-icd}/lib/libOpenCL.so* "$runtime/deps/lib/"
               cp -L ${pkgs.zlib}/lib/libz.so.1 "$runtime/deps/lib/libz.so.1"
               cmake -S "$src" -B build -G Ninja \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DTORCH_ROOT="$runtime/torch" \
+                -DTORCH_INCLUDE_ROOT="$PWD/staging/torch/torch/include" \
                 -DXPU_DEPENDENCY_LIB="$runtime/deps/lib" \
                 -DUTA_LIBTORCH_BACKEND=xpu \
                 -DTORCH_CXX_ABI=1
@@ -218,6 +221,8 @@
               # app-owned native sources it builds against the official archives.
               install -Dm755 native-inference/libtorch-runtime/install-libtorch-xpu-runtime.sh \
                 $out/share/uta-studio/native-inference/libtorch-runtime/install-libtorch-xpu-runtime.sh
+              install -Dm755 native-inference/libtorch-runtime/compact-native-libraries.sh \
+                $out/share/uta-studio/native-inference/libtorch-runtime/compact-native-libraries.sh
               install -Dm644 native-inference/libtorch-runtime/runtime-recipe.json \
                 $out/share/uta-studio/native-inference/libtorch-runtime/runtime-recipe.json
               mkdir -p $out/share/uta-studio/native-inference/libtorch-runtime/native

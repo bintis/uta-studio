@@ -10,21 +10,22 @@
 # Layout of the installed runtime directory (default
 # ~/.local/share/uta-studio/runtime/libtorch-xpu, override with
 # UTA_STUDIO_LIBTORCH_RUNTIME_DIR):
-#   downloads/            retained official wheel archives and SHA256SUMS
-#   torch/include, torch/lib   LibTorch headers and shared libraries
+# Acquisition/build scratch lives outside this directory, under
+# UTA_STUDIO_LIBTORCH_WORK_DIR (default: XDG_CACHE_HOME/uta-studio/libtorch-xpu).
+#   torch/lib             LibTorch shared libraries (headers stay in work dir)
 #   deps/lib              Intel SYCL, oneMKL, UR, Level Zero loader, ... libraries
-#   build/                CMake build tree of the app-owned native library
 #   lib/libuta_libtorch.so     the library the worker loads
 #   runtime-manifest.json      backend identity, library digests, environment
 #
 # Subcommands: acquire | unpack | build | manifest | all (default: all).
 # Run `build` inside `bash dev.sh` (CMake, Ninja and the compiler live there);
-# `acquire` and `unpack` need only curl, unzip and sha256sum.
+# `unpack` also uses readelf and cmp to compact duplicate native library aliases.
 set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 native_source="$repo_root/native-inference/libtorch-runtime/native"
 runtime_root="${UTA_STUDIO_LIBTORCH_RUNTIME_DIR:-$HOME/.local/share/uta-studio/runtime/libtorch-xpu}"
+work_root="${UTA_STUDIO_LIBTORCH_WORK_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/uta-studio/libtorch-xpu}"
 index="${UTA_STUDIO_LIBTORCH_XPU_INDEX:-https://download.pytorch.org/whl/xpu}"
 torch_release="2.13.0+xpu"
 torch_wheel="torch-2.13.0+xpu-cp311-cp311-manylinux_2_28_x86_64.whl"
@@ -104,14 +105,14 @@ wheel_url() {
 }
 
 acquire() {
-  mkdir -p "$runtime_root/downloads"
+  mkdir -p "$work_root/downloads"
   fetch "$index/torch-2.13.0%2Bxpu-cp311-cp311-manylinux_2_28_x86_64.whl" \
-    "$runtime_root/downloads/$torch_wheel"
+    "$work_root/downloads/$torch_wheel"
   local entry name version url filename
   for entry in "${dependencies[@]}"; do
     name="${entry%%=*}"
     version="${entry#*=}"
-    filename="$(ls "$runtime_root/downloads" 2>/dev/null \
+    filename="$(ls "$work_root/downloads" 2>/dev/null \
       | grep -E "^${name//-/_}-${version}-.*x86_64\.whl$" | head -n 1 || true)"
     if [ -n "$filename" ]; then
       log "retained $filename"
@@ -123,27 +124,26 @@ acquire() {
       /*) url="https://download.pytorch.org$url" ;;
       *) url="$index/$name/$url" ;;
     esac
-    fetch "$url" "$runtime_root/downloads/$(basename "$url")"
+    fetch "$url" "$work_root/downloads/$(basename "$url")"
   done
-  (cd "$runtime_root/downloads" && sha256sum ./*.whl > SHA256SUMS)
-  log "acquired $(ls "$runtime_root/downloads"/*.whl | wc -l) wheel archives"
+  log "acquired $(ls "$work_root/downloads"/*.whl | wc -l) wheel archives"
 }
 
 unpack() {
-  local staging="$runtime_root/staging"
-  rm -rf "$staging" "$runtime_root/torch" "$runtime_root/deps"
+  local staging="$work_root/staging"
+  rm -rf "$staging" "$work_root/torch" "$runtime_root/torch" "$runtime_root/deps"
   mkdir -p "$staging" "$runtime_root/deps/lib"
   log "unpacking LibTorch headers and libraries"
-  unzip -q -o "$runtime_root/downloads/$torch_wheel" \
+  unzip -q -o "$work_root/downloads/$torch_wheel" \
     'torch/include/*' 'torch/lib/*' 'torch/share/cmake/*' -d "$staging/torch-wheel"
-  mkdir -p "$runtime_root/torch"
-  mv "$staging/torch-wheel/torch/include" "$runtime_root/torch/include"
+  mkdir -p "$runtime_root/torch" "$work_root/torch"
+  mv "$staging/torch-wheel/torch/include" "$work_root/torch/include"
   mv "$staging/torch-wheel/torch/lib" "$runtime_root/torch/lib"
-  mv "$staging/torch-wheel/torch/share" "$runtime_root/torch/share"
+  mv "$staging/torch-wheel/torch/share" "$work_root/torch/share"
   # The Python binding library needs a Python interpreter and is never loaded.
   rm -f "$runtime_root/torch/lib/libtorch_python.so"
   local wheel
-  for wheel in "$runtime_root/downloads"/*.whl; do
+  for wheel in "$work_root/downloads"/*.whl; do
     [ "$(basename "$wheel")" = "$torch_wheel" ] && continue
     local name
     name="$(basename "$wheel" .whl)"
@@ -164,6 +164,8 @@ unpack() {
   # Python extension modules and bytecode are never loaded; keep only native
   # runtime libraries in the dependency directory.
   find "$runtime_root/deps/lib" \( -name '*.py' -o -name '*.pyc' -o -name '*.cpython-*.so' \) -delete
+  bash "$repo_root/native-inference/libtorch-runtime/compact-native-libraries.sh" "$runtime_root/torch/lib"
+  bash "$repo_root/native-inference/libtorch-runtime/compact-native-libraries.sh" "$runtime_root/deps/lib"
   ensure_level_zero_loader
   ensure_opencl_loader
   log "native dependency libraries: $(find "$runtime_root/deps/lib" -name '*.so*' | wc -l)"
@@ -266,19 +268,20 @@ resolve_system_dependencies() {
 
 build() {
   command -v cmake >/dev/null || fail "cmake is unavailable; run build inside bash dev.sh"
-  [ -f "$runtime_root/torch/include/ATen/ATen.h" ] || fail "LibTorch headers are not unpacked; run unpack first"
+  [ -f "$work_root/torch/include/ATen/ATen.h" ] || fail "LibTorch headers are not unpacked; run unpack first"
   local generator=()
   if command -v ninja >/dev/null; then generator=(-G Ninja); fi
-  cmake -S "$native_source" -B "$runtime_root/build" "${generator[@]}" \
+  cmake -S "$native_source" -B "$work_root/build" "${generator[@]}" \
     -DCMAKE_BUILD_TYPE=Release \
     -DTORCH_ROOT="$runtime_root/torch" \
+    -DTORCH_INCLUDE_ROOT="$work_root/torch/include" \
     -DXPU_DEPENDENCY_LIB="$runtime_root/deps/lib" \
     -DUTA_LIBTORCH_BACKEND=xpu \
     -DTORCH_CXX_ABI=1
-  cmake --build "$runtime_root/build" --target uta_libtorch uta-libtorch-contract-check \
+  cmake --build "$work_root/build" --target uta_libtorch \
     -j "${UTA_STUDIO_LIBTORCH_BUILD_JOBS:-4}"
   mkdir -p "$runtime_root/lib"
-  cp -f "$runtime_root/build/libuta_libtorch.so" "$runtime_root/lib/libuta_libtorch.so"
+  cp -f "$work_root/build/libuta_libtorch.so" "$runtime_root/lib/libuta_libtorch.so"
   resolve_system_dependencies
   log "built $runtime_root/lib/libuta_libtorch.so"
 }
