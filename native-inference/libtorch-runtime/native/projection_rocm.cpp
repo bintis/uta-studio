@@ -11,9 +11,16 @@ constexpr unsigned int tile_width = 16;
 constexpr const char* projection_source = R"(
 extern "C" __global__ void uta_projection_kernel(
     float* output,
+    long output_row_stride,
+    long output_channel_stride,
     const float* input,
+    long input_row_stride,
+    long input_channel_stride,
     const float* weight,
+    long weight_row_stride,
+    long weight_channel_stride,
     const float* bias,
+    long bias_stride,
     long rows,
     long input_channels,
     long output_channels) {
@@ -23,17 +30,17 @@ extern "C" __global__ void uta_projection_kernel(
 
     const long row = (long)blockIdx.y * tile_width + threadIdx.y;
     const long output_channel = (long)blockIdx.x * tile_width + threadIdx.x;
-    float sum = bias && output_channel < output_channels ? bias[output_channel] : 0.0F;
+    float sum = bias && output_channel < output_channels ? bias[output_channel * bias_stride] : 0.0F;
 
     for (long begin = 0; begin < input_channels; begin += tile_width) {
         const long input_channel = begin + threadIdx.x;
         input_tile[threadIdx.y][threadIdx.x] = row < rows && input_channel < input_channels
-            ? input[row * input_channels + input_channel]
+            ? input[row * input_row_stride + input_channel * input_channel_stride]
             : 0.0F;
 
         const long weight_channel = begin + threadIdx.y;
         weight_tile[threadIdx.y][threadIdx.x] = output_channel < output_channels && weight_channel < input_channels
-            ? weight[output_channel * input_channels + weight_channel]
+            ? weight[output_channel * weight_row_stride + weight_channel * weight_channel_stride]
             : 0.0F;
         __syncthreads();
 
@@ -44,7 +51,7 @@ extern "C" __global__ void uta_projection_kernel(
     }
 
     if (row < rows && output_channel < output_channels)
-        output[row * output_channels + output_channel] = sum;
+        output[row * output_row_stride + output_channel * output_channel_stride] = sum;
 }
 )";
 
@@ -107,9 +114,16 @@ const ProjectionModule& projection_module() {
 
 extern "C" __attribute__((visibility("default"))) void uta_libtorch_rocm_projection(
     float* output,
+    int64_t output_row_stride,
+    int64_t output_channel_stride,
     const float* input,
+    int64_t input_row_stride,
+    int64_t input_channel_stride,
     const float* weight,
+    int64_t weight_row_stride,
+    int64_t weight_channel_stride,
     const float* bias,
+    int64_t bias_stride,
     int64_t rows,
     int64_t input_channels,
     int64_t output_channels,
@@ -117,7 +131,11 @@ extern "C" __attribute__((visibility("default"))) void uta_libtorch_rocm_project
     const auto& kernel = projection_module();
     const auto block_columns = static_cast<unsigned int>((output_channels + tile_width - 1) / tile_width);
     const auto block_rows = static_cast<unsigned int>((rows + tile_width - 1) / tile_width);
-    void* arguments[]{&output, &input, &weight, &bias, &rows, &input_channels, &output_channels};
+    void* arguments[]{
+        &output, &output_row_stride, &output_channel_stride,
+        &input, &input_row_stride, &input_channel_stride,
+        &weight, &weight_row_stride, &weight_channel_stride,
+        &bias, &bias_stride, &rows, &input_channels, &output_channels};
     check_hip(hipModuleLaunchKernel(
         kernel.function,
         block_columns, block_rows, 1,

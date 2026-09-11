@@ -7,7 +7,10 @@
 #if defined(UTA_LIBTORCH_ROCM)
 #include <c10/hip/HIPStream.h>
 extern "C" void uta_libtorch_rocm_projection(
-    float* output, const float* input, const float* weight, const float* bias,
+    float* output, int64_t output_row_stride, int64_t output_channel_stride,
+    const float* input, int64_t input_row_stride, int64_t input_channel_stride,
+    const float* weight, int64_t weight_row_stride, int64_t weight_channel_stride,
+    const float* bias, int64_t bias_stride,
     int64_t rows, int64_t input_channels, int64_t output_channels, void* stream_pointer);
 #endif
 
@@ -46,13 +49,12 @@ inline int64_t bounded_projection_row_tile(const at::Tensor& input, const at::Te
 inline void projection_out(at::Tensor& output, const at::Tensor& input,
                            const at::Tensor& weight, const at::Tensor& bias) {
 #if defined(UTA_LIBTORCH_ROCM)
-    if (!output.is_contiguous() || !input.is_contiguous() || !weight.is_contiguous() ||
-        (bias.defined() && !bias.is_contiguous()))
-        throw std::invalid_argument("ROCm projection kernel requires contiguous tensors");
     const auto stream = c10::cuda::getCurrentCUDAStream(input.get_device()).stream();
     uta_libtorch_rocm_projection(
-        output.data_ptr<float>(), input.const_data_ptr<float>(), weight.const_data_ptr<float>(),
-        bias.defined() ? bias.const_data_ptr<float>() : nullptr,
+        output.data_ptr<float>(), output.stride(0), output.stride(1),
+        input.const_data_ptr<float>(), input.stride(0), input.stride(1),
+        weight.const_data_ptr<float>(), weight.stride(0), weight.stride(1),
+        bias.defined() ? bias.const_data_ptr<float>() : nullptr, bias.defined() ? bias.stride(0) : 0,
         input.size(0), input.size(1), weight.size(0), reinterpret_cast<void*>(stream));
 #else
     constexpr int64_t reduction_tile = 128;

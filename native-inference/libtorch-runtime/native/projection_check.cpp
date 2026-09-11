@@ -26,14 +26,16 @@ int main(int argc, char** argv) {
             int64_t channels;
             bool batched;
             bool split;
+            bool strided;
         };
         const std::vector<ProjectionShape> projection_shapes{
-            {17, 63, 97, false, false},
-            {801, 1536, 1536, false, false},
-            {801, 1536, 37, false, false},
-            {2051, 63, 97, false, false},
-            {6408, 384, 1536, true, true},
-            {60000, 384, 1536, false, false},
+            {17, 63, 97, false, false, false},
+            {801, 1536, 1536, false, false, false},
+            {801, 1536, 37, false, false, false},
+            {801, 384, 1536, false, false, true},
+            {2051, 63, 97, false, false, false},
+            {6408, 384, 1536, true, true, false},
+            {60000, 384, 1536, false, false, false},
         };
         for (const auto& projection_shape : projection_shapes) {
             const auto rows = projection_shape.rows;
@@ -41,7 +43,9 @@ int main(int argc, char** argv) {
             const auto channels = projection_shape.channels;
             const auto input = projection_shape.batched
                 ? fixture({8, 801, width}, 0.31)
-                : fixture({rows, width}, 0.31);
+                : projection_shape.strided
+                    ? fixture({rows, 2, width}, 0.31).select(1, 0)
+                    : fixture({rows, width}, 0.31);
             const auto matrix = input.reshape({rows, width});
             const auto weight = fixture({channels, width}, 1.07);
             const auto bias = fixture({channels}, 0.73);
@@ -84,7 +88,9 @@ int main(int argc, char** argv) {
             const auto nmse = squared_error / std::max(reference_energy, 1e-30);
             const bool passed = nmse <= 1e-10 && maximum <= 5e-5;
             std::cout << std::setprecision(12) << "{\"event\":\""
-                      << (projection_shape.split ? "split_qkv_projection_check" : "tiled_projection_check")
+                      << (projection_shape.split ? "split_qkv_projection_check"
+                                                 : projection_shape.strided ? "strided_projection_check"
+                                                                            : "tiled_projection_check")
                       << "\",\"backend\":\"rocm\",\"rows\":" << rows
                       << ",\"input_channels\":" << width << ",\"output_channels\":" << channels
                       << ",\"row_tile\":" << row_tile << ",\"compared_elements\":" << compared << ",\"nmse\":" << nmse
