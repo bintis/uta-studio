@@ -1,4 +1,5 @@
 #include "runtime.hpp"
+#include "rotary.hpp"
 #include <stdexcept>
 
 namespace uta::torch_native {
@@ -85,10 +86,10 @@ private:
                                                                : dense_attention(query, key, value, mask);
         return output.transpose(1, 2).reshape({query.size(-2), heads * head_dimension});
     }
-    at::Tensor attention(const at::Tensor& input, const std::string& prefix, const at::Tensor& positions) const {
-        auto query = rotary_interleaved(heads_layout(linear(input, prefix + ".q_linear")), positions);
+    at::Tensor attention(const at::Tensor& input, const std::string& prefix, const RotaryPhase& phase) const {
+        auto query = apply_rotary_interleaved(heads_layout(linear(input, prefix + ".q_linear")), phase);
         auto parts = linear(input, prefix + ".kv_linear").chunk(2, -1);
-        auto key = rotary_interleaved(heads_layout(parts[0]), positions);
+        auto key = apply_rotary_interleaved(heads_layout(parts[0]), phase);
         return linear(attend(query, key, heads_layout(parts[1])), prefix + ".out_linear");
     }
     at::Tensor cgmlp(const at::Tensor& input, const std::string& prefix) const {
@@ -103,12 +104,13 @@ private:
     }
     at::Tensor encoder(at::Tensor input, const std::string& module, const at::Tensor& positions) {
         const auto layers = weights->container.meta("game." + module + ".num_layers").integer();
+        const auto phase = prepare_rotary_phase(head_dimension, positions, input.options());
         for (int64_t layer = 0; layer < layers; ++layer) {
             check_cancel();
             const auto prefix = module + ".layers." + std::to_string(layer);
             input = residual_glu(input, prefix + ".norm1.weight", prefix + ".ffn1", prefix + ".lay_scale1.scale", 0.5);
             const auto attention_prefix = prefix + ".attn";
-            auto attended = attention(norm(input, attention_prefix + ".a_norm.weight"), attention_prefix + ".attn", positions);
+            auto attended = attention(norm(input, attention_prefix + ".a_norm.weight"), attention_prefix + ".attn", phase);
             auto convolved = cgmlp(norm(input, attention_prefix + ".c_norm.weight"), attention_prefix + ".c");
             auto branch = merge(attended, convolved, attention_prefix + ".merge_dw_conv", attention_prefix + ".merge_linear");
             input = input + branch * weights->get(prefix + ".lay_scale2.scale");
@@ -116,12 +118,12 @@ private:
         }
         return input;
     }
-    at::Tensor mixed_positions(const at::Tensor& input, const at::Tensor& global, const at::Tensor& local) const {
+    at::Tensor mixed_positions(const at::Tensor& input, const RotaryPhase& global, const RotaryPhase& local) const {
         auto halves = input.chunk(2, -1);
-        return at::cat({rotary_interleaved(halves[0], global), rotary_interleaved(halves[1], local)}, -1);
+        return at::cat({apply_rotary_interleaved(halves[0], global), apply_rotary_interleaved(halves[1], local)}, -1);
     }
     std::pair<at::Tensor, at::Tensor> joint_attention(const at::Tensor& pool, const at::Tensor& frames,
-        const std::string& prefix, const at::Tensor& global, const at::Tensor& local, const at::Tensor& mask) const {
+        const std::string& prefix, const RotaryPhase& global, const RotaryPhase& local, const at::Tensor& mask) const {
         auto pool_parts = linear(norm(pool, prefix + ".pool_norm.weight"), prefix + ".pool_qkv").chunk(3, -1);
         auto frame_parts = linear(norm(frames, prefix + ".x_norm.weight"), prefix + ".x_qkv").chunk(3, -1);
         auto pool_query = norm(heads_layout(pool_parts[0]), prefix + ".pool_q_norm.weight");
@@ -163,6 +165,8 @@ private:
         // zero rows. Preserve that numerical convention instead of substituting
         // -infinity or zeroing rows differently from the existing source graph.
         auto mask = at::where(allowed, 0.0, -10000.0).to(at::kFloat);
+        const auto global_phase = prepare_rotary_phase(head_dimension / 2, global, frames.options());
+        const auto local_phase = prepare_rotary_phase(head_dimension / 2, local, frames.options());
         const auto layers = weights->container.meta("game.estimator.num_layers").integer();
         for (int64_t layer = 0; layer < layers; ++layer) {
             check_cancel();
@@ -170,7 +174,7 @@ private:
             frames = residual_glu(frames, prefix + ".norm_ffn1_x.weight", prefix + ".ffn1_x", prefix + ".lay_scale_ffn1_x.scale", 1.0);
             pool = residual_glu(pool, prefix + ".norm_ffn1_pool.weight", prefix + ".ffn1_pool", prefix + ".lay_scale_ffn1_pool.scale", 1.0);
             const auto attention_prefix = prefix + ".attn";
-            auto [pool_attention, frame_attention] = joint_attention(pool, frames, attention_prefix + ".jattn", global, local, mask);
+            auto [pool_attention, frame_attention] = joint_attention(pool, frames, attention_prefix + ".jattn", global_phase, local_phase, mask);
             auto pool_convolution = cgmlp(norm(pool, attention_prefix + ".c_norm_pool.weight"), attention_prefix + ".c_pool");
             auto frame_convolution = cgmlp(norm(frames, attention_prefix + ".c_norm_x.weight"), attention_prefix + ".c_x");
             pool = pool + merge(pool_attention, pool_convolution, attention_prefix + ".merge_dw_conv_pool", attention_prefix + ".merge_linear_pool")

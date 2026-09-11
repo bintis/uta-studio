@@ -1,5 +1,6 @@
 #include "runtime.hpp"
 #include "mixed_attention.hpp"
+#include "rotary.hpp"
 #include <ATen/Context.h>
 #include <ATen/Parallel.h>
 #include <c10/core/DeviceGuard.h>
@@ -192,24 +193,10 @@ at::Tensor dense_attention(const at::Tensor& query, const at::Tensor& key, const
 }
 
 at::Tensor rotary_interleaved(const at::Tensor& input, const at::Tensor& positions, double base) {
-    const int64_t dimensions = input.size(-1);
-    if (dimensions % 2) throw std::invalid_argument("interleaved rotary dimension must be even");
-    auto frequency = at::exp(at::arange(0, dimensions, 2, input.options().dtype(at::kFloat)) * (-std::log(base) / dimensions));
-    auto phase = positions.to(at::kFloat).unsqueeze(-1) * frequency;
-    while (phase.dim() < input.dim()) phase = phase.unsqueeze(0);
-    auto paired = input.reshape({input.size(0), input.size(1), input.size(2), dimensions / 2, 2});
-    auto even = paired.select(-1, 0);
-    auto odd = paired.select(-1, 1);
-    return at::stack({even * phase.cos() - odd * phase.sin(), even * phase.sin() + odd * phase.cos()}, -1).flatten(-2);
+    return apply_rotary_interleaved(input, prepare_rotary_phase(input.size(-1), positions, input.options(), base));
 }
 at::Tensor rotary_split(const at::Tensor& input, const at::Tensor& positions, double base) {
-    const int64_t dimensions = input.size(-1);
-    if (dimensions % 2) throw std::invalid_argument("split rotary dimension must be even");
-    auto frequency = at::exp(at::arange(0, dimensions, 2, input.options().dtype(at::kFloat)) * (-std::log(base) / dimensions));
-    auto phase = positions.to(at::kFloat).unsqueeze(-1) * frequency;
-    while (phase.dim() < input.dim()) phase = phase.unsqueeze(0);
-    auto halves = input.chunk(2, -1);
-    return at::cat({halves[0] * phase.cos() - halves[1] * phase.sin(), halves[1] * phase.cos() + halves[0] * phase.sin()}, -1);
+    return apply_rotary_split(input, prepare_rotary_phase(input.size(-1), positions, input.options(), base));
 }
 at::Tensor sinusoidal(int64_t length, int64_t dimensions, const at::Device& device) {
     auto options = at::TensorOptions().dtype(at::kFloat).device(device);

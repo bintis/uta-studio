@@ -176,5 +176,15 @@ if(UTA_LIBTORCH_BACKEND STREQUAL "rocm" OR UTA_LIBTORCH_BACKEND STREQUAL "xpu")
 endif()
 set_target_properties(uta-libtorch-roformer-ops-check PROPERTIES BUILD_RPATH "${native_paths}")
 
+# This regression links only CPU ATen; invoking it cannot select an XPU/ROCm
+# backend even when the main native library is built for an accelerator.
+add_executable(uta-libtorch-rotary-check rotary_check.cpp)
+target_compile_features(uta-libtorch-rotary-check PRIVATE cxx_std_20)
+target_compile_definitions(uta-libtorch-rotary-check PRIVATE _GLIBCXX_USE_CXX11_ABI=${TORCH_CXX_ABI})
+target_include_directories(uta-libtorch-rotary-check SYSTEM PRIVATE "${TORCH_INCLUDE_ROOT}")
+target_link_libraries(uta-libtorch-rotary-check PRIVATE "${native_torch_cpu}" "${native_c10}")
+target_link_options(uta-libtorch-rotary-check PRIVATE "-Wl,--disable-new-dtags")
+set_target_properties(uta-libtorch-rotary-check PROPERTIES BUILD_RPATH "${native_paths}")
+
 install(TARGETS uta_libtorch LIBRARY DESTINATION lib)
 install(FILES api.h DESTINATION include/uta_libtorch)
