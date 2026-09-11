@@ -9,6 +9,7 @@ pub mod cli;
 pub mod conditional_scheduler;
 pub mod contract;
 mod debug_log;
+mod device_scheduler;
 pub mod engine;
 pub mod events;
 pub mod execution;

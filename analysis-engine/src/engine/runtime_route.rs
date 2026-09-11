@@ -307,13 +307,21 @@ pub(super) fn resolve_roformer_route(
             ),
         ));
     }
-    worker_route(
-        &model.model_id,
-        model.backend,
+    let requested_device = if request.execution_policy.turbo_acceleration {
+        Some(match model.backend {
+            uta_runtime_manager::NativeBackend::Ggml => {
+                uta_runtime_manager::NativeDeviceClass::IntegratedGpu
+            }
+            uta_runtime_manager::NativeBackend::LibtorchXpu => {
+                uta_runtime_manager::NativeDeviceClass::Gpu
+            }
+        })
+    } else {
         request
             .execution_policy
-            .requested_device_for(&model.model_id),
-    )
+            .requested_device_for(&model.model_id)
+    };
+    worker_route(&model.model_id, model.backend, requested_device)
 }
 
 pub(super) fn roformer_dispatch_config(
@@ -407,17 +415,50 @@ impl AnalysisEngine {
                 })?;
             match resource.kind {
                 uta_runtime_manager::ResourceKind::Model => {
-                    match self.runtime_manager.resolve_model_with_backend(
-                        &resource.id,
-                        request.execution_policy.runtime_policy,
-                        request.execution_policy.requested_backend_for(&resource.id),
-                    ) {
+                    let resolution = if request.execution_policy.turbo_acceleration {
+                        let placement = crate::device_scheduler::placement_for(&resource.id);
+                        let mut errors = Vec::new();
+                        let mut selected = None;
+                        for backend in placement.candidate_backends() {
+                            match self.runtime_manager.resolve_model_with_backend(
+                                &resource.id,
+                                request.execution_policy.runtime_policy,
+                                Some(backend),
+                            ) {
+                                Ok(model) => {
+                                    selected = Some(model);
+                                    break;
+                                }
+                                Err(error) => errors.push(error.to_string()),
+                            }
+                        }
+                        selected.ok_or_else(|| {
+                            EngineError::new(
+                                EngineErrorCode::RuntimeResolutionFailed,
+                                format!(
+                                    "automatic GPU scheduling found no usable native route for {}: {}",
+                                    resource.id,
+                                    errors.join("; ")
+                                ),
+                            )
+                            .with_resource(resource.clone())
+                        })
+                    } else {
+                        self.runtime_manager
+                            .resolve_model_with_backend(
+                                &resource.id,
+                                request.execution_policy.runtime_policy,
+                                request.execution_policy.requested_backend_for(&resource.id),
+                            )
+                            .map_err(EngineError::from)
+                    };
+                    match resolution {
                         Ok(model) => resolved.push(model),
                         Err(error) if !requirement.required => degraded.push(format!(
                             "optional capability {} skipped: {}",
                             requirement.reason, error
                         )),
-                        Err(error) => return Err(EngineError::from(error)),
+                        Err(error) => return Err(error),
                     }
                 }
                 uta_runtime_manager::ResourceKind::Tool => {

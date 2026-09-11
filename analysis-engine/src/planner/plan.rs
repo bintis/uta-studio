@@ -554,15 +554,47 @@ impl Planner {
                 };
                 let resource = requirement.resource.parse::<ResourceRef>();
                 match resource.and_then(|resource| {
-                    let requested_backend = (resource.kind
-                        == uta_runtime_manager::ResourceKind::Model)
-                        .then(|| request.execution_policy.requested_backend_for(&resource.id))
-                        .flatten();
-                    manager.status_with_backend(
-                        &resource,
-                        request.execution_policy.runtime_policy,
-                        requested_backend,
-                    )
+                    if request.execution_policy.turbo_acceleration
+                        && resource.kind == uta_runtime_manager::ResourceKind::Model
+                    {
+                        let placement = crate::device_scheduler::placement_for(&resource.id);
+                        let mut last_error = None;
+                        for backend in placement.candidate_backends() {
+                            match manager.status_with_backend(
+                                &resource,
+                                request.execution_policy.runtime_policy,
+                                Some(backend),
+                            ) {
+                                Ok(status) if status.usable => return Ok(status),
+                                Ok(status) => {
+                                    last_error = Some(uta_runtime_manager::RuntimeManagerError::new(
+                                        "automatic_route_unavailable",
+                                        format!(
+                                            "automatic backend {backend:?} is not usable for {resource}: {:?}",
+                                            status.reasons
+                                        ),
+                                    ));
+                                }
+                                Err(error) => last_error = Some(error),
+                            }
+                        }
+                        Err(last_error.unwrap_or_else(|| {
+                            uta_runtime_manager::RuntimeManagerError::new(
+                                "automatic_route_unavailable",
+                                format!("no automatic GPU route was evaluated for {resource}"),
+                            )
+                        }))
+                    } else {
+                        let requested_backend = (resource.kind
+                            == uta_runtime_manager::ResourceKind::Model)
+                            .then(|| request.execution_policy.requested_backend_for(&resource.id))
+                            .flatten();
+                        manager.status_with_backend(
+                            &resource,
+                            request.execution_policy.runtime_policy,
+                            requested_backend,
+                        )
+                    }
                 }) {
                     Ok(status) => PlannedResourceStatus {
                         requirement,

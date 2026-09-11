@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError, mpsc};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -25,16 +25,27 @@ const GGML_GATE_POLL: Duration = Duration::from_millis(25);
 
 #[derive(Default)]
 struct GgmlGate {
+    active: bool,
     last_exit: Option<Instant>,
 }
 
+fn ggml_gates() -> &'static (Mutex<BTreeMap<String, GgmlGate>>, Condvar) {
+    static GATES: OnceLock<(Mutex<BTreeMap<String, GgmlGate>>, Condvar)> = OnceLock::new();
+    GATES.get_or_init(|| (Mutex::new(BTreeMap::new()), Condvar::new()))
+}
+
 struct GgmlLease {
-    gate: MutexGuard<'static, GgmlGate>,
+    lane: String,
 }
 
 impl Drop for GgmlLease {
     fn drop(&mut self) {
-        self.gate.last_exit = Some(Instant::now());
+        let (gates, wake) = ggml_gates();
+        let mut gates = gates.lock().unwrap_or_else(|error| error.into_inner());
+        let gate = gates.entry(self.lane.clone()).or_default();
+        gate.active = false;
+        gate.last_exit = Some(Instant::now());
+        wake.notify_all();
     }
 }
 
@@ -42,46 +53,63 @@ fn uses_ggml_worker(expectation: &WorkerExpectation) -> bool {
     expectation.component == "uta-ggml-worker"
 }
 
+fn accelerator_lane(expectation: &WorkerExpectation, task: &NativeTask) -> Option<String> {
+    if !uses_ggml_worker(expectation) {
+        return None;
+    }
+    let backend = task
+        .config
+        .get("backend")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("native");
+    let device = task
+        .config
+        .get("device_class")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("default");
+    Some(format!("{backend}:{device}"))
+}
+
 fn acquire_ggml_lease(
     expectation: &WorkerExpectation,
+    task: &NativeTask,
     cancellation: &CancellationToken,
 ) -> EngineResult<Option<GgmlLease>> {
-    if !uses_ggml_worker(expectation) {
+    let Some(lane) = accelerator_lane(expectation, task) else {
         return Ok(None);
-    }
-    static GATE: OnceLock<Mutex<GgmlGate>> = OnceLock::new();
-    let gate = GATE.get_or_init(|| Mutex::new(GgmlGate::default()));
-    let mut guard = loop {
+    };
+    let (gates, wake) = ggml_gates();
+    let mut gates = gates.lock().unwrap_or_else(|error| error.into_inner());
+    loop {
         if cancellation.is_cancelled() {
             return Err(EngineError::new(
                 EngineErrorCode::Cancelled,
-                "analysis task was cancelled while waiting for the native accelerator runtime",
+                "analysis task was cancelled while waiting for its native accelerator lane",
             ));
         }
-        match gate.try_lock() {
-            Ok(guard) => break guard,
-            Err(TryLockError::Poisoned(error)) => break error.into_inner(),
-            Err(TryLockError::WouldBlock) => std::thread::sleep(GGML_GATE_POLL),
+        let now = Instant::now();
+        let gate = gates.entry(lane.clone()).or_default();
+        let quiescence_remaining = gate
+            .last_exit
+            .map(|last_exit| {
+                (last_exit + GGML_PROCESS_QUIESCENCE).saturating_duration_since(now)
+            })
+            .unwrap_or_default();
+        if !gate.active && quiescence_remaining.is_zero() {
+            gate.active = true;
+            gate.last_exit = None;
+            return Ok(Some(GgmlLease { lane }));
         }
-    };
-    if let Some(last_exit) = guard.last_exit {
-        let deadline = last_exit + GGML_PROCESS_QUIESCENCE;
-        while Instant::now() < deadline {
-            if cancellation.is_cancelled() {
-                return Err(EngineError::new(
-                    EngineErrorCode::Cancelled,
-                    "analysis task was cancelled during native accelerator runtime quiescence",
-                ));
-            }
-            std::thread::sleep(
-                GGML_GATE_POLL.min(deadline.saturating_duration_since(Instant::now())),
-            );
-        }
+        let wait = if gate.active {
+            GGML_GATE_POLL
+        } else {
+            GGML_GATE_POLL.min(quiescence_remaining)
+        };
+        let waited = wake
+            .wait_timeout(gates, wait)
+            .unwrap_or_else(|error| error.into_inner());
+        gates = waited.0;
     }
-    // Serialize foreground GGML compute through shutdown. Super mode may
-    // independently prepare the next model's weights while this lease is held.
-    guard.last_exit = None;
-    Ok(Some(GgmlLease { gate: guard }))
 }
 
 #[derive(Debug, Default)]
@@ -188,7 +216,7 @@ impl SupervisedWorker {
                 format!("could not authorize worker output directory: {error}"),
             )
         })?;
-        let _ggml_lease = acquire_ggml_lease(expectation, cancellation)?;
+        let _ggml_lease = acquire_ggml_lease(expectation, task, cancellation)?;
         let prepared_process = uses_ggml_worker(expectation)
             .then(|| acceleration::take_for(executable, task))
             .flatten();
@@ -846,6 +874,56 @@ mod tests {
             runtime_recipe_digest: None,
             environment: BTreeMap::new(),
         }));
+    }
+
+    #[test]
+    fn accelerator_gate_serializes_each_lane_without_blocking_another_gpu() {
+        let expectation = WorkerExpectation {
+            component: "uta-ggml-worker".to_string(),
+            runtime_recipe_digest: None,
+            environment: BTreeMap::new(),
+        };
+        let task = |backend: &str, device: &str| NativeTask {
+            task_id: "task".to_string(),
+            node_id: "node".to_string(),
+            presentation_node_id: None,
+            model_id: "model".to_string(),
+            input_artifacts: Vec::new(),
+            output_dir: PathBuf::new(),
+            config: serde_json::json!({"backend": backend, "device_class": device}),
+            timeout: Duration::from_secs(1),
+        };
+        let cancellation = CancellationToken::default();
+        let amd_task = task("ggml_vulkan", "integrated_gpu");
+        let intel_task = task("libtorch_xpu", "gpu");
+        let amd_lease = acquire_ggml_lease(&expectation, &amd_task, &cancellation)
+            .unwrap()
+            .unwrap();
+        let intel_lease = acquire_ggml_lease(&expectation, &intel_task, &cancellation)
+            .unwrap()
+            .unwrap();
+
+        let (sender, receiver) = mpsc::channel();
+        let waiting_expectation = expectation.clone();
+        let waiting_task = amd_task.clone();
+        let waiting_cancellation = cancellation.clone();
+        let handle = std::thread::spawn(move || {
+            let lease = acquire_ggml_lease(
+                &waiting_expectation,
+                &waiting_task,
+                &waiting_cancellation,
+            )
+            .unwrap()
+            .unwrap();
+            sender.send(()).unwrap();
+            drop(lease);
+        });
+        assert!(receiver.recv_timeout(Duration::from_millis(30)).is_err());
+        drop(intel_lease);
+        assert!(receiver.recv_timeout(Duration::from_millis(30)).is_err());
+        drop(amd_lease);
+        receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+        handle.join().unwrap();
     }
 
     fn temporary_root() -> PathBuf {

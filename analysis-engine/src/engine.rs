@@ -266,6 +266,11 @@ impl AnalysisEngine {
         }
 
         let (resolved, mut degraded_reasons) = self.resolve_execution_resources(request, &plan)?;
+        let super_schedule = request.execution_policy.turbo_acceleration.then(|| {
+            crate::device_scheduler::schedule_models(
+                resolved.iter().map(|resource| resource.model_id.as_str()),
+            )
+        });
         let conditional_schedule = Vec::<serde_json::Value>::new();
         let _lease = self.runtime_manager.lease_resolved_models(&resolved);
         let _acceleration =
@@ -1794,6 +1799,11 @@ impl AnalysisEngine {
                         evidence.model_id.clone()
                     }).collect::<Vec<_>>(),
                     "conditional_schedule": conditional_schedule,
+                    "super_acceleration": {
+                        "requested": request.execution_policy.turbo_acceleration,
+                        "predicted_placements": super_schedule,
+                        "dual_device_work_measured": false,
+                    },
                     "transcript_disagreement_regions": transcript_disagreement_regions,
                     "singing_candidate_count": singing_candidate_count,
                     "singing_analysis_emitted": singing_analysis_emitted,
