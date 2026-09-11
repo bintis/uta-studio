@@ -37,21 +37,34 @@ pub(crate) fn poll_cache_stats(
         cache_stats.log_refresh = false;
         let (sender, receiver) = mpsc::channel();
         cache_stats.log_receiver = Some(Mutex::new(receiver));
-        std::thread::spawn(move || { let _ = sender.send(app_core::log_storage_stats()); });
+        std::thread::spawn(move || {
+            let _ = sender.send(app_core::log_storage_stats());
+        });
     }
-    let logs = cache_stats.log_receiver.as_ref().and_then(|receiver| match receiver.lock() {
-        Ok(receiver) => match receiver.try_recv() {
-            Ok(result) => Some(result),
-            Err(mpsc::TryRecvError::Empty) => None,
-            Err(mpsc::TryRecvError::Disconnected) => Some(Err("Log size worker exited unexpectedly".to_string())),
-        },
-        Err(_) => Some(Err("Log size status channel was poisoned".to_string())),
-    });
+    let logs = cache_stats
+        .log_receiver
+        .as_ref()
+        .and_then(|receiver| match receiver.lock() {
+            Ok(receiver) => match receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(mpsc::TryRecvError::Empty) => None,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    Some(Err("Log size worker exited unexpectedly".to_string()))
+                }
+            },
+            Err(_) => Some(Err("Log size status channel was poisoned".to_string())),
+        });
     if let Some(result) = logs {
         cache_stats.log_receiver = None;
         match result {
-            Ok(stats) => { cache_stats.log_current = Some(stats); cache_stats.log_error = None; }
-            Err(error) => { cache_stats.log_current = None; cache_stats.log_error = Some(error); }
+            Ok(stats) => {
+                cache_stats.log_current = Some(stats);
+                cache_stats.log_error = None;
+            }
+            Err(error) => {
+                cache_stats.log_current = None;
+                cache_stats.log_error = Some(error);
+            }
         }
         invalidated.invalidate(UiDirtyRegion::Settings);
     }

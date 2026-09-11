@@ -27,7 +27,10 @@ pub(crate) fn spawn_storage_settings(
         },
     );
     spawn_settings_group(
-        parent, font.clone(), theme, "LOGS",
+        parent,
+        font.clone(),
+        theme,
+        "LOGS",
         "Application, analysis and DEBUG logs only. Cleanup never touches songs, charts or models.",
         |group| {
             let summary = if let Some(error) = cache_stats.log_error.as_ref() {
@@ -35,13 +38,31 @@ pub(crate) fn spawn_storage_settings(
             } else if cache_stats.log_receiver.is_some() {
                 "Calculating log size…".to_string()
             } else if let Some(stats) = cache_stats.log_current.as_ref() {
-                format!("{} across {} files. Size is from the latest scan; active logs may grow.", format_bytes(stats.total_bytes), stats.file_count)
-            } else { "Log size has not been calculated yet.".to_string() };
-            spawn_setting_row_with_actions(group, font.clone(), theme, "Log storage", summary,
+                format!(
+                    "{} across {} files. Size is from the latest scan; active logs may grow.",
+                    format_bytes(stats.total_bytes),
+                    stats.file_count
+                )
+            } else {
+                "Log size has not been calculated yet.".to_string()
+            };
+            spawn_setting_row_with_actions(
+                group,
+                font.clone(),
+                theme,
+                "Log storage",
+                summary,
                 vec![
-                    ("Refresh size".to_string(), UiAction::from(SettingsCommand::SettingsTab(SettingsTab::Storage))),
-                    ("Clear logs…".to_string(), UiAction::from(SettingsCommand::RequestClearCache(CacheClearScope::Logs))),
-                ]);
+                    (
+                        "Refresh size".to_string(),
+                        UiAction::from(SettingsCommand::SettingsTab(SettingsTab::Storage)),
+                    ),
+                    (
+                        "Clear logs…".to_string(),
+                        UiAction::from(SettingsCommand::RequestClearCache(CacheClearScope::Logs)),
+                    ),
+                ],
+            );
         },
     );
     let export_path = session

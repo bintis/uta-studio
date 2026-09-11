@@ -722,7 +722,8 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
                 match scope {
                     CacheClearScope::Logs => {
                         debug_log.clear_requested = true;
-                        studio.shell.notice = Some("Clearing application, analysis and DEBUG logs…".to_string());
+                        studio.shell.notice =
+                            Some("Clearing application, analysis and DEBUG logs…".to_string());
                     }
                     CacheClearScope::Generated => {
                         app_core::CacheDir::new().clear_all();

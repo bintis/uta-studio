@@ -75,7 +75,8 @@ pub(crate) struct NativeDiagnostics {
 
 #[derive(Resource, Default)]
 pub(crate) struct CacheStatsJob {
-    pub(crate) log_receiver: Option<Mutex<mpsc::Receiver<Result<app_core::LogStorageStats, String>>>>,
+    pub(crate) log_receiver:
+        Option<Mutex<mpsc::Receiver<Result<app_core::LogStorageStats, String>>>>,
     pub(crate) log_current: Option<app_core::LogStorageStats>,
     pub(crate) log_error: Option<String>,
     pub(crate) log_refresh: bool,

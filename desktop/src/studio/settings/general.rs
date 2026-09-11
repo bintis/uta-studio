@@ -484,7 +484,14 @@ pub(crate) fn spawn_general_settings(
                 theme,
                 "Full debug logs",
                 "Persistent DEBUG switch. ON records detailed desktop and future analysis output, including after restart. OFF stops detailed capture; ordinary error logs remain. Local only. Manage log size and cleanup in Storage.",
-                Some((if session.config.debug_logging { "DEBUG: ON" } else { "DEBUG: OFF" }, UiAction::from(AppCommand::ToggleDebugLogging))),
+                Some((
+                    if session.config.debug_logging {
+                        "DEBUG: ON"
+                    } else {
+                        "DEBUG: OFF"
+                    },
+                    UiAction::from(AppCommand::ToggleDebugLogging),
+                )),
             );
             spawn_setting_row(
                 group,

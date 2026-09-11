@@ -7,7 +7,10 @@ type LogFilterHandle = reload::Handle<EnvFilter, tracing_subscriber::Registry>;
 static LOG_FILTER: OnceLock<LogFilterHandle> = OnceLock::new();
 
 fn normal_log_filter() -> EnvFilter {
-    EnvFilter::new(format!("info,{}", crate::studio::startup::studio_log_filter()))
+    EnvFilter::new(format!(
+        "info,{}",
+        crate::studio::startup::studio_log_filter()
+    ))
 }
 
 pub(crate) fn initialize_studio_logging() {
@@ -15,23 +18,39 @@ pub(crate) fn initialize_studio_logging() {
     let result = tracing_subscriber::registry()
         .with(filter)
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
-        .with(tracing_subscriber::fmt::layer()
-            .with_writer(crate::studio::startup::AppLogWriter).with_ansi(false))
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(crate::studio::startup::AppLogWriter)
+                .with_ansi(false),
+        )
         .try_init();
     match result {
-        Ok(()) => { let _ = LOG_FILTER.set(handle); }
-        Err(error) => app_core::record_log_text(&format!("Could not initialize desktop logging: {error}")),
+        Ok(()) => {
+            let _ = LOG_FILTER.set(handle);
+        }
+        Err(error) => {
+            app_core::record_log_text(&format!("Could not initialize desktop logging: {error}"))
+        }
     }
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        app_core::record_log_text(&format!("PANIC: {info}\n{}", std::backtrace::Backtrace::force_capture()));
+        app_core::record_log_text(&format!(
+            "PANIC: {info}\n{}",
+            std::backtrace::Backtrace::force_capture()
+        ));
         previous(info);
     }));
 }
 
 fn set_detailed_logging(enabled: bool) -> Result<(), String> {
-    LOG_FILTER.get().ok_or("Desktop log filter is unavailable")?
-        .reload(if enabled { EnvFilter::new("debug") } else { normal_log_filter() })
+    LOG_FILTER
+        .get()
+        .ok_or("Desktop log filter is unavailable")?
+        .reload(if enabled {
+            EnvFilter::new("debug")
+        } else {
+            normal_log_filter()
+        })
         .map_err(|error| format!("Could not change desktop logging: {error}"))
 }
 
@@ -64,19 +83,25 @@ pub(crate) fn poll_debug_log_job(
     mut invalidated: ResMut<UiInvalidated>,
 ) {
     if let Some(error) = app_core::debug_logging_error()
-        && job.reported_error.as_ref() != Some(&error) {
+        && job.reported_error.as_ref() != Some(&error)
+    {
         shell.notice = Some(format!("DEBUG capture failed: {error}"));
         job.reported_error = Some(error);
         invalidated.invalidate(UiDirtyRegion::Settings);
     }
-    let result = job.receiver.as_ref().and_then(|receiver| match receiver.lock() {
-        Ok(receiver) => match receiver.try_recv() {
-            Ok(result) => Some(result),
-            Err(mpsc::TryRecvError::Empty) => None,
-            Err(mpsc::TryRecvError::Disconnected) => Some(Err("Log worker exited unexpectedly".to_string())),
-        },
-        Err(_) => Some(Err("Log status channel was poisoned".to_string())),
-    });
+    let result = job
+        .receiver
+        .as_ref()
+        .and_then(|receiver| match receiver.lock() {
+            Ok(receiver) => match receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(mpsc::TryRecvError::Empty) => None,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    Some(Err("Log worker exited unexpectedly".to_string()))
+                }
+            },
+            Err(_) => Some(Err("Log status channel was poisoned".to_string())),
+        });
     if let Some(result) = result {
         job.receiver = None;
         job.applied = app_core::debug_logging_enabled();
@@ -87,16 +112,26 @@ pub(crate) fn poll_debug_log_job(
         cache_stats.log_refresh = true;
         invalidated.invalidate(UiDirtyRegion::Settings);
     }
-    if job.receiver.is_some() { return; }
+    if job.receiver.is_some() {
+        return;
+    }
     let enabled = shell.config.debug_logging;
     let change = job.applied != enabled && job.attempted != Some(enabled);
-    if !change && !job.clear_requested { return; }
+    if !change && !job.clear_requested {
+        return;
+    }
     let clear = std::mem::take(&mut job.clear_requested);
-    if change { job.attempted = Some(enabled); }
+    if change {
+        job.attempted = Some(enabled);
+    }
     job.reported_error = None;
-    let context = format!("Uta! Studio {}\nOS: {} / {}\nSettings: {}",
-        env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH,
-        serde_json::to_string_pretty(&shell.config).unwrap_or_default());
+    let context = format!(
+        "Uta! Studio {}\nOS: {} / {}\nSettings: {}",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        serde_json::to_string_pretty(&shell.config).unwrap_or_default()
+    );
     let (sender, receiver) = mpsc::channel();
     job.receiver = Some(Mutex::new(receiver));
     std::thread::spawn(move || {
@@ -108,7 +143,12 @@ pub(crate) fn poll_debug_log_job(
                         app_core::stop_debug_logging();
                         return Err(error);
                     }
-                    if !clear { return Ok(format!("DEBUG ON — {}. Setting saved for future launches. Local only; logs may contain paths and lyrics.", path.display())); }
+                    if !clear {
+                        return Ok(format!(
+                            "DEBUG ON — {}. Setting saved for future launches. Local only; logs may contain paths and lyrics.",
+                            path.display()
+                        ));
+                    }
                 } else {
                     set_detailed_logging(false)?;
                     app_core::stop_debug_logging();
