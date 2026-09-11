@@ -136,6 +136,18 @@ plain waveform error ratios must not be labeled as museval/BSS Eval SDR.
   corrected to `bevy::ecs::world::CommandQueue` before re-execution. Operation
   `20260911T185007-02a6a114dd90` passes four inspector tests including real in-process
   entity/text construction for measured, pending and malformed-result states.
+- Final operation `20260911T185251-598b8a9750c5`: **29 tests passed** (22 separation,
+  two audio-quality and five snapshot-selection tests). Its later strict clippy
+  step failed on existing `match_result_ok` / `collapsible_if` findings in
+  `app-core/src/backend_cli/process.rs` and `app-core/src/debug_logging.rs`; the
+  combined operation is not a pass. No unrelated code was changed to silence them.
+- `20260911T185401-9012f195a4cb`: `cargo xtask docs check` passed; subsequent targeted
+  rustfmt check found one indentation issue in the concurrently added
+  `model_settings` field in `analysis-engine/src/engine.rs`. New inspection modules
+  have been formatted; the combined operation is not a formatting pass.
+- `20260911T185445-dad0cb91ac7a`: diff/commit review and source-size review passed;
+  case-insensitive project-identity scan was empty. Other sessions' uncommitted
+  changes remain intact; their changes are not qualified by these test counts.
 - No GPU inference, runtime/model installation, source/library/cache mutation,
   audio audition, reference SDR measurement, application packaging or release pass.
   Render-state tests are not physical-pointer or Wayland visual qualification.
