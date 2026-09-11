@@ -666,18 +666,37 @@ Source media, installed assets and unrelated user changes remain untouched;
 no CPU/GGML inference fallback, Vulkan stress, workspace release checks or Nix
 packaging were performed. See [execution design](../../docs/design/runtime/LIBTORCH_EXECUTION.md).
 
-## All-resource LibTorch AMD ROCm 10 — IN_PROGRESS (2026-09-11)
+## All-resource LibTorch AMD ROCm 10 — HALTED AFTER GPU RESET (2026-09-11)
 
-The user authorized an isolated Nix development environment for the current official
-**ROCm 10.0.0 + PyTorch 2.13.0** combination and the Radeon 780M `gfx1103` device package.
-The pinned nixpkgs ROCm 7.2.3 package is not the target. Authorization operation:
+**Zero of eighteen resources qualified; the full-song phase was not started.** The isolated Nix
+shell and official **ROCm 10.0.0 + PyTorch 2.13.0** packages, including the Radeon 780M `gfx1103`
+device package, were installed only under ignored test evidence. They did not replace the system
+driver, global Python, installed model store, source media or prior runtime. Authorization operation:
 `20260911T094255-176d942db7f9`; evidence root: `test-artifacts/amd-libtorch-rocm10/`.
 
-Execute all eighteen resources serially on explicit `libtorch_rocm` with real twelve-second audio
-and actual dependent outputs. Preserve failures and inspect results without CPU/GGML fallback or
-automatic retry. If and only if the bounded sweep passes, proceed to the real full song using the
-same dependency order. The isolated runtime must not replace the system driver, installed models,
-source media or prior XPU runtime/evidence. This lane does not promote product routing or readiness.
+The linked native runtime and a synthetic FCPE GPU contract passed. Enabling AMD's documented
+experimental AOTriton switch made both Leap-width partitioned-attention oracle shapes execute; the
+PolarFormer unequal-width shape remained finite but missed the existing NMSE threshold. The first
+real twelve-second resource, `bs_roformer_leap_xe90_vocals`, then failed repeatedly without fallback:
+first with `SIGBUS`, then a synchronized diagnostic reported an unspecified launch failure after the
+first frequency feed-forward and sampled about 4.70 GiB GTT. Commit `074ea9e` bounded the wide
+feed-forward hidden intermediate; all six complete projection/feed-forward GPU-to-double-CPU oracle
+cases passed before the changed model was executed.
+
+The changed real-audio run did not publish a result or advance beyond `completed: 0 / total: 2`.
+The operator observed the AMD-connected display go black briefly and recover. Passive samples show
+`kworker/...amdgpu-reset-dev` active from 10:11:59 through 10:12:02 UTC, reaching about 94–100% of
+one CPU, while the target held about 3.81 GiB sampled GTT. After reset it made no protocol progress
+and consumed nearly one CPU until the command timeout left it orphaned. Only the task-owned target
+process group was sent `SIGTERM`; its observer then recorded exit `-15` after 1,841.906 seconds.
+The outer operation has no completion record and remains unknown, while the child result and samples
+are complete. Evidence: `bounded/observations/leap-vocals-feed-forward/`,
+`bounded/diagnostics/leap-display-reset-sample-summary.json`, and operation
+`20260911T104236-afa6881e15ef`.
+
+Do not run another AMD ROCm model, operator stress check, remaining bounded resource or full-song
+execution without new explicit human authorization after reviewing this display/GPU-reset incident.
+Do not infer qualification from the passing synthetic checks, and do not substitute CPU or GGML.
 See [LibTorch execution](../../docs/design/runtime/LIBTORCH_EXECUTION.md).
 
 ## Next actions

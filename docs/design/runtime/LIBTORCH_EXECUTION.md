@@ -193,24 +193,36 @@ word timings; STARS uses a separate actual FireRed Chinese alignment branch with
 primary-provider substitution follows. Full details, exact commits/operations,
 timings and remaining integration work: [full-song results](../../LIBTORCH_XPU_FULLSONG_RESULTS.md).
 
-## AMD ROCm 10 all-resource validation — authorized 2026-09-11
+## AMD ROCm 10 all-resource validation — halted after GPU reset 2026-09-11
 
-**IN_PROGRESS.** The user authorized an isolated Nix development environment using the current
-AMD stable combination, **ROCm 10.0.0 + PyTorch 2.13.0**, followed by serial real-audio execution
-of all eighteen resources on the Radeon 780M. The official multi-architecture packages explicitly
-provide `device-gfx1103`; the repository's pinned nixpkgs still provides ROCm 7.2.3 and is not used
-as evidence for this lane. Authorization receipt: `20260911T094255-176d942db7f9`.
+**HALTED AT ZERO OF EIGHTEEN.** The authorized isolated environment resolves the official AMD stable
+combination, **ROCm 10.0.0 + PyTorch 2.13.0**, with the Radeon 780M `device-gfx1103` package. The
+repository's pinned ROCm 7.2.3 is not evidence for this lane. The private environment remained under
+ignored test evidence and did not alter the system driver, global Python, installed model store,
+source media or prior runtime. Authorization receipt: `20260911T094255-176d942db7f9`.
 
-The development shell supplies Python and native build prerequisites, while AMD's stable wheel
-index supplies an isolated, device-specific ROCm/LibTorch tree under ignored test evidence. It must
-not alter the system driver, global Python, installed model store or an older private runtime. Record
-the exact package resolution and native runtime build before execution.
+Native build and synthetic device contracts passed. The official experimental AOTriton setting was
+required for gfx1103 fused SDPA. Both Leap-width partitioned-attention oracle shapes then passed;
+the finite unequal-width PolarFormer result missed the existing NMSE threshold. The first real
+resource, `bs_roformer_leap_xe90_vocals`, still failed without fallback: a synchronized attempt
+located an unspecified launch failure after first-layer frequency feed-forward at about 4.70 GiB
+sampled GTT. A separately committed row-tiled feed-forward retained complete outputs and passed six
+GPU-to-double-CPU oracle cases.
 
-First run all eighteen resources serially against a real twelve-second excerpt, preserving actual
-dependencies and explicit `libtorch_rocm` device selection. Inspect every failure without fallback
-or automatic retry. Only after the complete bounded sweep passes and its outputs are checked, run
-the same dependency-ordered diagnostic on the real full song. Keep previous XPU results separate;
-this work does not establish product routing, parity, listening quality or production readiness.
+Executing that change against the real twelve-second excerpt triggered an observed brief blackout
+and recovery of the AMD-connected display. Passive host records sampled `amdgpu-reset-dev` work for
+about four seconds. The target never advanced past zero of two chunks and, after the reset, consumed
+nearly one CPU until manually terminated following the harness timeout. The child observer records
+`SIGTERM`, 1,841.906 seconds and about 3.81 GiB peak sampled GTT; the timed-out outer recorder has no
+completion record. No result artifact was published. Evidence is under
+`test-artifacts/amd-libtorch-rocm10/bounded/`, especially
+`observations/leap-vocals-feed-forward/` and
+`diagnostics/leap-display-reset-sample-summary.json`.
+
+No remaining bounded resource or full-song ROCm execution may run without new explicit human
+authorization after incident review. Passing synthetic operators do not qualify the real model;
+CPU/GGML fallback remains prohibited. Previous XPU results stay separate, and this work establishes
+no product routing, parity, listening quality or production readiness.
 
 ## Source references
 
