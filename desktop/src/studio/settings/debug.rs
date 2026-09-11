@@ -83,8 +83,10 @@ pub(crate) fn poll_debug_log_job(
     mut shell: ResMut<ShellState>,
     mut invalidated: ResMut<UiInvalidated>,
 ) {
-    if job.capture_active && let Some(error) = app_core::debug_logging_error()
-        && job.reported_error.as_ref() != Some(&error) {
+    if job.capture_active
+        && let Some(error) = app_core::debug_logging_error()
+        && job.reported_error.as_ref() != Some(&error)
+    {
         shell.notice = Some(format!("DEBUG live capture failed: {error}"));
         job.reported_error = Some(error);
         invalidated.invalidate(UiDirtyRegion::Settings);
@@ -146,7 +148,12 @@ mod tests {
     fn completed_export_displays_location_and_capture_scope() {
         let mut app = job_app(Ok(std::path::PathBuf::from("isolated-debug-output")));
         app.update();
-        let notice = app.world().resource::<ShellState>().notice.as_deref().unwrap();
+        let notice = app
+            .world()
+            .resource::<ShellState>()
+            .notice
+            .as_deref()
+            .unwrap();
         assert!(notice.contains("isolated-debug-output"));
         assert!(notice.contains("until exit"));
         assert!(app.world().resource::<DebugLogJob>().receiver.is_none());
@@ -156,7 +163,12 @@ mod tests {
     fn failed_export_displays_error_without_reporting_success() {
         let mut app = job_app(Err("isolated disk error".to_string()));
         app.update();
-        let notice = app.world().resource::<ShellState>().notice.as_deref().unwrap();
+        let notice = app
+            .world()
+            .resource::<ShellState>()
+            .notice
+            .as_deref()
+            .unwrap();
         assert!(notice.contains("failed: isolated disk error"));
         assert!(!app.world().resource::<DebugLogJob>().capture_active);
     }
@@ -167,6 +179,9 @@ mod tests {
         let request = UiAction::from(command).api_request();
         assert_eq!(request.command, "ui.app.start_debug_logging");
         assert_eq!(request.access, "mutation");
-        assert!(include_str!("general.rs").contains("Some((\"DEBUG\", UiAction::from(AppCommand::StartDebugLogging)))"));
+        assert!(
+            include_str!("general.rs")
+                .contains("Some((\"DEBUG\", UiAction::from(AppCommand::StartDebugLogging)))")
+        );
     }
 }
