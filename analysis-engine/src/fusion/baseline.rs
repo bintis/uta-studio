@@ -943,23 +943,47 @@ fn build_segment_candidate(
             });
         }
     }
+    // A peer's short overlapping notes describe local pitch, not independent
+    // whole-region hypotheses. Summarize each source over this duration, just
+    // as continuous F0 is summarized above. Duration weighting prevents dense
+    // fragments or a barely overlapping long neighbor from outvoting a sustain.
+    // The median is an actual fractional proposal, not a frame-rounded target;
+    // every raw boundary and its own duration state remain in the pool.
+    let mut peer_pitches =
+        std::collections::BTreeMap::<&str, Vec<&BoundaryAlternative>>::new();
     for boundary in all_boundary_evidence.iter().filter(|boundary| {
         boundary.source_expert != target_pitch_source
             && boundary.range.overlaps(segment.range)
             && boundary.fractional_midi.is_some()
     }) {
-        let center_hz = midi_hz(boundary.fractional_midi.expect("filtered above"));
-        if alternatives.iter().any(|alternative| {
-            alternative.source_expert == boundary.source_expert
-                && (alternative.center_hz - center_hz).abs() < f32::EPSILON
-        }) {
-            continue;
-        }
+        peer_pitches
+            .entry(boundary.source_expert.as_str())
+            .or_default()
+            .push(boundary);
+    }
+    for (source_expert, evidence) in peer_pitches {
+        let fractional_midi = weighted_median(
+            evidence
+                .iter()
+                .map(|boundary| {
+                    (
+                        boundary.fractional_midi.expect("filtered above"),
+                        overlap_duration(boundary.range, segment.range) as f32,
+                    )
+                })
+                .collect(),
+        )?;
+        let center_hz = midi_hz(fractional_midi);
         alternatives.push(PitchAlternative {
-            source_expert: boundary.source_expert.clone(),
+            source_expert: source_expert.to_string(),
             center_hz,
             cents_from_target: 1_200.0 * (center_hz / center_pitch_hz).log2(),
-            confidence: boundary.calibrated_pitch_confidence,
+            // There is no cross-note calibration for an aggregated estimate.
+            confidence: if evidence.len() == 1 {
+                evidence[0].calibrated_pitch_confidence
+            } else {
+                None
+            },
         });
     }
     let selected_boundary_evidence = all_boundary_evidence.iter().find(|alternative| {
