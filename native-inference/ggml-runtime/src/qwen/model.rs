@@ -234,7 +234,6 @@ impl MetadataReader<'_> {
             Ok(index)
         }
     }
-
 }
 
 impl Metadata for MetadataReader<'_> {
@@ -282,7 +281,7 @@ impl Metadata for MetadataReader<'_> {
         }
     }
 
-    pub(crate) fn string_array(&self, key: &str) -> Result<Vec<String>, String> {
+    fn string_array(&self, key: &str) -> Result<Vec<String>, String> {
         let index = self.key_index(key)?;
         if ggml!(self.api, gguf_get_kv_type(self.gguf, index)) != GGUF_TYPE_ARRAY
             || ggml!(self.api, gguf_get_arr_type(self.gguf, index)) != GGUF_TYPE_STRING
@@ -305,7 +304,7 @@ impl Metadata for MetadataReader<'_> {
             .collect()
     }
 
-    pub(crate) fn i32_array(&self, key: &str) -> Result<Vec<i32>, String> {
+    fn i32_array(&self, key: &str) -> Result<Vec<i32>, String> {
         let index = self.key_index(key)?;
         if ggml!(self.api, gguf_get_kv_type(self.gguf, index)) != GGUF_TYPE_ARRAY
             || ggml!(self.api, gguf_get_arr_type(self.gguf, index)) != GGUF_TYPE_INT32

@@ -475,5 +475,4 @@ mod tests {
         );
         assert!(sample_windows(10, 10, 10).is_err());
     }
-
 }

@@ -16,6 +16,9 @@ pub mod jbm555;
 pub mod stars;
 pub mod rosvot;
 mod pitch;
+mod speech;
+pub mod qwen;
+pub mod firered;
 pub use pitch::{basic_pitch, fcpe, rmvpe};
 
 use std::collections::BTreeMap;

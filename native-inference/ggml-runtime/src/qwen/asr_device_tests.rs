@@ -1,6 +1,6 @@
 //! Explicit GGML-device fixtures, separate from reusable host ASR algorithms.
-use super::asr::DEFAULT_MAX_NEW_TOKENS;
 use super::Qwen;
+use super::asr::DEFAULT_MAX_NEW_TOKENS;
 use crate::{DeviceKind, GgmlRuntime};
 use std::path::PathBuf;
 
@@ -41,7 +41,9 @@ fn actual_asr_transcription_matches_historical_tokens() {
         .unwrap();
     assert_eq!(
         transcription.generated_tokens,
-        [11_528, 6_364, 151_704, 2_403, 566, 1_101, 374, 369, 601, 13, 151_645]
+        [
+            11_528, 6_364, 151_704, 2_403, 566, 1_101, 374, 369, 601, 13, 151_645
+        ]
     );
     assert_eq!(transcription.language_name.as_deref(), Some("English"));
     assert_eq!(transcription.text, "All he just is for us.");
