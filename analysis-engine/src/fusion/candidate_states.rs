@@ -1,6 +1,6 @@
 use crate::artifact::{AcousticEvidence, BasicPitchEvidence};
 
-use super::baseline::{BoundaryEvidenceSet, decide_fractional_target};
+use super::baseline::{BoundaryEvidenceSet, acoustic_attack_score, decide_fractional_target};
 use super::{
     BoundaryAlternative, BoundaryEvidenceKind, CanonicalWordBoundary, F0Point, PitchAlternative,
     SegmentCandidate, TimeRange,
@@ -203,12 +203,9 @@ fn has_acoustic_attack(evidence: Option<&AcousticEvidence>, time: u64) -> bool {
             .partition_point(|frame| frame.start < start)
             .saturating_sub(1);
         let end = evidence.frames.partition_point(|frame| frame.start <= end);
-        evidence.frames[first..end].windows(2).any(|pair| {
-            pair[0]
-                .spectral_flux
-                .zip(pair[1].spectral_flux)
-                .is_some_and(|(previous, current)| current >= (previous * 2.0).max(1.0e-6))
-        })
+        evidence.frames[first..end]
+            .windows(2)
+            .any(|pair| acoustic_attack_score(&pair[0], &pair[1]).is_some())
     })
 }
 
@@ -274,13 +271,8 @@ fn consolidation_range_is_clear(
             .frames
             .partition_point(|frame| frame.start < range.end);
         evidence.frames[first..end].windows(2).any(|pair| {
-            pair[0]
-                .spectral_flux
-                .zip(pair[1].spectral_flux)
-                .is_some_and(|(previous, current)| {
-                    inner_consolidation_time(range, pair[1].start)
-                        && current >= (previous * 2.0).max(1.0e-6)
-                })
+            inner_consolidation_time(range, pair[1].start)
+                && acoustic_attack_score(&pair[0], &pair[1]).is_some()
         })
     }) || {
         let first = persistent_shifts.partition_point(|(time, _)| *time <= range.start);

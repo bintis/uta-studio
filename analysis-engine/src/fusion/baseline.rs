@@ -656,7 +656,7 @@ fn f0_transition_challengers(
     )
 }
 
-fn acoustic_attack_score(
+pub(super) fn acoustic_attack_score(
     previous: &AcousticEvidenceFrame,
     current: &AcousticEvidenceFrame,
 ) -> Option<f32> {
