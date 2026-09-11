@@ -28,9 +28,11 @@ python3 tools/record-operation.py gpu-before-run -- bash dev.sh -c nvtop --snaps
 
 ### Settings DEBUG（桌面黑屏排查）
 
-在 **Settings → General → Diagnostics → Full debug logs → DEBUG** 点击一次，后台复制当前数据目录中的完整 `app.log` 和递归 `analysis-logs`（包括 JSONL），保存到独立的 `debug-logs/session-…/`，并写入包含窗口、平台和设置的 `context.txt`。默认位置是 `~/.uta-studio/debug-logs/`；界面完成提示给出实际目录。缺失日志或跳过的链接／特殊文件记录在 `snapshot-notes.txt`。
+**Settings → General → Full debug logs → DEBUG: OFF / ON** 是持久开关，默认关闭。开启后保存 `debug_logging` 设置，复制当前数据目录中的完整 `app.log` 和递归 `analysis-logs`（包括 JSONL）到独立的 `debug-logs/session-…/`，写入平台和设置上下文，再持续采集；重启后在渲染器初始化前恢复开启状态。默认位置是 `~/.uta-studio/debug-logs/`；界面完成提示给出实际目录。缺失日志或跳过的链接／特殊文件记录在 `snapshot-notes.txt`。
 
-随后桌面 tracing 开启 DEBUG 级别直到退出；后续 app 日志继续镜像到快照 `app.log`，正在排空的后端原始 stderr 不经内存摘要上限截断地写入 `backend-stderr.log`，新建的本地后端命令收到 `UTA_STUDIO_DEBUG=1`。请先点击、等完成提示，再复现黑屏。再次点击创建新目录并切换实时采集，先前目录保留；没有自动清理或上传。写入失败会显示错误，不停止后端 stderr 排空。日志可能含路径、配置和歌词。
+开启时桌面 tracing 使用 DEBUG 级别；后续 app 日志镜像到快照 `app.log`，后端原始 stderr 不经内存摘要上限截断地写入 `backend-stderr.log`，新建的本地后端命令收到 `UTA_STUDIO_DEBUG=1`。再次点击关闭：恢复普通日志过滤、关闭镜像，新建后端命令清除继承的 DEBUG 环境变量；普通运行／错误日志保留。已启动 worker 的日志级别不能动态下调，但不再进行额外 stderr 镜像。桌面以保存的开关为准，不由 `RUST_LOG` 或继承的 `UTA_STUDIO_DEBUG` 偷偷启用详细日志。请先开启并等完成提示，再启动分析或复现黑屏。没有自动上传；日志可能含路径、配置和歌词。
+
+**Settings → Storage → LOGS** 显示 `app.log`、`analysis-logs`、`debug-logs` 的文件总大小和数量，可点 **Refresh size** 重新统计。**Clear logs…** 需要确认，只清理这些日志，不碰歌曲、图表、模型或设置；不跟随符号链接。普通 app 日志原位截断，其他日志文件删除，目录保留。开启 DEBUG 时清理会关闭旧文件并恢复全新实时采集，因此清理后可能立即出现少量新日志；操作失败显示错误，不能把部分清理说成成功。
 
 这不是系统／内核日志采集器，无法补回此前被过滤的事件，无法改变已经启动的 worker 的日志级别，也不打开编译期 GGML Vulkan 日志。已有分析文件仅做快照；并发后端 stderr 共用原始文件，可能交错。写入不承诺逐条 fsync 或断电尾部完整；日志开启后的吞吐不能当正常性能结果。
 
