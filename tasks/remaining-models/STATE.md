@@ -990,6 +990,22 @@ untouched; no new GPU inference or installed build. Details and operation receip
 [caller word alignment](../final-features/followups/21J_MELODY_PATH_SCORE_COHERENCE.md#caller-word-alignment-follow-up--2026-09-11-utc),
 `test-artifacts/word-note-alignment/word-request-summary.json`.
 
+## Sony MIMO separation — feasibility reviewed, native integration open (2026-09-11)
+
+The user requested an opt-in slower/higher-quality method and SDR-style evidence in DAG Inspect.
+Sony's trained MIMO graph is not an inference wrapper for existing XE90 weights: it needs four
+input channels, cross-source masks, time conditions and value residuals plus its own checkpoint.
+The official matched large-model museval result improves vocals/accompaniment by 0.22/0.56 dB;
+no comparison with our XE90 or local speed/quality benefit has been measured. Native graph/import,
+Runtime Manager resource, workflow routing and the requested default-off Analysis switch remain
+**open**, not integration-ready/production-ready. No dummy switch or Python model route was added.
+
+Implemented independently: Engine separation-output decode measurements, exact-run/node read API,
+and DAG Inspect signal statistics with units/provenance. No-ground-truth SDR/SI-SDR/SIR/SAR are
+explicitly unavailable. No cached or later cleanup audio is substituted. Focused tests pass;
+no new model/GPU execution, model installation, source mutation or release checks. Full details,
+verification receipts and next steps: [MIMO separation](../../docs/design/audio-analysis/MIMO_SEPARATION.md).
+
 ## Next actions
 
 1. Install the STARS and ROSVOT GGUF generations into the managed store with their manifests and

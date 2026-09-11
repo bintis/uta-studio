@@ -47,6 +47,8 @@ Older linked specifications may contain historical model examples. The current e
 
 ### Product integration / UX
 
+- [Sony MIMO separation](audio-analysis/MIMO_SEPARATION.md) — native-integration feasibility, outstanding opt-in model switch, and implemented run-bound DAG separation measurements; no MIMO quality claim.
+
 - `docs/design/integration/UTA_STUDIO_ANALYSIS_RUNTIME_INTEGRATION_DESIGN_v1.0.md` — Studio reintegration seam and runtime/analysis integration details.
 - `docs/design/integration/UTA_STUDIO_ANALYSIS_SETTINGS_MODEL_SELECTION_EXECUTION_UX_DESIGN_v1.0.md` — Analysis settings, model selection, plan preview, execution UX, and Processing Studio behavior.
 - `docs/design/audio-analysis/UTA_AI_JUDGMENT_FUSION_MODE_v1.0.md` — explicit Algorithm/AI-judgment Stage 4 mode, external adapter ownership, privacy, provenance, and failure semantics.

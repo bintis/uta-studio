@@ -93,6 +93,13 @@ The Runtime Manager catalog contains eighteen models and two native runtimes. Ev
 
 `stars` and `rosvot` declare an `rmvpe` dependency because they are conditioned on tracked F0. FireRed declares a three-file named artifact set (`firered-f32.gguf`, `cmvn.ark`, `dict.txt`) rather than letting the worker guess sidecar paths.
 
+Sony MIMO was reviewed on 2026-09-11: it requires a separately trained multi-source/time-conditioned
+native model, not repeated XE90 or residual projection. Its published same-backbone gain does not
+establish superiority over our XE90. Native model/import/catalog/routing and the requested Analysis
+switch remain open. DAG Inspect now exposes exact-run/node separation-output signal measurements;
+SDR/SI-SDR/SIR/SAR remain explicitly unavailable without aligned ground-truth stems. No new model
+execution or readiness promotion. See [MIMO feasibility and inspection](design/audio-analysis/MIMO_SEPARATION.md).
+
 Leap XE90 is the default separation strategy. One invocation emits guide vocals and computes the instrumental as the mixture residual. PolarFormer is an explicit experimental strategy, not an independently scheduled default Instrumental pass.
 
 Public MVSep Multisong context at the time of selection:
