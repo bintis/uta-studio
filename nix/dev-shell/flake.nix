@@ -122,7 +122,7 @@
           # host tools; AMD's stable multi-architecture wheels own one isolated
           # gfx1103 SDK/LibTorch environment created by the explicit bootstrap.
           rocm = pkgs.mkShell {
-            packages = commonPackages ++ [ python virtualenv rocmBootstrap ];
+            packages = commonPackages ++ [ python virtualenv rocmBootstrap pkgs.xz ];
             shellHook = rocmShellHook;
           };
         });
