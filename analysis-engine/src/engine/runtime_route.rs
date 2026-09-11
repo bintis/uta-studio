@@ -401,6 +401,13 @@ impl AnalysisEngine {
         request: &AnalyzeRequest,
         plan: &EnginePlan,
     ) -> EngineResult<(Vec<uta_runtime_manager::ResolvedModel>, Vec<String>)> {
+        let automatic_schedule = request.execution_policy.turbo_acceleration.then(|| {
+            crate::device_scheduler::schedule_models(
+                plan.requirements.resources.iter().filter_map(|requirement| {
+                    requirement.resource.strip_prefix("model:")
+                }),
+            )
+        });
         let mut resolved = Vec::new();
         let mut degraded = Vec::new();
         for requirement in plan.requirements.resources.iter().filter(|requirement| {
@@ -416,7 +423,15 @@ impl AnalysisEngine {
             match resource.kind {
                 uta_runtime_manager::ResourceKind::Model => {
                     let resolution = if request.execution_policy.turbo_acceleration {
-                        let placement = crate::device_scheduler::placement_for(&resource.id);
+                        let placement = automatic_schedule
+                            .as_ref()
+                            .and_then(|schedule| {
+                                schedule.iter().find(|item| item.model_id == resource.id)
+                            })
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                crate::device_scheduler::placement_for(&resource.id)
+                            });
                         let mut errors = Vec::new();
                         let mut selected = None;
                         for backend in placement.candidate_backends() {

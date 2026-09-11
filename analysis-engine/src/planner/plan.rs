@@ -540,6 +540,14 @@ impl Planner {
             .map(|node| node.capability.clone())
             .collect();
 
+        let automatic_schedule = request.execution_policy.turbo_acceleration.then(|| {
+            crate::device_scheduler::schedule_models(
+                requirements
+                    .resources
+                    .iter()
+                    .filter_map(|requirement| requirement.resource.strip_prefix("model:")),
+            )
+        });
         let resolved_resources = requirements
             .resources
             .iter()
@@ -557,7 +565,15 @@ impl Planner {
                     if request.execution_policy.turbo_acceleration
                         && resource.kind == uta_runtime_manager::ResourceKind::Model
                     {
-                        let placement = crate::device_scheduler::placement_for(&resource.id);
+                        let placement = automatic_schedule
+                            .as_ref()
+                            .and_then(|schedule| {
+                                schedule.iter().find(|item| item.model_id == resource.id)
+                            })
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                crate::device_scheduler::placement_for(&resource.id)
+                            });
                         let mut last_error = None;
                         for backend in placement.candidate_backends() {
                             match manager.status_with_backend(
