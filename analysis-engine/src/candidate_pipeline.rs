@@ -1190,48 +1190,25 @@ fn timed_lyric_word_groups(
     transcript: &CanonicalLyrics,
     words: &[CanonicalWordBoundary],
 ) -> Vec<TimedLyricWordGroup> {
-    let mut token_cursor = 0usize;
-    let token_spans = transcript
+    let mut groups = transcript
         .tokens
         .iter()
-        .map(|token| {
-            let start = token_cursor;
-            token_cursor += compact_normalized(&token.text).chars().count();
-            (start, token_cursor, token.range)
-        })
-        .collect::<Vec<_>>();
-
-    let mut word_cursor = 0usize;
-    let word_spans = words
-        .iter()
-        .map(|word| {
-            let start = word_cursor;
-            word_cursor += compact_normalized(&word.text).chars().count();
-            (start, word_cursor)
-        })
-        .collect::<Vec<_>>();
-
-    let timed_token_spans = token_spans
-        .into_iter()
-        .filter_map(|(token_start, token_end, range)| {
-            range.map(|range| (token_start, token_end, range))
-        })
-        .collect::<Vec<_>>();
-    let mut groups = timed_token_spans
-        .iter()
-        .map(|(_, _, range)| TimedLyricWordGroup {
-            range: *range,
+        .filter_map(|token| token.range)
+        .map(|range| TimedLyricWordGroup {
+            range,
             word_indices: Vec::new(),
         })
         .collect::<Vec<_>>();
-    for (word_index, &(word_start, word_end)) in word_spans.iter().enumerate() {
-        let owner = timed_token_spans
+    // Only measured words survive alignment fusion. Counting their text as
+    // though unresolved words never existed shifts every later line (especially
+    // repeated lyrics). Measured words belong to the caller audio scope in
+    // which they actually occur; neither text length nor repetition sets time.
+    for (word_index, word) in words.iter().enumerate() {
+        let owner = groups
             .iter()
             .enumerate()
-            .filter_map(|(token_index, &(token_start, token_end, _))| {
-                let overlap = word_end
-                    .min(token_end)
-                    .saturating_sub(word_start.max(token_start));
+            .filter_map(|(token_index, group)| {
+                let overlap = range_overlap(word.range, group.range);
                 (overlap > 0).then_some((overlap, std::cmp::Reverse(token_index), token_index))
             })
             .max_by_key(|(overlap, token_index, _)| (*overlap, *token_index));
