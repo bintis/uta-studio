@@ -623,7 +623,7 @@ fn parse_settings(name: &str, arguments: &serde_json::Value) -> Result<SettingsC
         "toggle_auto_analyze" => SettingsCommand::ToggleAutoAnalyze,
         "restore_analysis_defaults" => SettingsCommand::RestoreAnalysisDefaults,
         "request_clear_cache" => SettingsCommand::RequestClearCache(
-            match arguments.get("scope").and_then(serde_json::Value::as_str) {
+            match optional_text(arguments, "scope")?.as_deref() {
                 Some("logs") => CacheClearScope::Logs,
                 Some("generated") | None => CacheClearScope::Generated,
                 Some(scope) => return Err(format!("Unknown cache cleanup scope: {scope}")),

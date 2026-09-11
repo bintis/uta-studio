@@ -99,7 +99,9 @@ pub(crate) fn toggle_debug_logging(shell: &mut ShellState, job: &mut DebugLogJob
         Ok(()) => {
             shell.config = config;
             job.attempted = None;
-            shell.notice = Some("Updating DEBUG logging…".to_string());
+            shell.notice = Some(if job.receiver.is_none() && job.applied == shell.config.debug_logging {
+                format!("DEBUG {} — setting saved.", if job.applied { "ON" } else { "OFF" })
+            } else { "Updating DEBUG logging…".to_string() });
         }
         Err(error) => shell.notice = Some(format!("Could not save DEBUG setting: {error}")),
     }
@@ -111,13 +113,6 @@ pub(crate) fn poll_debug_log_job(
     mut cache_stats: ResMut<CacheStatsJob>,
     mut invalidated: ResMut<UiInvalidated>,
 ) {
-    if let Some(error) = app_core::debug_logging_error()
-        && job.reported_error.as_ref() != Some(&error)
-    {
-        shell.notice = Some(format!("DEBUG capture failed: {error}"));
-        job.reported_error = Some(error);
-        invalidated.invalidate(UiDirtyRegion::Settings);
-    }
     let result = job
         .receiver
         .as_ref()
@@ -139,6 +134,12 @@ pub(crate) fn poll_debug_log_job(
             Err(error) => format!("Log operation failed: {error}"),
         });
         cache_stats.log_refresh = true;
+        invalidated.invalidate(UiDirtyRegion::Settings);
+    }
+    if let Some(error) = app_core::debug_logging_error()
+        && job.reported_error.as_ref() != Some(&error) {
+        shell.notice = Some(format!("DEBUG capture failed: {error}"));
+        job.reported_error = Some(error);
         invalidated.invalidate(UiDirtyRegion::Settings);
     }
     if job.receiver.is_some() {
