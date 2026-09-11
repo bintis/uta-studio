@@ -161,14 +161,13 @@
             ];
 
             buildInputs = gstPlugins ++ (with pkgs; [
-              ffmpeg-full
+              ffmpeg
               libglvnd
               libxkbcommon
               udev
               wayland
               wayland-protocols
               vulkan-loader
-              openssl
             ]);
           };
 
@@ -245,7 +244,7 @@
               install -Dm644 icon.png $out/share/icons/hicolor/512x512/apps/uta-studio.png
               install -Dm644 desktop/uta-studio.desktop $out/share/applications/uta-studio.desktop
               runtimeWrapperArgs=(
-                --set UTA_STUDIO_FFMPEG_PATH ${pkgs.ffmpeg-full}/bin/ffmpeg
+                --set UTA_STUDIO_FFMPEG_PATH ${pkgs.ffmpeg}/bin/ffmpeg
                 --set UTA_STUDIO_GGML_RUNTIME_PATH $out/bin/uta-ggml-worker
                 --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath (runtimeLibraries ++ [ pkgs.libglvnd pkgs.libxkbcommon pkgs.udev pkgs.vulkan-loader pkgs.wayland ])}"
                 --prefix LD_LIBRARY_PATH : /run/opengl-driver/lib
@@ -254,7 +253,7 @@
               makeWrapper $out/bin/.uta-analyze-unwrapped $out/bin/uta-analyze "''${runtimeWrapperArgs[@]}"
               makeWrapper $out/bin/.uta-studio-unwrapped $out/bin/uta-studio \
                 --set UTA_STUDIO_ASSET_PATH $out/share/uta-studio \
-                --set UTA_STUDIO_FFMPEG_PATH ${pkgs.ffmpeg-full}/bin/ffmpeg \
+                --set UTA_STUDIO_FFMPEG_PATH ${pkgs.ffmpeg}/bin/ffmpeg \
                 --set UTA_STUDIO_ANALYSIS_CLI_PATH $out/bin/uta-analyze \
                 --set UTA_STUDIO_RUNTIME_CLI_PATH $out/bin/uta-runtime \
                 --set UTA_STUDIO_GGML_RUNTIME_PATH $out/bin/uta-ggml-worker \
@@ -299,17 +298,14 @@
               cmake
               ninja
               pkg-config
-              ffmpeg-full
+              ffmpeg
               libglvnd
               libxkbcommon
               udev
               wayland
               wayland-protocols
-              shaderc
               vulkan-headers
               vulkan-loader
-              vulkan-tools
-              openssl
             ]);
             shellHook = ''
               if [ -d "$HOME/.cargo/bin" ]; then
@@ -323,7 +319,7 @@
               # nix profile) unless that PATH is captured explicitly here and
               # read back by the scanner as a preferred search path.
               export UTA_STUDIO_AGENT_SEARCH_PATH="$PATH"
-              export UTA_STUDIO_FFMPEG_PATH="${pkgs.ffmpeg-full}/bin/ffmpeg"
+              export UTA_STUDIO_FFMPEG_PATH="${pkgs.ffmpeg}/bin/ffmpeg"
               export UTA_STUDIO_ANALYSIS_CLI_PATH="$PWD/target/debug/uta-analyze"
               export UTA_STUDIO_RUNTIME_CLI_PATH="$PWD/target/debug/uta-runtime"
               export UTA_STUDIO_GGML_RUNTIME_PATH="$PWD/target/debug/uta-ggml-worker"

@@ -28,23 +28,20 @@
             cmake
             ninja
             pkg-config
-            ffmpeg-full
+            ffmpeg
             libglvnd
             libxkbcommon
             udev
             wayland
             wayland-protocols
-            shaderc
             vulkan-headers
             vulkan-loader
-            vulkan-tools
-            openssl
           ]);
           commonShellHook = ''
             if [ -d "$HOME/.cargo/bin" ]; then
               export PATH="$HOME/.cargo/bin:$PATH"
             fi
-            export UTA_STUDIO_FFMPEG_PATH="${pkgs.ffmpeg-full}/bin/ffmpeg"
+            export UTA_STUDIO_FFMPEG_PATH="${pkgs.ffmpeg}/bin/ffmpeg"
             # Machine-protocol executables are discovered beside the Studio
             # binary. Do not pin them to target/debug here: doing so makes a
             # release Studio launched from this shell inherit a debug analyzer
@@ -52,7 +49,6 @@
             # still set an explicit override on their command line.
             unset UTA_STUDIO_ANALYSIS_CLI_PATH
             unset UTA_STUDIO_RUNTIME_CLI_PATH
-            unset UTA_STUDIO_OPENVINO_RUNTIME_PATH
             unset UTA_STUDIO_GGML_RUNTIME_PATH
             export WINIT_UNIX_BACKEND=wayland
             export __EGL_VENDOR_LIBRARY_DIRS=/run/opengl-driver/share/glvnd/egl_vendor.d
