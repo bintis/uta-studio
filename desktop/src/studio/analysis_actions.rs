@@ -1353,6 +1353,7 @@ fn spawn_preview_resources(
                             reason,
                             app_core::ReadinessReasonWire::Absent
                                 | app_core::ReadinessReasonWire::ExecutableMissing
+                                | app_core::ReadinessReasonWire::NativeLibraryMissing
                         )
                     });
                 let reasons = status
