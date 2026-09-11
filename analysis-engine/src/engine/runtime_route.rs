@@ -504,6 +504,10 @@ impl AnalysisEngine {
 }
 
 #[cfg(test)]
+#[path = "alignment_words_tests.rs"]
+mod alignment_words_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -612,7 +616,7 @@ mod tests {
     }
 
     #[test]
-    fn qwen_alignment_units_preserve_caller_ids_and_segment_generated_cjk() {
+    fn qwen_alignment_units_segment_generated_cjk() {
         let caller = CanonicalLyrics {
             text: "sing now".to_string(),
             language: Some("en".to_string()),
@@ -627,11 +631,6 @@ mod tests {
             source_experts: vec!["caller".to_string()],
             alternatives: Vec::new(),
         };
-        assert_eq!(
-            qwen_alignment_words(&caller, &[]).unwrap()[0]["id"],
-            "line-1"
-        );
-
         let mut generated = caller;
         generated.text = "风吹沙".to_string();
         generated.language = Some("zh".to_string());
