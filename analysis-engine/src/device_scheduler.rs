@@ -111,10 +111,9 @@ pub(crate) fn schedule_models<'a>(
             let selected = remaining
                 .iter()
                 .position(|profile| {
-                    profile
-                        .dependencies
-                        .iter()
-                        .all(|dependency| !requested.contains(dependency) || finishes.contains_key(dependency))
+                    profile.dependencies.iter().all(|dependency| {
+                        !requested.contains(dependency) || finishes.contains_key(dependency)
+                    })
                 })
                 .unwrap_or(0);
             let profile = remaining.remove(selected);
@@ -170,26 +169,134 @@ fn profiles() -> &'static [TaskProfile] {
     &[
         // Audio preparation remains a serial dependency chain. Complete heavy
         // models strongly favor the B580 LibTorch XPU route in current evidence.
-        profile("bs_roformer_leap_xe90_vocals", SchedulingPhase::AudioPreparation, &[], 24_140, 180_000),
-        profile("bs_roformer_leap_xe90_instrumental", SchedulingPhase::AudioPreparation, &[], 24_140, 180_000),
-        profile("bs_polarformer_public_instrumental", SchedulingPhase::AudioPreparation, &[], 9_100, 120_000),
-        profile("melband_roformer_harmony", SchedulingPhase::AudioPreparation, &[], 7_500, 120_000),
-        profile("melband_roformer_denoise_aufr33", SchedulingPhase::AudioPreparation, &[], 7_490, 120_000),
-        profile("melband_roformer_dereverb_anvuew", SchedulingPhase::AudioPreparation, &[], 7_500, 120_000),
+        profile(
+            "bs_roformer_leap_xe90_vocals",
+            SchedulingPhase::AudioPreparation,
+            &[],
+            24_140,
+            180_000,
+        ),
+        profile(
+            "bs_roformer_leap_xe90_instrumental",
+            SchedulingPhase::AudioPreparation,
+            &[],
+            24_140,
+            180_000,
+        ),
+        profile(
+            "bs_polarformer_public_instrumental",
+            SchedulingPhase::AudioPreparation,
+            &[],
+            9_100,
+            120_000,
+        ),
+        profile(
+            "melband_roformer_harmony",
+            SchedulingPhase::AudioPreparation,
+            &[],
+            7_500,
+            120_000,
+        ),
+        profile(
+            "melband_roformer_denoise_aufr33",
+            SchedulingPhase::AudioPreparation,
+            &[],
+            7_490,
+            120_000,
+        ),
+        profile(
+            "melband_roformer_dereverb_anvuew",
+            SchedulingPhase::AudioPreparation,
+            &[],
+            7_500,
+            120_000,
+        ),
         // Once prepared vocal audio exists, Intel runs the large speech models
         // while the AMD queue consumes short complete pitch/note tasks.
-        profile("qwen3_asr_1_7b", SchedulingPhase::IndependentEvidence, &[], 6_400, 48_000),
-        profile("firered_asr2_aed", SchedulingPhase::IndependentEvidence, &["qwen3_asr_1_7b"], 6_080, 40_000),
-        profile("rmvpe", SchedulingPhase::IndependentEvidence, &[], 2_280, 503),
-        profile("fcpe", SchedulingPhase::IndependentEvidence, &[], 1_680, 201),
-        profile("basic_pitch", SchedulingPhase::IndependentEvidence, &[], 1_930, 370),
-        profile("game_1_0_3_small", SchedulingPhase::IndependentEvidence, &[], 2_000, 648),
-        profile("game_1_0_3_medium", SchedulingPhase::IndependentEvidence, &[], 2_350, 1_211),
-        profile("game_1_0_3_large", SchedulingPhase::IndependentEvidence, &[], 4_000, 2_282),
-        profile("jbm555_cectc_80", SchedulingPhase::IndependentEvidence, &[], 2_000, 331),
-        profile("qwen3_forced_aligner_0_6b", SchedulingPhase::ConditionedEvidence, &["qwen3_asr_1_7b"], 1_200, 8_000),
-        profile("stars", SchedulingPhase::ConditionedEvidence, &["rmvpe", "qwen3_forced_aligner_0_6b"], 700, 811),
-        profile("rosvot", SchedulingPhase::ConditionedEvidence, &["rmvpe", "qwen3_forced_aligner_0_6b"], 300, 281),
+        profile(
+            "qwen3_asr_1_7b",
+            SchedulingPhase::IndependentEvidence,
+            &[],
+            6_400,
+            48_000,
+        ),
+        profile(
+            "firered_asr2_aed",
+            SchedulingPhase::IndependentEvidence,
+            &["qwen3_asr_1_7b"],
+            6_080,
+            40_000,
+        ),
+        profile(
+            "rmvpe",
+            SchedulingPhase::IndependentEvidence,
+            &[],
+            2_280,
+            503,
+        ),
+        profile(
+            "fcpe",
+            SchedulingPhase::IndependentEvidence,
+            &[],
+            1_680,
+            201,
+        ),
+        profile(
+            "basic_pitch",
+            SchedulingPhase::IndependentEvidence,
+            &[],
+            1_930,
+            370,
+        ),
+        profile(
+            "game_1_0_3_small",
+            SchedulingPhase::IndependentEvidence,
+            &[],
+            2_000,
+            648,
+        ),
+        profile(
+            "game_1_0_3_medium",
+            SchedulingPhase::IndependentEvidence,
+            &[],
+            2_350,
+            1_211,
+        ),
+        profile(
+            "game_1_0_3_large",
+            SchedulingPhase::IndependentEvidence,
+            &[],
+            4_000,
+            2_282,
+        ),
+        profile(
+            "jbm555_cectc_80",
+            SchedulingPhase::IndependentEvidence,
+            &[],
+            2_000,
+            331,
+        ),
+        profile(
+            "qwen3_forced_aligner_0_6b",
+            SchedulingPhase::ConditionedEvidence,
+            &["qwen3_asr_1_7b"],
+            1_200,
+            8_000,
+        ),
+        profile(
+            "stars",
+            SchedulingPhase::ConditionedEvidence,
+            &["rmvpe", "qwen3_forced_aligner_0_6b"],
+            700,
+            811,
+        ),
+        profile(
+            "rosvot",
+            SchedulingPhase::ConditionedEvidence,
+            &["rmvpe", "qwen3_forced_aligner_0_6b"],
+            300,
+            281,
+        ),
     ]
 }
 
@@ -234,10 +341,7 @@ mod tests {
         );
         for model_id in ["rmvpe", "fcpe", "basic_pitch", "game_1_0_3_medium"] {
             assert_eq!(placement(model_id).backend, NativeBackend::Ggml);
-            assert_eq!(
-                placement(model_id).device,
-                NativeDeviceClass::IntegratedGpu
-            );
+            assert_eq!(placement(model_id).device, NativeDeviceClass::IntegratedGpu);
         }
     }
 

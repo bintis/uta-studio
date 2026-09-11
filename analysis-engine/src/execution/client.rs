@@ -91,9 +91,7 @@ fn acquire_ggml_lease(
         let gate = gates.entry(lane.clone()).or_default();
         let quiescence_remaining = gate
             .last_exit
-            .map(|last_exit| {
-                (last_exit + GGML_PROCESS_QUIESCENCE).saturating_duration_since(now)
-            })
+            .map(|last_exit| (last_exit + GGML_PROCESS_QUIESCENCE).saturating_duration_since(now))
             .unwrap_or_default();
         if !gate.active && quiescence_remaining.is_zero() {
             gate.active = true;
@@ -908,13 +906,10 @@ mod tests {
         let waiting_task = amd_task.clone();
         let waiting_cancellation = cancellation.clone();
         let handle = std::thread::spawn(move || {
-            let lease = acquire_ggml_lease(
-                &waiting_expectation,
-                &waiting_task,
-                &waiting_cancellation,
-            )
-            .unwrap()
-            .unwrap();
+            let lease =
+                acquire_ggml_lease(&waiting_expectation, &waiting_task, &waiting_cancellation)
+                    .unwrap()
+                    .unwrap();
             sender.send(()).unwrap();
             drop(lease);
         });
