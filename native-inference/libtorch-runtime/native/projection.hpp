@@ -13,7 +13,10 @@ inline int64_t bounded_projection_row_tile(const at::Tensor& weight) {
     if (weight.dim() != 2 || weight.size(0) <= 0 || weight.size(1) <= 0)
         throw std::invalid_argument("bounded projection requires a nonempty matrix weight");
     constexpr int64_t maximum_rows = 1024;
-    constexpr int64_t maximum_multiply_accumulates = 256 * 1024 * 1024;
+    // This is the largest tile geometry already exercised by the complete
+    // projection oracle: 1024 rows by 384 inputs by 1536 outputs. A square
+    // 1536-channel mask projection is consequently limited to 256 rows.
+    constexpr int64_t maximum_multiply_accumulates = 1024LL * 384 * 1536;
     if (weight.size(0) > maximum_multiply_accumulates / weight.size(1)) return 1;
     const auto work_per_row = weight.size(0) * weight.size(1);
     return std::max<int64_t>(1, std::min<int64_t>(maximum_rows, maximum_multiply_accumulates / work_per_row));
