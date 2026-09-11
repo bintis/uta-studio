@@ -53,14 +53,26 @@ fn main() -> Result<(), Box<dyn Error>> {
     let alignment = parse_alignment_artifact(&input.alignment, start, duration)?;
     let (transcript, canonical) = fuse_transcript_stage(&[transcript], None)?;
     let (alignment, words) = fuse_alignment_stage(&canonical, &[alignment], start, duration)?;
-    let acoustic: Option<AcousticEvidence> = input.acoustic.as_deref().map(read_json).transpose()?;
-    let game = input.game.as_deref()
-        .map(|path| parse_game_evidence(path, start, duration)).transpose()?;
-    let secondary = input.secondary_pitch.as_deref()
-        .map(|path| parse_fcpe_pitch(path, start, duration)).transpose()?;
-    let activation = input.basic_pitch.as_deref()
-        .map(|path| parse_basic_pitch_evidence(path, start, duration)).transpose()?;
-    let advanced = input.note_experts.iter()
+    let acoustic: Option<AcousticEvidence> =
+        input.acoustic.as_deref().map(read_json).transpose()?;
+    let game = input
+        .game
+        .as_deref()
+        .map(|path| parse_game_evidence(path, start, duration))
+        .transpose()?;
+    let secondary = input
+        .secondary_pitch
+        .as_deref()
+        .map(|path| parse_fcpe_pitch(path, start, duration))
+        .transpose()?;
+    let activation = input
+        .basic_pitch
+        .as_deref()
+        .map(|path| parse_basic_pitch_evidence(path, start, duration))
+        .transpose()?;
+    let advanced = input
+        .note_experts
+        .iter()
         .map(|(model, path)| parse_advanced_note_evidence(path, model))
         .collect::<Result<Vec<_>, _>>()?;
     let mut timed = Vec::new();
@@ -76,9 +88,21 @@ fn main() -> Result<(), Box<dyn Error>> {
         })?);
     }
     let fusion = execute_singing_fusion_stage_with_timed_notes(
-        &transcript, &alignment, &words, Some(&pitch), secondary.as_ref(),
-        activation.as_ref(), game.as_ref(), acoustic.as_ref(), &advanced, &timed,
-        &[], &[], start, duration, "rmvpe",
+        &transcript,
+        &alignment,
+        &words,
+        Some(&pitch),
+        secondary.as_ref(),
+        activation.as_ref(),
+        game.as_ref(),
+        acoustic.as_ref(),
+        &advanced,
+        &timed,
+        &[],
+        &[],
+        start,
+        duration,
+        "rmvpe",
     )?;
     let singing =
         execute_candidate_graph_stage(canonical, words, fusion, FusionDecisionMode::Algorithm)?;
@@ -86,27 +110,55 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut pool_sources = BTreeMap::<String, usize>::new();
     let mut chosen_sources = BTreeMap::<String, usize>::new();
     for candidate in &singing.fusion.candidates {
-        *pool_sources.entry(candidate.boundary_source.clone()).or_default() += 1;
+        *pool_sources
+            .entry(candidate.boundary_source.clone())
+            .or_default() += 1;
     }
     for note in &singing.track.notes {
-        *chosen_sources.entry(note.evidence.boundary_source.clone()).or_default() += 1;
+        *chosen_sources
+            .entry(note.evidence.boundary_source.clone())
+            .or_default() += 1;
     }
-    let notes = chart.tracks.iter().flat_map(|track| &track.phrases)
-        .flat_map(|phrase| &phrase.notes).collect::<Vec<_>>();
-    let pitched = notes.iter().copied().filter(|note| note.pitch.is_some()).collect::<Vec<_>>();
-    let short = [30_000, 50_000, 80_000, 100_000, 150_000].into_iter()
-        .map(|threshold| (threshold.to_string(), pitched.iter()
-            .filter(|note| note.duration < threshold).count()))
+    let notes = chart
+        .tracks
+        .iter()
+        .flat_map(|track| &track.phrases)
+        .flat_map(|phrase| &phrase.notes)
+        .collect::<Vec<_>>();
+    let pitched = notes
+        .iter()
+        .copied()
+        .filter(|note| note.pitch.is_some())
+        .collect::<Vec<_>>();
+    let short = [30_000, 50_000, 80_000, 100_000, 150_000]
+        .into_iter()
+        .map(|threshold| {
+            (
+                threshold.to_string(),
+                pitched
+                    .iter()
+                    .filter(|note| note.duration < threshold)
+                    .count(),
+            )
+        })
         .collect::<BTreeMap<_, _>>();
-    let same_pitch_pairs = pitched.windows(2).filter(|pair| {
-        pair[0].pitch.unwrap().midi == pair[1].pitch.unwrap().midi
-            && pair[1].start >= pair[0].start + pair[0].duration
-            && pair[1].start - pair[0].start - pair[0].duration <= 20_000
-    }).count();
+    let same_pitch_pairs = pitched
+        .windows(2)
+        .filter(|pair| {
+            pair[0].pitch.unwrap().midi == pair[1].pitch.unwrap().midi
+                && pair[1].start >= pair[0].start + pair[0].duration
+                && pair[1].start - pair[0].start - pair[0].duration <= 20_000
+        })
+        .count();
     let mut proposals_by_duration = BTreeMap::<(&str, u64, u64), usize>::new();
     for candidate in &singing.fusion.candidates {
-        *proposals_by_duration.entry((candidate.boundary_source.as_str(),
-            candidate.range.start, candidate.range.end)).or_default() += 1;
+        *proposals_by_duration
+            .entry((
+                candidate.boundary_source.as_str(),
+                candidate.range.start,
+                candidate.range.end,
+            ))
+            .or_default() += 1;
     }
     let summary = serde_json::json!({
         "scope": "explicit cached evidence only; no model/audio execution or production input-binding claim",
@@ -127,11 +179,36 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Refuse an existing destination. Inputs are never modified; all writes use
     // the Engine's atomic publisher and retain the complete candidate evidence.
     std::fs::create_dir(&output)?;
-    write_json_artifact(&output, Path::new("summary.json"), "application/json", &summary)?;
-    write_json_artifact(&output, Path::new("fusion.json"), "application/json", &singing.fusion)?;
-    write_json_artifact(&output, Path::new("canonical.json"), "application/json", &singing.track)?;
-    write_json_artifact(&output, Path::new("vocal-chart.json"), utz::VOCAL_CHART_MEDIA_TYPE, &chart)?;
-    write_json_artifact(&output, Path::new("alignment.json"), "application/json", &alignment)?;
+    write_json_artifact(
+        &output,
+        Path::new("summary.json"),
+        "application/json",
+        &summary,
+    )?;
+    write_json_artifact(
+        &output,
+        Path::new("fusion.json"),
+        "application/json",
+        &singing.fusion,
+    )?;
+    write_json_artifact(
+        &output,
+        Path::new("canonical.json"),
+        "application/json",
+        &singing.track,
+    )?;
+    write_json_artifact(
+        &output,
+        Path::new("vocal-chart.json"),
+        utz::VOCAL_CHART_MEDIA_TYPE,
+        &chart,
+    )?;
+    write_json_artifact(
+        &output,
+        Path::new("alignment.json"),
+        "application/json",
+        &alignment,
+    )?;
     println!("{}", serde_json::to_string_pretty(&summary)?);
     Ok(())
 }

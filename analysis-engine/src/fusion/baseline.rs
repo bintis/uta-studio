@@ -949,8 +949,7 @@ fn build_segment_candidate(
     // fragments or a barely overlapping long neighbor from outvoting a sustain.
     // The median is an actual fractional proposal, not a frame-rounded target;
     // every raw boundary and its own duration state remain in the pool.
-    let mut peer_pitches =
-        std::collections::BTreeMap::<&str, Vec<&BoundaryAlternative>>::new();
+    let mut peer_pitches = std::collections::BTreeMap::<&str, Vec<&BoundaryAlternative>>::new();
     for boundary in all_boundary_evidence.iter().filter(|boundary| {
         boundary.source_expert != target_pitch_source
             && boundary.range.overlaps(segment.range)

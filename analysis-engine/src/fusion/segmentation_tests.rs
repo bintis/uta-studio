@@ -32,12 +32,20 @@ fn peer(start: u64, end: u64, midi: f32) -> BoundaryAlternative {
     }
 }
 
-fn fuse(
-    boundaries: &BoundaryEvidenceSet,
-    peers: &[BoundaryAlternative],
-) -> SingingFusionEvidence {
+fn fuse(boundaries: &BoundaryEvidenceSet, peers: &[BoundaryAlternative]) -> SingingFusionEvidence {
     fuse_singing_evidence_with_challengers(
-        &[], boundaries, "rmvpe", &[], None, &[], None, None, true, None, peers, &[],
+        &[],
+        boundaries,
+        "rmvpe",
+        &[],
+        None,
+        &[],
+        None,
+        None,
+        true,
+        None,
+        peers,
+        &[],
     )
     .unwrap()
 }
@@ -58,14 +66,21 @@ fn dense_peer_pitch_estimates_do_not_expand_every_fragment_onto_a_long_duration(
         .iter()
         .filter(|candidate| candidate.boundary_source == "peer")
         .collect::<Vec<_>>();
-    assert_eq!(spanning_states.len(), 2, "one pitch per participating expert");
+    assert_eq!(
+        spanning_states.len(),
+        2,
+        "one pitch per participating expert"
+    );
     for segment in &boundaries.segments {
-        assert!(fused.candidates.iter().any(|candidate| {
-            candidate.boundary_source == "game"
-                && candidate.target_pitch_source == "game"
-                && candidate.range == segment.range
-                && candidate.boundary_fractional_midi == segment.fractional_midi
-        }), "raw note geometry and exact fractional pitch must remain auditable");
+        assert!(
+            fused.candidates.iter().any(|candidate| {
+                candidate.boundary_source == "game"
+                    && candidate.target_pitch_source == "game"
+                    && candidate.range == segment.range
+                    && candidate.boundary_fractional_midi == segment.fractional_midi
+            }),
+            "raw note geometry and exact fractional pitch must remain auditable"
+        );
     }
     crate::fusion::decode_candidate_graph(&fused.candidates).unwrap();
 }
@@ -74,9 +89,9 @@ fn dense_peer_pitch_estimates_do_not_expand_every_fragment_onto_a_long_duration(
 fn peer_pitch_summary_uses_local_duration_not_note_count_or_raw_duration() {
     let boundaries = primary([(100_000, 500_000, 69.0)]);
     let mut peers = vec![peer(100_000, 400_000, 69.25)];
-    peers.extend((0..9).map(|index| {
-        peer(400_000 + index * 10_000, 410_000 + index * 10_000, 81.25)
-    }));
+    peers.extend(
+        (0..9).map(|index| peer(400_000 + index * 10_000, 410_000 + index * 10_000, 81.25)),
+    );
     // This very long neighbor overlaps the target for only ten milliseconds.
     peers.push(peer(490_000, 10_000_000, 81.25));
     let fused = fuse(&boundaries, &peers);
@@ -89,16 +104,21 @@ fn peer_pitch_summary_uses_local_duration_not_note_count_or_raw_duration() {
         .collect::<Vec<_>>();
     assert_eq!(primary_peer_states.len(), 1);
     assert!((primary_peer_states[0].center_pitch_hz - midi_hz(69.25)).abs() < 0.001);
-    assert!(primary_peer_states[0]
-        .boundary_alternatives
-        .iter()
-        .any(|alternative| alternative.fractional_midi == Some(81.25)));
-    assert!(fused.candidates.iter().any(|candidate| {
-        candidate.boundary_source == "peer"
-            && candidate.target_pitch_source == "peer"
-            && candidate.range.start == 400_000
-            && candidate.target_midi == 81
-    }), "real short-note proposals retain their own duration states");
+    assert!(
+        primary_peer_states[0]
+            .boundary_alternatives
+            .iter()
+            .any(|alternative| alternative.fractional_midi == Some(81.25))
+    );
+    assert!(
+        fused.candidates.iter().any(|candidate| {
+            candidate.boundary_source == "peer"
+                && candidate.target_pitch_source == "peer"
+                && candidate.range.start == 400_000
+                && candidate.target_midi == 81
+        }),
+        "real short-note proposals retain their own duration states"
+    );
     peers.reverse();
     assert_eq!(fused, fuse(&boundaries, &peers));
 }
@@ -129,8 +149,11 @@ fn flux_spike(time: u64) -> AcousticEvidence {
             .map(|index| AcousticEvidenceFrame {
                 start: index * 10_000,
                 rms: 0.2,
-                spectral_flux: (index > 0)
-                    .then_some(if index * 10_000 == time { 0.3 } else { 0.01 }),
+                spectral_flux: (index > 0).then_some(if index * 10_000 == time {
+                    0.3
+                } else {
+                    0.01
+                }),
                 periodicity: 0.8,
                 snr_db: 20.0,
                 fundamental_hz: Some(440.0),
@@ -152,12 +175,26 @@ fn flux_only_spikes_do_not_block_coherent_note_consolidation() {
     for time in [400_000, 250_000] {
         let acoustic = flux_spike(time);
         let fused = fuse_singing_evidence_with_challengers(
-            &[], &boundaries, "rmvpe", &curve, None, &[], None,
-            Some(&acoustic), true, None, &[], &[],
-        ).unwrap();
+            &[],
+            &boundaries,
+            "rmvpe",
+            &curve,
+            None,
+            &[],
+            None,
+            Some(&acoustic),
+            true,
+            None,
+            &[],
+            &[],
+        )
+        .unwrap();
         let selected = crate::fusion::decode_candidate_graph(&fused.candidates).unwrap();
         assert_eq!(selected.len(), 1, "flux-only spike at {time}");
-        assert_eq!(selected[0].boundary_kind, BoundaryEvidenceKind::F0Consolidation);
+        assert_eq!(
+            selected[0].boundary_kind,
+            BoundaryEvidenceKind::F0Consolidation
+        );
         assert_eq!(selected[0].range, TimeRange::new(100_000, 700_000).unwrap());
     }
 }
@@ -170,8 +207,15 @@ fn corroborated_repeat_attacks_still_block_consolidation() {
         let mut acoustic = flux_spike(time);
         acoustic.frames[(time / acoustic.hop) as usize].rms = 0.3;
         let challengers = f0_consolidation_challengers(
-            &boundaries, &[], "rmvpe", &curve, Some(&acoustic), None, &[],
-        ).unwrap();
+            &boundaries,
+            &[],
+            "rmvpe",
+            &curve,
+            Some(&acoustic),
+            None,
+            &[],
+        )
+        .unwrap();
         assert!(challengers.is_empty(), "measured attack at {time}");
     }
 }
@@ -190,8 +234,7 @@ fn peer_summary_preserves_distinct_experts_and_fractional_pitch() {
     assert_eq!(states.len(), 3);
     for (source, midi) in [("peer", 81.13), ("independent", 69.37)] {
         assert!(states.iter().any(|candidate| {
-            candidate.target_pitch_source == source
-                && candidate.center_pitch_hz == midi_hz(midi)
+            candidate.target_pitch_source == source && candidate.center_pitch_hz == midi_hz(midi)
         }));
     }
 }
