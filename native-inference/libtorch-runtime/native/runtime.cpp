@@ -126,9 +126,9 @@ std::unique_ptr<Plan> make_plan(const std::string& resource, std::shared_ptr<Run
 at::Tensor fused_attention(const at::Tensor& query, const at::Tensor& key, const at::Tensor& value,
                            const at::Tensor& mask, bool causal, bool grouped, double scale) {
 #if defined(UTA_LIBTORCH_ROCM)
-    // Packaged gfx1103 fused SDPA is experimental and caused recorded display
-    // resets under repeated real RoFormer work. Keep mixed precision explicit
-    // and bounded on the selected GPU for every ROCm model family.
+    // Packaged gfx1103 fused SDPA is experimental and was active during
+    // recorded display resets. It was not the sole reset cause, so keep mixed
+    // precision explicit and bounded for every ROCm model family.
     return explicit_mixed_attention(query, key, value, mask, causal, grouped, scale);
 #else
     auto query_half = query.to(at::kHalf).contiguous();

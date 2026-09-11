@@ -6,6 +6,19 @@
 #include <vector>
 
 namespace uta::torch_native {
+// Cap the contraction work submitted by one GEMM as well as its row count.
+// This scheduling bound is derived from matrix dimensions and does not alter
+// the shared weights or split a row's contraction.
+inline int64_t bounded_projection_row_tile(const at::Tensor& weight) {
+    if (weight.dim() != 2 || weight.size(0) <= 0 || weight.size(1) <= 0)
+        throw std::invalid_argument("bounded projection requires a nonempty matrix weight");
+    constexpr int64_t maximum_rows = 1024;
+    constexpr int64_t maximum_multiply_accumulates = 256 * 1024 * 1024;
+    if (weight.size(0) > maximum_multiply_accumulates / weight.size(1)) return 1;
+    const auto work_per_row = weight.size(0) * weight.size(1);
+    return std::max<int64_t>(1, std::min<int64_t>(maximum_rows, maximum_multiply_accumulates / work_per_row));
+}
+
 // Same shared-weight linear map, with bounded GEMM row count on the selected
 // GPU. Leading batch/sequence axes are flattened, never split semantically.
 // The output is allocated once; all row tiles including the tail remain on GPU.

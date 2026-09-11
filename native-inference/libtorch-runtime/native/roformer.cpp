@@ -132,7 +132,9 @@ public:
                 } else {
                     const auto prefix = "mask_est." + std::to_string(stem) + ".freq." + std::to_string(band) + ".mlp.";
                     for (int64_t layer = 0; layer < mask_layers; ++layer) {
-                        current = weights->linear(current, prefix + std::to_string(layer * 2));
+                        const auto projection = prefix + std::to_string(layer * 2);
+                        current = project(current, weights->get(projection + ".weight"), weights->optional(projection + ".bias"));
+                        runtime->checkpoint("roformer.mask." + std::to_string(stem) + '.' + std::to_string(band) + '.' + std::to_string(layer));
                         if (layer + 1 < mask_layers) current = at::tanh(current);
                     }
                 }
@@ -169,9 +171,11 @@ private:
             : weights->rms_norm(input, name, 1e-12);
     }
     at::Tensor project(const at::Tensor& input, const at::Tensor& weight, const at::Tensor& bias = {}) const {
-        if (runtime->backend != "libtorch_rocm" || input.numel() / input.size(-1) <= 1024)
-            return at::linear(input, weight, bias);
-        return tiled_projection(input, weight, bias, [this] { check_cancel(); });
+        if (runtime->backend != "libtorch_rocm") return at::linear(input, weight, bias);
+        const auto rows = input.numel() / input.size(-1);
+        const auto row_tile = bounded_projection_row_tile(weight);
+        if (rows <= row_tile) return at::linear(input, weight, bias);
+        return tiled_projection(input, weight, bias, [this] { check_cancel(); }, row_tile);
     }
     std::string architecture;
     bool public_names = false, polar = false, final_norm = false, output_norm = false, skips = false, zero_dc = false;
@@ -275,9 +279,10 @@ private:
         const auto input_bias = weights->get(name(prefix, "ff1_b", "in.bias"));
         const auto output_weight = weights->get(name(prefix, "ff2_w", "out.weight"));
         const auto output_bias = weights->get(name(prefix, "ff2_b", "out.bias"));
-        if (runtime->backend == "libtorch_rocm" && current.numel() / current.size(-1) > 1024)
+        const auto row_tile = std::min(bounded_projection_row_tile(input_weight), bounded_projection_row_tile(output_weight));
+        if (runtime->backend == "libtorch_rocm" && current.numel() / current.size(-1) > row_tile)
             return sequence + tiled_feed_forward(current, input_weight, input_bias, output_weight, output_bias,
-                [this] { check_cancel(); });
+                [this] { check_cancel(); }, row_tile);
         current = project(current, input_weight, input_bias);
         runtime->checkpoint(prefix + ".feed_forward_projection");
         current = at::gelu(current, "none");
