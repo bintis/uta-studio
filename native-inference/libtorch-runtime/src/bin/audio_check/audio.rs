@@ -120,6 +120,9 @@ pub fn publish_wave(
             "s32",
             "-bits_per_raw_sample",
             "32",
+            // Otherwise FFmpeg silently lowers this request to 24-bit PCM.
+            "-strict",
+            "experimental",
         ])
         .arg(&flac)
         .output()
@@ -161,6 +164,52 @@ mod tests {
             assert!(-f64::from(peak) * pcm_gain(peak) > -1.0);
         }
     }
+    #[test]
+    fn published_flac_retains_requested_depth_and_decodes_without_clipping() {
+        struct Scratch(std::path::PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("uta-studio-audio-{}-{nonce}", std::process::id()));
+        fs::create_dir(&path).unwrap();
+        let root = Scratch(path);
+        let source = root.0.join("source.wav");
+        let samples = [0.0, -0.0, 1.5, -1.25, 0.12345679, -0.23456789, 1.0e-7, -1.0e-7].repeat(64);
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: 44100,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        write_wav(&source, spec, &samples).unwrap();
+        let publication = publish_wave(&root.0, "audio", &source, spec, &samples).unwrap();
+        let flac = root.0.join("audio.flac");
+        let encoded = fs::read(&flac).unwrap();
+        assert_eq!(&encoded[..4], b"fLaC");
+        // First FLAC metadata block is STREAMINFO; its packed sample geometry
+        // records the effective bit depth, unlike ffmpeg's s32 input format.
+        assert_eq!(encoded[4] & 0x7f, 0);
+        let geometry = u64::from_be_bytes(encoded[18..26].try_into().unwrap());
+        assert_eq!(((geometry >> 36) & 31) + 1, 32);
+        let decoded = ffmpeg().arg("-i").arg(&flac)
+            .args(["-f", "f64le", "-c:a", "pcm_f64le", "pipe:1"])
+            .output().unwrap();
+        assert!(decoded.status.success(), "{}", String::from_utf8_lossy(&decoded.stderr));
+        assert_eq!(decoded.stdout.len(), samples.len() * 8);
+        let gain = publication["pcm_encode_gain"].as_f64().unwrap();
+        for (bytes, sample) in decoded.stdout.chunks_exact(8).zip(samples) {
+            let actual = f64::from_le_bytes(bytes.try_into().unwrap());
+            assert!(actual.is_finite() && actual.abs() < 1.0);
+            assert!((actual - f64::from(sample) * gain).abs() <= 2.0_f64.powi(-30));
+        }
+    }
+
     #[test]
     fn finite_check_checks_every_value() {
         assert!(finite([0.0, 1.0, f64::NAN]).is_err());
