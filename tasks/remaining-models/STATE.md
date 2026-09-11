@@ -666,7 +666,7 @@ Source media, installed assets and unrelated user changes remain untouched;
 no CPU/GGML inference fallback, Vulkan stress, workspace release checks or Nix
 packaging were performed. See [execution design](../../docs/design/runtime/LIBTORCH_EXECUTION.md).
 
-## All-resource LibTorch AMD ROCm 10 — HALTED AFTER THIRD DISPLAY RESET (2026-09-11)
+## All-resource LibTorch AMD ROCm 10 — HALTED AFTER FOURTH GPU RESET (2026-09-11)
 
 **Zero of eighteen resources qualified; the full-song phase was not started.** The isolated Nix
 shell and official **ROCm 10.0.0 + PyTorch 2.13.0** packages, including the Radeon 780M `gfx1103`
@@ -744,15 +744,28 @@ was safe. Evidence: `repair-review/attention-check/` and `repair-review/denoise-
 Offline GGUF inspection then identified an uncovered Denoise mask-estimator contraction: each band
 could submit one `801 x 1536` by `1536 x 1536` GEMM, about 1.89 billion multiply-accumulates, because
 that private path bypassed projection tiling. Commit `8268ab9` routes those layers through the shared
-ROCm projection path, bounds each submitted GEMM by both rows and 268,435,456 multiply-accumulates,
-and adds per-layer trace checkpoints plus the actual square-projection oracle. The native build
-passed. The new oracle and model have **not** been executed on GPU after the third reset, so this is
-a built candidate fix, not a verified repair.
+ROCm projection path, initially bounded each submitted GEMM to 268,435,456 multiply-accumulates, and
+added per-layer trace checkpoints plus the actual square-projection oracle.
+
+The user explicitly directed same-boot continuation after preflight showed the driver attached and
+AMD use at 2%. The actual Denoise square projection passed all 1,230,336 values with row tile 113,
+NMSE `3.41814423231e-13` and maximum error `3.38207630932e-5`. The next large projection case then
+received `SIGBUS` after 4.371 seconds. It had been over-partitioned from the previously passing row
+tile 1024 to 455, increasing submissions from about 59 to 132; its sampled 688,644 KiB GTT was close
+to the prior passing run's 692,616 KiB. The final sample records
+`kworker/u64:3+amdgpu-reset-dev`. Denoise was not launched. Evidence:
+`mask-projection-resume/projection-check/`.
+
+Commit `4fc2739` corrects that scheduling regression. It uses the already passed
+`1024 x 384 x 1536` contraction as the work bound: transformer projections retain tile 1024 while
+the private `1536 x 1536` mask projection remains split at tile 256. The corrected native build
+passed, but no GPU execution followed the fourth reset. This is still a built candidate, not a
+verified model repair.
 
 The sweep remains **three passed, one failed, fourteen not run**. No subsequent model was launched
 and full-song execution was not started. Do not resume AMD ROCm model, oracle or stress execution
-without another explicit human decision after this third display reset. CPU/GGML fallback remains
-prohibited. See [LibTorch execution](../../docs/design/runtime/LIBTORCH_EXECUTION.md).
+without another explicit human decision after this fourth code-triggered GPU reset. CPU/GGML
+fallback remains prohibited. See [LibTorch execution](../../docs/design/runtime/LIBTORCH_EXECUTION.md).
 
 ## Next actions
 

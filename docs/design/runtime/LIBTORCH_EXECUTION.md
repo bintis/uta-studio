@@ -193,7 +193,7 @@ word timings; STARS uses a separate actual FireRed Chinese alignment branch with
 primary-provider substitution follows. Full details, exact commits/operations,
 timings and remaining integration work: [full-song results](../../LIBTORCH_XPU_FULLSONG_RESULTS.md).
 
-## AMD ROCm 10 all-resource validation — halted after third display reset 2026-09-11
+## AMD ROCm 10 all-resource validation — halted after fourth GPU reset 2026-09-11
 
 **RESUMED AT ZERO OF EIGHTEEN FOR THE ORIGINAL TWELVE-SECOND SWEEP.** The authorized isolated environment resolves the official AMD stable
 combination, **ROCm 10.0.0 + PyTorch 2.13.0**, with the Radeon 780M `device-gfx1103` package. The
@@ -266,15 +266,28 @@ the third recorded AMD display-reset incident in this lane. Evidence:
 Offline model inspection found that the private Denoise mask estimator bypassed projection tiling:
 for each band it could submit an `801 x 1536` by `1536 x 1536` GEMM, about 1.89 billion
 multiply-accumulates. Commit `8268ab9` routes those layers through the common projection helper,
-bounds each ROCm GEMM by rows and 268,435,456 multiply-accumulates, and adds actual-shape oracle and
-trace coverage. Its native build passed. Neither that new GPU oracle nor Denoise has been executed
-after the third reset, so the change is a built candidate rather than a verified fix.
+initially bounded each ROCm GEMM to 268,435,456 multiply-accumulates, and added actual-shape oracle
+and trace coverage.
+
+The user explicitly directed same-boot continuation after preflight found the attached `amdgpu`
+driver and 2% AMD use. The Denoise square case passed all 1,230,336 values at row tile 113. The
+next `60000 x 384` by `384 x 1536` projection received `SIGBUS` after 4.371 seconds and the final
+sample records `amdgpu-reset-dev`; sampled peak GTT was 688,644 KiB. That shape had passed earlier
+at row tile 1024 and comparable 692,616 KiB GTT, but the first work formula reduced it to tile 455
+and increased submissions from about 59 to 132. Denoise itself was not launched. Evidence:
+`test-artifacts/amd-libtorch-rocm10/mask-projection-resume/projection-check/`.
+
+Commit `4fc2739` corrects this over-partitioning: the previously passed
+`1024 x 384 x 1536` contraction defines the submitted-work bound, so transformer projections retain
+row tile 1024 and private square mask projections use tile 256. The native build passed. No GPU
+oracle or model execution followed this fourth, code-triggered reset, so this remains an unverified
+candidate repair.
 
 The bounded result remains **three passed, one failed, fourteen not run**. Full-song execution was
 not started. Further AMD ROCm model, oracle or stress execution requires another explicit human
-decision after this third display reset. CPU/GGML fallback remains prohibited. Previous XPU results
-remain separate, and this work establishes no product routing, whole-model parity, listening
-quality, driver stability or production readiness.
+decision after this fourth reset. CPU/GGML fallback remains prohibited. Previous XPU results remain
+separate, and this work establishes no product routing, whole-model parity, listening quality,
+driver stability or production readiness.
 
 ## Source references
 
