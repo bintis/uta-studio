@@ -312,11 +312,13 @@ Saved manual choices are not erased: exact Super requests omit them, and turning
 them active again. CPU is never an automatic lane. Diagnostics distinguish requested/predicted
 placement from measured dual-device work.
 
-CPU/protocol verification passed: `20260911T154757-95dfb8ae3cdb` ran 282 Analysis Engine unit tests
-plus four packaged-boundary tests; `20260911T155016-dc91fb281ba3` passed desktop tests; and
-`20260911T152953-39e26b07d908` passed app-core/desktop request and settings coverage. No GPU
-inference or release build was run for this implementation. Corrected dual-GPU wall-time, output
-comparison, device telemetry and host-stability qualification remain pending. The historical
+CPU/protocol verification passed: combined operation `20260911T155605-0e383e3b32f1` ran 282
+Analysis Engine unit tests, four packaged-boundary tests, 438 app-core tests (one ignored) and 242
+desktop tests. No GPU inference or release build was run for this implementation. Targeted clippy
+operation `20260911T155349-b726a85e2197` reached the affected crates but stopped on two pre-existing
+warnings in `app-core/src/backend_cli/process.rs`; no scheduler warning preceded that blocker.
+Corrected dual-GPU wall-time, output comparison, device telemetry and host-stability qualification
+remain pending. The historical
 chunk-splitting implementation remains removed by `844c016`; its timings do not qualify this
 scheduler. Design and boundaries:
 [Super acceleration](../../docs/design/runtime/SUPER_ACCELERATION.md).

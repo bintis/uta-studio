@@ -357,12 +357,13 @@ index (equal maxima at indices 1 and one subgroup-width can select the latter). 
 for host argmax is therefore invalid. Do not change token selection merely to reduce readback.
 Cross-song reuse and Studio publication timing remain separate batch/end-to-end boundaries.
 
-Current CPU/protocol verification: Analysis Engine operation
-`20260911T154757-95dfb8ae3cdb` passed 282 unit tests and four packaged-boundary tests, including
-per-lane serialization, cross-lane admission, dependency/cost placement, inherited task context,
-cancellation and cleanup. Desktop operation `20260911T155016-dc91fb281ba3` passed settings and
-Processing Studio tests; app-core/desktop operation `20260911T152953-39e26b07d908` covered exact
-request projection and save-before-visible-state behavior. These checks did not launch either GPU.
+Current CPU/protocol verification: combined operation `20260911T155605-0e383e3b32f1` passed
+282 Analysis Engine unit tests, four packaged-boundary tests, 438 app-core tests (one ignored) and
+242 desktop tests. Coverage includes per-lane serialization, cross-lane admission, dependency/cost
+placement, inherited task context, cancellation/cleanup, exact-request projection, disabled manual
+controls and save-before-visible-state behavior. These checks did not launch either GPU. Targeted
+clippy operation `20260911T155349-b726a85e2197` stopped on two pre-existing warnings in
+`app-core/src/backend_cli/process.rs`; no scheduler warning preceded that blocker.
 
 The concurrently authorized independent LibTorch work is preserved. Shared host DSP entry points
 must not call GGML model graphs; scheduler routing must respect the selected backend and precision.
