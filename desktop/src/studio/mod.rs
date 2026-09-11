@@ -58,6 +58,7 @@ mod startup;
 mod state;
 mod ui_api;
 mod ui_invalidation;
+mod ui_script;
 mod widgets;
 mod window_ops;
 
@@ -66,6 +67,7 @@ use self::analysis::*;
 pub use startup::run;
 pub(crate) use ui_api::{UiPointerApi, audit_ui_api_coverage};
 pub(crate) use ui_invalidation::{UiDirtyRegion, UiInvalidated, UiRebuildMetrics};
+pub(crate) use ui_script::UiScriptState;
 
 pub(crate) use actions::*;
 pub(crate) use actions_chrome::*;

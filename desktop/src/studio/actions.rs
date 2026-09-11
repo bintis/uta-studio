@@ -22,6 +22,10 @@ pub(crate) struct ActionSystemParams<'w, 's> {
     theme: ResMut<'w, StudioTheme>,
     clear_color: ResMut<'w, ClearColor>,
     invalidated: ResMut<'w, UiInvalidated>,
+    script: ResMut<'w, UiScriptState>,
+    startup_banner: Res<'w, StartupBannerState>,
+    screenshot: Res<'w, DebugScreenshotState>,
+    app_exit: MessageWriter<'w, AppExit>,
 }
 
 pub(crate) fn handle_actions(
@@ -33,6 +37,36 @@ pub(crate) fn handle_actions(
         if *interaction != Interaction::Pressed {
             continue;
         }
+        dispatch_action(action, &mut commands, &mut context);
+    }
+    // Scripted interactions (`UTA_STUDIO_DEBUG_UI_SCRIPT`) take the same path
+    // as a pointer press: one registered command per step, dispatched here.
+    let banner_done = context.startup_banner.done;
+    if let Some((index, step, parsed)) = context.script.take_due_step(banner_done) {
+        let (dispatched, error) = match parsed {
+            Ok(command) => {
+                dispatch_action(&UiAction(command), &mut commands, &mut context);
+                (true, None)
+            }
+            Err(error) => (false, Some(error)),
+        };
+        context.script.record_step(
+            index,
+            &step,
+            dispatched,
+            error,
+            &context.shell,
+            &context.dialogs,
+        );
+    }
+    if context.script.finish_if_done(banner_done) && context.screenshot.path.is_none() {
+        context.app_exit.write(AppExit::Success);
+    }
+}
+
+/// Dispatches one UI command exactly as a pointer press on its button would.
+fn dispatch_action(action: &UiAction, commands: &mut Commands, context: &mut ActionSystemParams) {
+    {
         let request = action.api_request();
         bevy::log::info!(
             target: "uta_studio::ui_action",
@@ -54,11 +88,11 @@ pub(crate) fn handle_actions(
             .next()
             .map(|computed| computed.size().x * computed.inverse_scale_factor());
         let Ok((window_entity, mut window)) = context.windows.windows.single_mut() else {
-            continue;
+            return;
         };
         if apply_chrome_action(
             action,
-            &mut commands,
+            commands,
             &context.search_inputs,
             window_entity,
             graph_viewport_width,
@@ -77,7 +111,7 @@ pub(crate) fn handle_actions(
                 invalidated: &mut context.invalidated,
             },
         ) {
-            continue;
+            return;
         }
         if apply_settings_action(
             action,
@@ -99,7 +133,7 @@ pub(crate) fn handle_actions(
                 invalidated: &mut context.invalidated,
             },
         ) {
-            continue;
+            return;
         }
         apply_content_action(
             action,

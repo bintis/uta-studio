@@ -47,6 +47,7 @@ pub fn run() {
         .insert_resource(UiInvalidated::default())
         .insert_resource(UiRebuildMetrics::default())
         .insert_resource(DebugScreenshotState::default())
+        .insert_resource(UiScriptState::default())
         .insert_resource(NavigationInputState::default())
         .insert_resource(LibraryRefreshTimer(Timer::from_seconds(
             1.0,
@@ -252,12 +253,15 @@ pub fn run() {
 pub(crate) fn capture_debug_screenshot(
     mut commands: Commands,
     startup_banner: Res<StartupBannerState>,
+    script: Res<UiScriptState>,
     mut state: ResMut<DebugScreenshotState>,
 ) {
     let Some(path) = state.path.clone() else {
         return;
     };
-    if state.requested || !startup_banner.done {
+    // A scripted interaction sequence captures its final state, not the
+    // startup state: settle only after the last step has been dispatched.
+    if state.requested || !startup_banner.done || script.is_running() {
         return;
     }
     state.settled_frames = state.settled_frames.saturating_add(1);
