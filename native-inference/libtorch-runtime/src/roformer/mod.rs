@@ -1,7 +1,9 @@
 //! Native RoFormer learned graph with the canonical shared Rust STFT and
 //! ordered overlap-add. No GGML library or graph is used by this adapter.
 use std::path::Path;
+use std::time::Duration;
 use crate::{Input, Model};
+use crate::stage_profile::StageProfile;
 use crate::stft::compute_stft;
 use crate::wav::{read_f32_wav, write_f32_wav};
 #[path = "../../../ggml-runtime/src/roformer/frames.rs"]
@@ -50,22 +52,70 @@ impl Roformer {
         Ok(Self { model, config })
     }
     pub fn process_chunk(&self, interleaved: &[f32]) -> Result<Vec<Vec<f32>>, String> {
+        let mut profile = StageProfile::new("uta-libtorch-roformer");
+        let result = self.process_chunk_profiled(interleaved, &mut profile);
+        if result.is_ok() { profile.chunk_done(); }
+        profile.report();
+        result
+    }
+    fn process_chunk_profiled(&self, interleaved: &[f32], profile: &mut StageProfile) -> Result<Vec<Vec<f32>>, String> {
         if interleaved.is_empty() || interleaved.len() % 2 != 0 { return Err("RoFormer chunk must contain stereo frames".to_string()); }
+        let mark = profile.mark();
         let channels: [Vec<f32>; 2] = std::array::from_fn(|channel| interleaved.iter().skip(channel).step_by(2).copied().collect());
+        profile.record("deinterleave", mark);
+        let mark = profile.mark();
         let spectra = channels.map(|audio| compute_stft(&audio, self.config.fft_size, self.config.hop_length, self.config.window_length));
+        profile.record("stft", mark);
+        let mark = profile.mark();
         let frame_count = spectra[0].n_frames;
         let features = self.config.frequency_indices.len() * 2;
         let input = frames::prepare_model_input(&spectra, frame_count, features, &self.config.frequency_indices)?;
         let shape = [frame_count as i64, features as i64];
+        profile.record("prepare_input", mark);
+        let mark = profile.mark();
         let mut output = self.model.forward("mask", &[Input::f32("features", &shape, &input)])?;
+        if let Some(mark) = mark {
+            let total = mark.elapsed();
+            let upload = Duration::from_secs_f64(output.timings.upload_seconds);
+            let compute = Duration::from_secs_f64(output.timings.synchronized_compute_seconds);
+            let readback = Duration::from_secs_f64(output.timings.readback_seconds);
+            profile.record_duration("upload", upload);
+            profile.record_duration("compute", compute);
+            profile.record_duration("readback", readback);
+            profile.record_duration("ffi_other", total.saturating_sub(upload + compute + readback));
+        }
+        let mark = profile.mark();
         let mask = output.take("mask")?.into_f32()?;
         if mask.iter().any(|value| !value.is_finite()) { return Err("native RoFormer emitted nonfinite masks".to_string()); }
-        frames::reconstruct_stems(&mask, &spectra, interleaved.len() / 2, &self.config)
+        profile.record("mask_check", mark);
+        frames::reconstruct_stems(&mask, &spectra, interleaved.len() / 2, &self.config, profile)
     }
     pub fn process_wav(&mut self, input: &Path, output: &Path, progress: &mut impl FnMut(u64, u64)) -> Result<(), String> {
-        let audio = read_f32_wav(input, self.config.sample_rate, 2)?;
-        let stems = frames::process_overlap_add(&audio, self.config.chunk_size, self.config.overlap, |chunk| self.process_chunk(chunk), progress)?;
-        if stems.len() != 1 { return Err("the catalog separation request requires one direct stem; residual is published by the worker".to_string()); }
-        write_f32_wav(output, self.config.sample_rate, 2, &stems[0])
+        let mut profile = StageProfile::new("uta-libtorch-roformer");
+        let result = (|| {
+            let mark = profile.mark();
+            let audio = read_f32_wav(input, self.config.sample_rate, 2)?;
+            profile.record("read_audio", mark);
+            let mark = profile.mark();
+            let mut chunk_time = Duration::ZERO;
+            let stems = frames::process_overlap_add(&audio, self.config.chunk_size, self.config.overlap, |chunk| {
+                let start = profile.mark();
+                let result = self.process_chunk_profiled(chunk, &mut profile);
+                if let Some(start) = start { chunk_time += start.elapsed(); }
+                if result.is_ok() { profile.chunk_done(); }
+                result
+            }, progress);
+            if let Some(mark) = mark {
+                profile.record_duration("overlap", mark.elapsed().saturating_sub(chunk_time));
+            }
+            let stems = stems?;
+            if stems.len() != 1 { return Err("the catalog separation request requires one direct stem; residual is published by the worker".to_string()); }
+            let mark = profile.mark();
+            let result = write_f32_wav(output, self.config.sample_rate, 2, &stems[0]);
+            profile.record("write_audio", mark);
+            result
+        })();
+        profile.report();
+        result
     }
 }

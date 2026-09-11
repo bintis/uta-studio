@@ -39,7 +39,15 @@ impl StageProfile {
         let Some(since) = since else {
             return;
         };
-        let elapsed = since.elapsed();
+        self.record_duration(stage, since.elapsed());
+    }
+
+    /// Account for an already measured, non-overlapping stage (for example a
+    /// synchronous native call's transfer/compute split). Never creates a fence.
+    pub fn record_duration(&mut self, stage: &'static str, elapsed: Duration) {
+        if !self.enabled {
+            return;
+        }
         match self.stages.iter_mut().find(|(name, _, _)| *name == stage) {
             Some(entry) => {
                 entry.1 += elapsed;
@@ -148,6 +156,23 @@ mod tests {
         assert_eq!(names, ["stft", "compute"]);
         assert_eq!(profile.stages[0].2, 2);
         assert_eq!(profile.stages[1].2, 1);
+    }
+
+    #[test]
+    fn premeasured_stages_are_opt_in_and_accumulate_exact_durations() {
+        let mut profile = StageProfile {
+            label: "test", enabled: false, stages: Vec::new(), chunks: 0, started: None,
+        };
+        profile.record_duration("upload", Duration::from_millis(3));
+        assert!(profile.stages.is_empty());
+        profile.enabled = true;
+        profile.record_duration("upload", Duration::from_millis(3));
+        profile.record_duration("compute", Duration::from_millis(7));
+        profile.record_duration("upload", Duration::from_millis(5));
+        assert_eq!(profile.stages, vec![
+            ("upload", Duration::from_millis(8), 2),
+            ("compute", Duration::from_millis(7), 1),
+        ]);
     }
 
     #[test]

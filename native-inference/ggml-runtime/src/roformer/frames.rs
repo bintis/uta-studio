@@ -5,6 +5,7 @@
 //! the bounded overlap-add that turns a track into chunks and back.
 
 use crate::stft::{Spectrogram, compute_istft};
+use crate::stage_profile::StageProfile;
 
 use super::Config;
 
@@ -37,6 +38,7 @@ pub(super) fn reconstruct_stems(
     spectra: &[Spectrogram; 2],
     output_frames: usize,
     config: &Config,
+    profile: &mut StageProfile,
 ) -> Result<Vec<Vec<f32>>, String> {
     let frequency_count = config.fft_size / 2 + 1;
     let frame_count = spectra[0].n_frames;
@@ -47,6 +49,7 @@ pub(super) fn reconstruct_stems(
     }
     let mut outputs = Vec::with_capacity(config.stem_count);
     for stem in 0..config.stem_count {
+        let mark = profile.mark();
         let mut channels = [
             Spectrogram {
                 data: vec![0.0; frequency_count * frame_count * 2],
@@ -92,6 +95,8 @@ pub(super) fn reconstruct_stems(
                 }
             }
         }
+        profile.record("mask_reconstruct", mark);
+        let mark = profile.mark();
         let reconstructed = channels.map(|spectrum| {
             compute_istft(
                 &spectrum,
@@ -101,12 +106,15 @@ pub(super) fn reconstruct_stems(
                 output_frames,
             )
         });
+        profile.record("istft", mark);
+        let mark = profile.mark();
         let mut interleaved = Vec::with_capacity(output_frames * 2);
         for frame in 0..output_frames {
             interleaved.push(reconstructed[0][frame]);
             interleaved.push(reconstructed[1][frame]);
         }
         outputs.push(interleaved);
+        profile.record("interleave", mark);
     }
     Ok(outputs)
 }
