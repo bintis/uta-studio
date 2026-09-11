@@ -4,16 +4,56 @@ use crate::studio::*;
 const REFERENCE_METRICS_COPY: &str = "SDR / SI-SDR / SIR / SAR: unavailable — no aligned ground-truth stems were evaluated. The original mix, another model's estimate and mixture reconstruction are not ground truth. Published dataset scores are not scores for this song.";
 
 pub(crate) fn is_separation_capability(capability: &str) -> bool {
-    matches!(capability, "audio.separate_vocal_bgm" | "audio.extract_vocals" | "audio.extract_instrumental")
+    matches!(
+        capability,
+        "audio.separate_vocal_bgm" | "audio.extract_vocals" | "audio.extract_instrumental"
+    )
 }
 
-fn stem_measurement_rows(stem: &app_core::SeparatedStemMeasurementWire) -> Vec<(&'static str, String)> {
+fn stem_measurement_rows(
+    stem: &app_core::SeparatedStemMeasurementWire,
+) -> Vec<(&'static str, String)> {
     vec![
-        ("FORMAT / DURATION", format!("{} Hz · {} channels · {:.3} s · {} frames", stem.sample_rate, stem.channels, stem.duration_seconds, stem.frame_count)),
-        ("PEAK / RMS", format!("{:.6} / {:.6} linear amplitude", stem.peak_amplitude, stem.rms_amplitude)),
-        ("NEAR FULL SCALE", format!("{:.4}% of samples · |sample| ≥ 0.999", stem.near_full_scale_ratio * 100.0)),
-        ("SILENT SAMPLES", format!("{:.4}% of samples · |sample| ≤ 0.0001", stem.silent_sample_ratio * 100.0)),
-        ("FINITE SAMPLES", format!("{} · {} samples", if stem.finite_samples { "All finite" } else { "Nonfinite samples reported" }, stem.sample_count)),
+        (
+            "FORMAT / DURATION",
+            format!(
+                "{} Hz · {} channels · {:.3} s · {} frames",
+                stem.sample_rate, stem.channels, stem.duration_seconds, stem.frame_count
+            ),
+        ),
+        (
+            "PEAK / RMS",
+            format!(
+                "{:.6} / {:.6} linear amplitude",
+                stem.peak_amplitude, stem.rms_amplitude
+            ),
+        ),
+        (
+            "NEAR FULL SCALE",
+            format!(
+                "{:.4}% of samples · |sample| ≥ 0.999",
+                stem.near_full_scale_ratio * 100.0
+            ),
+        ),
+        (
+            "SILENT SAMPLES",
+            format!(
+                "{:.4}% of samples · |sample| ≤ 0.0001",
+                stem.silent_sample_ratio * 100.0
+            ),
+        ),
+        (
+            "FINITE SAMPLES",
+            format!(
+                "{} · {} samples",
+                if stem.finite_samples {
+                    "All finite"
+                } else {
+                    "Nonfinite samples reported"
+                },
+                stem.sample_count
+            ),
+        ),
     ]
 }
 
@@ -81,11 +121,18 @@ mod tests {
     #[test]
     fn separation_inspector_labels_signal_units_without_fabricating_scores() {
         let stem = app_core::SeparatedStemMeasurementWire {
-            role: "instrumental".into(), artifact_path: "stems/instrumental.flac".into(),
-            sample_rate: 44_100, channels: 2, frame_count: 88_200,
-            duration_seconds: 2.0, sample_count: 176_400, finite_samples: true,
-            peak_amplitude: 0.5, rms_amplitude: 0.125,
-            near_full_scale_ratio: 0.01, silent_sample_ratio: 0.25,
+            role: "instrumental".into(),
+            artifact_path: "stems/instrumental.flac".into(),
+            sample_rate: 44_100,
+            channels: 2,
+            frame_count: 88_200,
+            duration_seconds: 2.0,
+            sample_count: 176_400,
+            finite_samples: true,
+            peak_amplitude: 0.5,
+            rms_amplitude: 0.125,
+            near_full_scale_ratio: 0.01,
+            silent_sample_ratio: 0.25,
         };
         let rows = stem_measurement_rows(&stem);
         assert!(rows[0].1.contains("44100 Hz · 2 channels · 2.000 s"));

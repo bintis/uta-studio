@@ -538,7 +538,9 @@ pub(super) fn run_ggml_dual_separation(
     })?;
     Ok(DualSeparationOutput {
         quality: crate::contract::SeparationQualityEvidence {
-            node_id: presentation_node_id.unwrap_or("audio.extract_vocals").to_string(),
+            node_id: presentation_node_id
+                .unwrap_or("audio.extract_vocals")
+                .to_string(),
             model_id: model_id.to_string(),
             measurement: "decoded_separation_output".to_string(),
             reference_status: "unavailable_no_ground_truth_stems".to_string(),
