@@ -90,16 +90,29 @@ public:
         const auto total = std::accumulate(widths.begin(), widths.end(), int64_t{0});
         if (features.dim() != 2 || features.size(1) != total) throw std::invalid_argument("RoFormer prepared band feature shape mismatch");
         std::vector<at::Tensor> bands;
+        auto projected_bands = runtime->backend == "libtorch_rocm"
+            ? at::empty({static_cast<int64_t>(widths.size()), frames, dimension}, features.options())
+            : at::Tensor();
         int64_t offset = 0;
         for (std::size_t band = 0; band < widths.size(); ++band) {
             const auto prefix = "band_split." + std::to_string(band) + '.';
             auto input = features.narrow(1, offset, widths[band]);
             auto normalized = normalize(input, prefix + (public_names ? "norm" : "norm.weight"));
-            bands.push_back(project(normalized, weights->get(prefix + (public_names ? "w" : "linear.weight")),
-                                      weights->get(prefix + (public_names ? "b" : "linear.bias"))));
+            const auto& weight = weights->get(prefix + (public_names ? "w" : "linear.weight"));
+            const auto& bias = weights->get(prefix + (public_names ? "b" : "linear.bias"));
+            if (projected_bands.defined()) {
+                auto output = projected_bands.select(0, static_cast<int64_t>(band));
+                tiled_projection_into(output, normalized, weight, bias, [this] { check_cancel(); },
+                                      bounded_projection_row_tile(weight),
+                                      tile_checkpoint("roformer.band_split." + std::to_string(band)));
+            } else {
+                bands.push_back(project(normalized, weight, bias));
+            }
             offset += widths[band];
         }
-        auto value = at::stack(bands, 1); // [time, band, model channel]
+        auto value = projected_bands.defined()
+            ? projected_bands.transpose(0, 1)
+            : at::stack(bands, 1); // [time, band, model channel]
         runtime->checkpoint("roformer.band_split");
         std::vector<at::Tensor> previous;
         for (int64_t layer = 0; layer < depth; ++layer) {

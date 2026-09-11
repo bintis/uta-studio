@@ -33,13 +33,13 @@ inline void projection_out(at::Tensor& output, const at::Tensor& input,
         at::mm_out(output, input, weight.transpose(0, 1));
 }
 
-// Same shared-weight linear map, with bounded GEMM row count on the selected
-// GPU. Leading batch/sequence axes are flattened, never split semantically.
-// The output is allocated once; all row tiles including the tail remain on GPU.
-inline at::Tensor tiled_projection(const at::Tensor& input, const at::Tensor& weight,
-                                  const at::Tensor& bias, const std::function<void()>& check_cancel,
-                                  int64_t row_tile = 1024,
-                                  const std::function<void(int64_t, int64_t)>& checkpoint_tile = {}) {
+// Same shared-weight linear map, writing into caller-owned contiguous storage.
+// Leading batch/sequence axes are flattened, never split semantically.
+inline void tiled_projection_into(
+    at::Tensor output, const at::Tensor& input, const at::Tensor& weight,
+    const at::Tensor& bias, const std::function<void()>& check_cancel,
+    int64_t row_tile = 1024,
+    const std::function<void(int64_t, int64_t)>& checkpoint_tile = {}) {
     if (input.dim() < 2 || weight.dim() != 2 || input.size(-1) <= 0 || weight.size(0) <= 0 ||
         input.size(-1) != weight.size(1) || input.scalar_type() != at::kFloat ||
         weight.scalar_type() != input.scalar_type() || weight.device() != input.device() ||
@@ -48,19 +48,35 @@ inline at::Tensor tiled_projection(const at::Tensor& input, const at::Tensor& we
     if (bias.defined() && (bias.sizes() != at::IntArrayRef({weight.size(0)}) ||
         bias.device() != input.device() || bias.scalar_type() != input.scalar_type()))
         throw std::invalid_argument("tiled projection bias shape, device or dtype mismatch");
-    const auto width = input.size(-1), rows = input.numel() / width;
     auto shape = input.sizes().vec();
     shape.back() = weight.size(0);
+    if (output.sizes() != at::IntArrayRef(shape) || output.device() != input.device() ||
+        output.scalar_type() != input.scalar_type() || !output.is_contiguous())
+        throw std::invalid_argument("tiled projection output must be a compatible contiguous destination");
+    const auto width = input.size(-1), rows = input.numel() / width;
     auto matrix = input.reshape({rows, width});
-    auto output = at::empty({rows, weight.size(0)}, input.options());
+    auto output_matrix = output.reshape({rows, weight.size(0)});
     for (int64_t start = 0; start < rows; start += row_tile) {
         check_cancel();
         const auto count = std::min<int64_t>(row_tile, rows - start);
-        auto output_rows = output.narrow(0, start, count);
+        auto output_rows = output_matrix.narrow(0, start, count);
         projection_out(output_rows, matrix.narrow(0, start, count), weight, bias);
         if (checkpoint_tile) checkpoint_tile(start, count);
     }
-    return output.reshape(shape);
+}
+
+// Allocating convenience wrapper for callers that consume the complete output.
+inline at::Tensor tiled_projection(const at::Tensor& input, const at::Tensor& weight,
+                                  const at::Tensor& bias, const std::function<void()>& check_cancel,
+                                  int64_t row_tile = 1024,
+                                  const std::function<void(int64_t, int64_t)>& checkpoint_tile = {}) {
+    if (input.dim() < 2 || weight.dim() != 2)
+        throw std::invalid_argument("tiled projection requires matrix-shaped input and weight");
+    auto shape = input.sizes().vec();
+    shape.back() = weight.size(0);
+    auto output = at::empty(shape, input.options());
+    tiled_projection_into(output, input, weight, bias, check_cancel, row_tile, checkpoint_tile);
+    return output;
 }
 
 // RoFormer feed-forward projections can have a much wider hidden dimension
