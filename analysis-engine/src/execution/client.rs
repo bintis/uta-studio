@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -120,6 +121,11 @@ impl CancellationToken {
 pub struct WorkerExpectation {
     pub component: String,
     pub runtime_recipe_digest: Option<String>,
+    /// Process environment the resolved runtime declares for its worker
+    /// (Runtime Manager reads it from the installed runtime manifest).
+    /// `LD_LIBRARY_PATH` entries are prepended to the inherited value; every
+    /// other variable is set exactly as declared.
+    pub environment: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -189,7 +195,7 @@ impl SupervisedWorker {
         let was_prepared = prepared_process.is_some();
         let mut process = match prepared_process {
             Some(process) => process,
-            None => WorkerProcess::spawn(executable)?,
+            None => WorkerProcess::spawn(executable, &expectation.environment)?,
         };
         let deadline = Instant::now() + task.timeout;
         let ready = process.next_frame(deadline, cancellation)?;
@@ -376,6 +382,21 @@ impl SupervisedWorker {
     }
 }
 
+/// A runtime's declared library directories extend the worker's inherited
+/// search path rather than replacing it; every other variable is exact.
+fn runtime_environment_value(name: &str, value: &str) -> std::ffi::OsString {
+    if name == "LD_LIBRARY_PATH"
+        && let Some(inherited) = std::env::var_os(name)
+        && !inherited.is_empty()
+    {
+        let mut merged = std::ffi::OsString::from(value);
+        merged.push(":");
+        merged.push(inherited);
+        return merged;
+    }
+    std::ffi::OsString::from(value)
+}
+
 fn validate_task(task: &NativeTask) -> EngineResult<()> {
     let valid_id = |value: &str| {
         !value.is_empty()
@@ -531,13 +552,16 @@ struct WorkerProcess {
 }
 
 impl WorkerProcess {
-    fn spawn(executable: &Path) -> EngineResult<Self> {
+    fn spawn(executable: &Path, environment: &BTreeMap<String, String>) -> EngineResult<Self> {
         let mut command = Command::new(executable);
         command
             .arg("--stdio-json")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        for (name, value) in environment {
+            command.env(name, runtime_environment_value(name, value));
+        }
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
@@ -815,10 +839,12 @@ mod tests {
         assert!(uses_ggml_worker(&WorkerExpectation {
             component: "uta-ggml-worker".to_string(),
             runtime_recipe_digest: None,
+            environment: BTreeMap::new(),
         }));
         assert!(!uses_ggml_worker(&WorkerExpectation {
             component: "other-worker".to_string(),
             runtime_recipe_digest: None,
+            environment: BTreeMap::new(),
         }));
     }
 
@@ -904,6 +930,7 @@ mod tests {
             &WorkerExpectation {
                 component: "fixture-worker".to_string(),
                 runtime_recipe_digest: Some("recipe".to_string()),
+                environment: BTreeMap::new(),
             },
             &task,
             &CancellationToken::default(),
@@ -938,6 +965,7 @@ mod tests {
             &WorkerExpectation {
                 component: "fixture-worker".to_string(),
                 runtime_recipe_digest: Some("expected-recipe".to_string()),
+                environment: BTreeMap::new(),
             },
             &NativeTask {
                 task_id: "task-metadata".to_string(),
@@ -993,6 +1021,7 @@ mod tests {
                 &WorkerExpectation {
                     component: "fixture-worker".to_string(),
                     runtime_recipe_digest: None,
+                    environment: BTreeMap::new(),
                 },
                 &task,
                 &CancellationToken::default(),
@@ -1040,6 +1069,7 @@ mod tests {
                 &WorkerExpectation {
                     component: "fixture-worker".to_string(),
                     runtime_recipe_digest: None,
+                    environment: BTreeMap::new(),
                 },
                 &task,
                 &token,

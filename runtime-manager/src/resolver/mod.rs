@@ -20,7 +20,7 @@ use crate::lease::ResourceLease;
 use crate::manifest::{
     is_generation_id, read_install_manifest, verify_generation, verify_generation_metadata,
 };
-use crate::platform::{executable_for_runtime, worker_supports_model};
+use crate::platform::{executable_for_runtime, runtime_environment, worker_supports_model};
 use crate::resource::{ResourceKind, ResourceRef};
 use crate::state::{
     InstallState, ReadinessReason, ResourceOrigin, ResourceStatus, RuntimePolicy, ValidationState,
@@ -43,6 +43,9 @@ pub struct ResolvedModel {
     pub model_recipe_digest: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_recipe_digest: Option<String>,
+    /// Process environment the resolved runtime declares for its worker.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub runtime_environment: BTreeMap<String, String>,
     #[serde(skip)]
     pub lease: ResourceLease,
 }
@@ -579,6 +582,7 @@ impl RuntimeManager {
             model_content_digest,
             model_recipe_digest,
             runtime_recipe_digest: runtime.recipe_digest.clone(),
+            runtime_environment: runtime_environment(runtime, &self.paths),
             lease,
         })
     }
@@ -1692,6 +1696,11 @@ mod libtorch_route_tests {
         let library_root = scratch.0.join("libtorch-xpu");
         std::fs::create_dir_all(library_root.join("lib")).unwrap();
         std::fs::write(library_root.join(LIBTORCH_XPU_NATIVE_LIBRARY), b"elf").unwrap();
+        std::fs::write(
+            library_root.join("runtime-manifest.json"),
+            br#"{"backend":"libtorch_xpu","native_library":"lib/libuta_libtorch.so","environment":{"LD_LIBRARY_PATH":"/run/opengl-driver/lib","ONEAPI_DEVICE_SELECTOR":"level_zero:gpu"}}"#,
+        )
+        .unwrap();
         let paths = StorePaths::new(&store)
             .with_runtime_override("uta-ggml-worker", &worker)
             .with_runtime_library_root(LIBTORCH_XPU_RUNTIME_ID, &library_root);
@@ -1723,11 +1732,21 @@ mod libtorch_route_tests {
             resolved.runtime_recipe_digest.as_deref(),
             Some(crate::runtime_lock::LIBTORCH_XPU_RUNTIME_RECIPE_SHA256)
         );
-        // The default pinned route still resolves GGML without any request.
+        assert_eq!(
+            resolved
+                .runtime_environment
+                .get("LD_LIBRARY_PATH")
+                .map(String::as_str),
+            Some("/run/opengl-driver/lib")
+        );
+        assert_eq!(resolved.runtime_environment.len(), 2);
+        // The default pinned route still resolves GGML without any request
+        // and declares no runtime environment.
         let pinned = manager
             .resolve_model("rmvpe", RuntimePolicy::Production)
             .unwrap();
         assert_eq!(pinned.backend, NativeBackend::Ggml);
+        assert!(pinned.runtime_environment.is_empty());
         let status = manager
             .status_with_backend(
                 &ResourceRef::model("rmvpe").unwrap(),

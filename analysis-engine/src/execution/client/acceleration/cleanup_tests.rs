@@ -57,6 +57,7 @@ for line in sys.stdin:
             .map(|model_id| PreloadSpec {
                 model_id: model_id.to_string(),
                 executable: self.executable.clone(),
+                environment: BTreeMap::new(),
                 config: serde_json::json!({"hold":hold}),
             })
             .collect();
@@ -82,6 +83,7 @@ for line in sys.stdin:
         let expectation = WorkerExpectation {
             component: "uta-ggml-worker".to_string(),
             runtime_recipe_digest: None,
+            environment: BTreeMap::new(),
         };
         SupervisedWorker::run(
             &self.executable,

@@ -13,6 +13,7 @@ pub(super) struct DenoiseTask<'a> {
     pub(super) model_path: &'a Path,
     pub(super) executable: &'a Path,
     pub(super) runtime_recipe_digest: Option<&'a str>,
+    pub(super) runtime_environment: &'a std::collections::BTreeMap<String, String>,
     pub(super) route: RoformerRoute,
     pub(super) ffmpeg: &'a Path,
     pub(super) input: &'a Path,
@@ -446,6 +447,7 @@ pub(super) fn run_ggml_dual_separation(
         &WorkerExpectation {
             component: component.to_string(),
             runtime_recipe_digest: task.runtime_recipe_digest.map(str::to_string),
+            environment: task.runtime_environment.clone(),
         },
         &NativeTask {
             task_id: task.task_id.to_string(),
@@ -598,6 +600,7 @@ pub(super) fn run_ggml_harmony(
         &WorkerExpectation {
             component: component.to_string(),
             runtime_recipe_digest: task.runtime_recipe_digest.map(str::to_string),
+            environment: task.runtime_environment.clone(),
         },
         &NativeTask {
             task_id: task.task_id.to_string(),

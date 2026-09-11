@@ -114,6 +114,12 @@ impl Runtime {
     /// libraries at initialization, so they must be set before loading.
     fn apply_environment(&self) {
         for (name, value) in &self.environment {
+            // The dynamic loader reads the library search path only at
+            // process start; the Analysis Engine applies that entry when it
+            // spawns this worker, so it is not re-applied here.
+            if name == "LD_LIBRARY_PATH" {
+                continue;
+            }
             // SAFETY: the worker is single-threaded at this point; no other
             // thread reads the environment concurrently.
             unsafe {

@@ -19,6 +19,7 @@ pub(super) fn run_ggml_cleanup(
         &WorkerExpectation {
             component: component.to_string(),
             runtime_recipe_digest: task.runtime_recipe_digest.map(str::to_string),
+            environment: task.runtime_environment.clone(),
         },
         &NativeTask {
             task_id: task.task_id.to_string(),
@@ -127,6 +128,7 @@ pub(super) fn run_native_task_with_inputs(
         &WorkerExpectation {
             component: component.to_string(),
             runtime_recipe_digest: model.runtime_recipe_digest.clone(),
+            environment: model.runtime_environment.clone(),
         },
         &NativeTask {
             task_id: task_id.to_string(),

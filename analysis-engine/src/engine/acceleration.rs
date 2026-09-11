@@ -47,6 +47,7 @@ pub(super) fn scope(
                     Ok((_, config)) => schedule.push(PreloadSpec {
                         model_id: model.model_id.clone(),
                         executable: model.runtime_executable.clone(),
+                        environment: model.runtime_environment.clone(),
                         config,
                     }),
                     Err(error) => {

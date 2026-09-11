@@ -165,6 +165,7 @@ unpack() {
   # runtime libraries in the dependency directory.
   find "$runtime_root/deps/lib" \( -name '*.py' -o -name '*.pyc' -o -name '*.cpython-*.so' \) -delete
   ensure_level_zero_loader
+  ensure_opencl_loader
   log "native dependency libraries: $(find "$runtime_root/deps/lib" -name '*.so*' | wc -l)"
 }
 
@@ -187,6 +188,60 @@ ensure_level_zero_loader() {
   fi
 }
 
+ensure_opencl_loader() {
+  # oneDNN's fused attention microkernels open the OpenCL ICD loader by name
+  # even when execution runs on the Level Zero stream. Take the system ICD
+  # loader when the wheels do not provide one; vendors resolve through
+  # OCL_ICD_VENDORS at run time.
+  if ls "$runtime_root/deps/lib"/libOpenCL.so.1* >/dev/null 2>&1 \
+    || ls "$runtime_root/torch/lib"/libOpenCL.so.1* >/dev/null 2>&1; then
+    return 0
+  fi
+  local root="${UTA_STUDIO_OPENCL_LOADER_ROOT:-}"
+  if [ -z "$root" ]; then
+    root="$(ls -d /nix/store/*-ocl-icd-*/ 2>/dev/null | grep -v '\.drv' | sort -V | tail -n 1 || true)"
+  fi
+  if [ -n "$root" ] && ls "$root"/lib/libOpenCL.so* >/dev/null 2>&1; then
+    cp -a "$root"/lib/libOpenCL.so* "$runtime_root/deps/lib/"
+    log "OpenCL ICD loader copied from $root"
+  else
+    log "no OpenCL ICD loader found; fused oneDNN kernels needing OpenCL will report their own error"
+  fi
+}
+
+resolve_system_dependencies() {
+  # The unpacked libraries name a few ordinary system libraries (zlib, ...)
+  # that the app-owned library's inherited RPATH must also satisfy outside the
+  # development shell. Copy each unresolved DT_NEEDED name from the shell's
+  # library path into the dependency directory; C/C++ runtime libraries are
+  # provided by the app-owned library's own RPATH.
+  command -v readelf >/dev/null || fail "readelf is unavailable; run build inside bash dev.sh"
+  local present needed name candidate directory copied=0
+  present="$(ls "$runtime_root/torch/lib" "$runtime_root/deps/lib" 2>/dev/null | sort -u)"
+  needed="$(find "$runtime_root/torch/lib" "$runtime_root/deps/lib" -maxdepth 1 -type f -name '*.so*' -print0 \
+    | xargs -0 -n 64 sh -c 'readelf -d "$@" 2>/dev/null || true' _ \
+    | { grep -o 'Shared library: \[[^]]*\]' || true; } \
+    | sed -e 's/^Shared library: \[//' -e 's/\]$//' | sort -u)"
+  for name in $needed; do
+    printf '%s\n' "$present" | grep -qx "$name" && continue
+    case "$name" in
+      libc.so.*|libm.so.*|libdl.so.*|libpthread.so.*|librt.so.*|libresolv.so.*|libutil.so.*|libanl.so.*|libnsl.so.*|libgcc_s.so.*|libstdc++.so.*|ld-linux*|libmvec.so.*) continue ;;
+    esac
+    candidate=""
+    for directory in $(printf '%s' "${LD_LIBRARY_PATH:-}" | tr ':' '\n'); do
+      if [ -f "$directory/$name" ]; then candidate="$directory/$name"; break; fi
+    done
+    if [ -z "$candidate" ]; then
+      log "unresolved optional dependency $name (loaded lazily by its owner, if ever)"
+      continue
+    fi
+    cp -L "$candidate" "$runtime_root/deps/lib/$name"
+    log "system dependency $name copied from $(dirname "$candidate")"
+    copied=$((copied + 1))
+  done
+  log "resolved $copied system dependencies"
+}
+
 build() {
   command -v cmake >/dev/null || fail "cmake is unavailable; run build inside bash dev.sh"
   [ -f "$runtime_root/torch/include/ATen/ATen.h" ] || fail "LibTorch headers are not unpacked; run unpack first"
@@ -202,6 +257,7 @@ build() {
     -j "${UTA_STUDIO_LIBTORCH_BUILD_JOBS:-4}"
   mkdir -p "$runtime_root/lib"
   cp -f "$runtime_root/build/libuta_libtorch.so" "$runtime_root/lib/libuta_libtorch.so"
+  resolve_system_dependencies
   log "built $runtime_root/lib/libuta_libtorch.so"
 }
 
@@ -214,9 +270,12 @@ manifest() {
   [ -f "$runtime_root/lib/libuta_libtorch.so" ] || fail "native library is not built; run build first"
   local manifest="$runtime_root/runtime-manifest.json" temporary
   temporary="$manifest.tmp"
-  local ze_driver="" ocl_vendors=""
+  # The Level Zero loader discovers the Intel GPU driver by name through the
+  # process library search path; naming the driver file directly instead
+  # (ZE_ENABLE_ALT_DRIVERS) aborted inside the compute runtime on this host.
+  local driver_directory="" ocl_vendors=""
   if [ -f /run/opengl-driver/lib/libze_intel_gpu.so.1 ]; then
-    ze_driver="/run/opengl-driver/lib/libze_intel_gpu.so.1"
+    driver_directory="/run/opengl-driver/lib"
   fi
   if [ -d /run/opengl-driver/etc/OpenCL/vendors ]; then
     ocl_vendors="/run/opengl-driver/etc/OpenCL/vendors"
@@ -234,8 +293,8 @@ manifest() {
     printf '    "SYCL_CACHE_DIR": %s,\n' "$(json_string "$runtime_root/sycl-cache")"
     printf '    "ONEDNN_DEFAULT_FPMATH_MODE": "strict",\n'
     printf '    "DNNL_DEFAULT_FPMATH_MODE": "strict"'
-    if [ -n "$ze_driver" ]; then
-      printf ',\n    "ZE_ENABLE_ALT_DRIVERS": %s' "$(json_string "$ze_driver")"
+    if [ -n "$driver_directory" ]; then
+      printf ',\n    "LD_LIBRARY_PATH": %s' "$(json_string "$driver_directory")"
     fi
     if [ -n "$ocl_vendors" ]; then
       printf ',\n    "OCL_ICD_VENDORS": %s' "$(json_string "$ocl_vendors")"

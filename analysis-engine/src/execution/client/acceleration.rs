@@ -9,6 +9,7 @@ use std::rc::Rc;
 pub(crate) struct PreloadSpec {
     pub model_id: String,
     pub executable: PathBuf,
+    pub environment: BTreeMap<String, String>,
     pub config: serde_json::Value,
 }
 
@@ -176,7 +177,7 @@ pub(super) fn start_next(task: &NativeTask) -> Option<String> {
             .find(|spec| spec.model_id != task.model_id)?
             .clone();
         let result = (|| {
-            let mut process = WorkerProcess::spawn(&spec.executable)?;
+            let mut process = WorkerProcess::spawn(&spec.executable, &spec.environment)?;
             process.send(&WorkerCommand::Prepare {
                 model_id: &spec.model_id,
                 config: &spec.config,
@@ -253,6 +254,7 @@ for line in sys.stdin:
             .map(|model_id| PreloadSpec {
                 model_id: model_id.to_string(),
                 executable: executable.clone(),
+                environment: BTreeMap::new(),
                 config: serde_json::json!({}),
             })
             .collect();
@@ -265,6 +267,7 @@ for line in sys.stdin:
         let expectation = WorkerExpectation {
             component: "uta-ggml-worker".to_string(),
             runtime_recipe_digest: None,
+            environment: BTreeMap::new(),
         };
         for model_id in ["primary", "next"] {
             let task = NativeTask {
