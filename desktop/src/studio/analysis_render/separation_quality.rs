@@ -1,4 +1,3 @@
-use super::*;
 use crate::studio::*;
 
 const REFERENCE_METRICS_COPY: &str = "SDR / SI-SDR / SIR / SAR: unavailable — no aligned ground-truth stems were evaluated. The original mix, another model's estimate and mixture reconstruction are not ground truth. Published dataset scores are not scores for this song.";
@@ -142,6 +141,59 @@ mod tests {
         assert!(rows[4].1.contains("All finite · 176400 samples"));
         assert!(REFERENCE_METRICS_COPY.contains("no aligned ground-truth stems"));
         assert!(!rows.iter().any(|(label, _)| label.contains("SDR")));
+    }
+
+    fn rendered_text(engine: Option<&app_core::EngineRunHistoryProjection>) -> String {
+        let mut world = World::new();
+        let mut queue = bevy::ecs::system::CommandQueue::default();
+        let mut commands = Commands::new(&mut queue, &world);
+        commands.spawn(Node::default()).with_children(|parent| {
+            spawn_separation_quality_inspection(
+                parent, Handle::default(), &StudioTheme::new(true), engine, "separate",
+            );
+        });
+        queue.apply(&mut world);
+        world.query::<&Text>().iter(&world).map(|text| text.0.as_str()).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn separation_inspector_spawns_pending_and_error_states_without_audio_reads() {
+        let pending = rendered_text(None);
+        assert!(pending.contains("No execution result"));
+        assert!(pending.contains("SDR / SI-SDR / SIR / SAR: unavailable"));
+        let engine = app_core::EngineRunHistoryProjection {
+            request_id: "selected".into(), request_json: "{}".into(),
+            request_digest: "fixture".into(), plan_json: "{}".into(),
+            result_json: Some("{broken".into()), fingerprint: None,
+            source_sha256: "fixture".into(),
+        };
+        assert!(rendered_text(Some(&engine)).contains("Could not read this run's separation measurements"));
+    }
+
+    #[test]
+    fn separation_inspector_spawns_recorded_stems_with_provenance() {
+        let engine = app_core::EngineRunHistoryProjection {
+            request_id: "selected".into(), request_json: "{}".into(),
+            request_digest: "fixture".into(), plan_json: "{}".into(),
+            result_json: Some(serde_json::json!({
+                "request_id": "selected", "diagnostics": {"separation_quality": [{
+                    "node_id": "separate", "model_id": "fixture_separator",
+                    "measurement": "decoded_separation_output",
+                    "reference_status": "unavailable_no_ground_truth_stems",
+                    "stems": [{"role": "instrumental", "artifact_path": "not-read.flac",
+                        "sample_rate": 44100, "channels": 2, "frame_count": 44100,
+                        "duration_seconds": 1.0, "sample_count": 88200, "finite_samples": true,
+                        "peak_amplitude": 0.5, "rms_amplitude": 0.125,
+                        "near_full_scale_ratio": 0.0, "silent_sample_ratio": 0.25}]
+                }]}
+            }).to_string()),
+            fingerprint: None, source_sha256: "fixture".into(),
+        };
+        let text = rendered_text(Some(&engine));
+        assert!(text.contains("Request: selected · Node: separate · Model: fixture_separator"));
+        assert!(text.contains("Run artifact: not-read.flac"));
+        assert!(text.contains("0.500000 / 0.125000 linear amplitude"));
+        assert!(text.contains("25.0000%"));
     }
 
     #[test]
