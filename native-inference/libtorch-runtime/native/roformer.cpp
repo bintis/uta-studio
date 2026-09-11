@@ -191,9 +191,7 @@ private:
     }
     at::Tensor project(const at::Tensor& input, const at::Tensor& weight, const at::Tensor& bias = {}) const {
         if (runtime->backend != "libtorch_rocm") return at::linear(input, weight, bias);
-        const auto rows = input.numel() / input.size(-1);
         const auto row_tile = bounded_projection_row_tile(input, weight);
-        if (rows <= row_tile) return at::linear(input, weight, bias);
         return tiled_projection(input, weight, bias, [this] { check_cancel(); }, row_tile,
                                 tile_checkpoint("roformer.projection"));
     }
