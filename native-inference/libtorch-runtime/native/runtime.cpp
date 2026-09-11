@@ -1,4 +1,5 @@
 #include "runtime.hpp"
+#include "mixed_attention.hpp"
 #include <ATen/Context.h>
 #include <ATen/Parallel.h>
 #include <c10/core/DeviceGuard.h>
@@ -124,6 +125,12 @@ std::unique_ptr<Plan> make_plan(const std::string& resource, std::shared_ptr<Run
 
 at::Tensor fused_attention(const at::Tensor& query, const at::Tensor& key, const at::Tensor& value,
                            const at::Tensor& mask, bool causal, bool grouped, double scale) {
+#if defined(UTA_LIBTORCH_ROCM)
+    // Packaged gfx1103 fused SDPA is experimental and caused recorded display
+    // resets under repeated real RoFormer work. Keep mixed precision explicit
+    // and bounded on the selected GPU for every ROCm model family.
+    return explicit_mixed_attention(query, key, value, mask, causal, grouped, scale);
+#else
     auto query_half = query.to(at::kHalf).contiguous();
     auto key_half = key.to(at::kHalf).contiguous();
     auto value_half = value.to(at::kHalf).contiguous();
@@ -131,6 +138,7 @@ at::Tensor fused_attention(const at::Tensor& query, const at::Tensor& key, const
     if (mask.defined()) attention_mask = mask.scalar_type() == at::kBool ? mask : mask.to(at::kHalf);
     return at::scaled_dot_product_attention(query_half, key_half, value_half, attention_mask,
                                             0.0, causal, scale == 0.0 ? std::nullopt : std::optional<double>(scale), grouped).to(at::kFloat);
+#endif
 }
 
 at::Tensor dense_attention(const at::Tensor& query, const at::Tensor& key, const at::Tensor& value,

@@ -1,4 +1,5 @@
 #pragma once
+#include "mixed_attention.hpp"
 #include <ATen/ATen.h>
 #include <c10/core/Event.h>
 #include <c10/core/impl/VirtualGuardImpl.h>
@@ -78,7 +79,9 @@ inline at::Tensor layout_preserving_roformer_attention(const at::Tensor& query, 
     // context and the checkpoint's original (undoubled-width) scale stay intact.
     if (query_half.size(-1) == key_half.size(-1) && value_width < query_half.size(-1))
         value_half = at::constant_pad_nd(value_half, {0, query_half.size(-1) - value_width}, 0.0);
-    auto attended = at::scaled_dot_product_attention(query_half, key_half, value_half, {}, 0.0, false, scale);
+    auto attended = query.is_cuda()
+        ? explicit_mixed_attention(query_half, key_half, value_half, {}, false, false, scale).to(at::kHalf)
+        : at::scaled_dot_product_attention(query_half, key_half, value_half, {}, 0.0, false, scale);
     checkpoint("sdpa");
     return attended.narrow(-1, 0, value_width);
 }

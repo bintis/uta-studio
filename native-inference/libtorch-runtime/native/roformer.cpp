@@ -239,7 +239,7 @@ private:
                       << " key=" << key.strides() << " value=" << value.strides() << std::endl;
         auto attended = runtime->precision == "mixed_attention"
             ? (runtime->backend == "libtorch_rocm"
-                ? partitioned_fused_attention(query, key, value, scale, [this] { check_cancel(); })
+                ? partitioned_mixed_attention(query, key, value, scale, [this] { check_cancel(); })
                 : runtime->backend == "libtorch_xpu"
                     ? layout_preserving_roformer_attention(query, key, value, scale, [&](const char* stage) {
                         if (runtime->trace_synchronization) runtime->checkpoint(prefix + '.' + stage);
