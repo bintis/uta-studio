@@ -173,7 +173,9 @@ mod tests {
     #[test]
     fn packed_features_preserve_every_storage_bit_across_strips_and_band_orders() {
         for frame_count in [1, 31, 32, 33, 257, 1722] {
-            let mut spectra = [Spectrogram::zeros(11, frame_count), Spectrogram::zeros(11, frame_count)];
+            let mut spectra: [Spectrogram; 2] = std::array::from_fn(|_| Spectrogram {
+                data: vec![0.0; 11 * frame_count * 2], n_freq: 11, n_frames: frame_count,
+            });
             let encodings = [0, 0x80000000, 0x3f800001, 0x00000001, 0x7f800000, 0x7fc01234];
             for (channel, spectrum) in spectra.iter_mut().enumerate() {
                 for (index, value) in spectrum.data.iter_mut().enumerate() {
@@ -196,7 +198,9 @@ mod tests {
 
     #[test]
     fn packed_features_report_an_out_of_range_frequency() {
-        let spectra = [Spectrogram::zeros(3, 33), Spectrogram::zeros(3, 33)];
+        let spectra: [Spectrogram; 2] = std::array::from_fn(|_| Spectrogram {
+            data: vec![0.0; 3 * 33 * 2], n_freq: 3, n_frames: 33,
+        });
         assert!(prepare_model_input(&spectra, 33, 2, &[6]).unwrap_err().contains("frequency index"));
     }
 
