@@ -71,8 +71,12 @@ fn enabled(node: Option<&WorkflowNodeInstance>) -> bool {
     node.is_some_and(|node| node.execution_policy != ExecutionPolicy::Disabled)
 }
 
-fn normalized_parameters(node: &WorkflowNodeInstance) -> String {
-    serde_json::to_string(&(&node.model_id, &node.separation_strategy, &node.parameters))
+fn normalized_parameters(node: &WorkflowNodeInstance, settings: &uta_model_settings::ModelSettings) -> String {
+    let providers = node.separation_strategy.map(crate::workflow::separation_strategy_descriptor)
+        .map(|strategy| strategy.executions.iter().map(|execution| execution.provider_id).collect::<Vec<_>>())
+        .unwrap_or_else(|| node.model_id.as_deref().into_iter().collect());
+    let tuning = providers.into_iter().map(|provider| (provider, settings.get(provider))).collect::<Vec<_>>();
+    serde_json::to_string(&(&node.model_id, &node.separation_strategy, &node.parameters, tuning))
         .unwrap_or_default()
 }
 
@@ -81,7 +85,7 @@ fn normalized_parameters(node: &WorkflowNodeInstance) -> String {
 /// non-`OriginalMix` role when every unit up to that point both opted in
 /// (`skip_if_unchanged`) and has a still-valid cached artifact whose
 /// fingerprint matches the current configuration exactly.
-pub fn plan_chain_cache(file_hash: &str, workflow: &WorkflowDefinition) -> ChainCacheDecision {
+pub fn plan_chain_cache(file_hash: &str, workflow: &WorkflowDefinition, settings: &uta_model_settings::ModelSettings) -> ChainCacheDecision {
     let mut decision = ChainCacheDecision::default();
     let mut chain_input_hash = file_hash.to_string();
 
@@ -94,7 +98,7 @@ pub fn plan_chain_cache(file_hash: &str, workflow: &WorkflowDefinition) -> Chain
     let separation_fingerprint = compute_native_config_hash(
         &AnalysisNodeId::new("vocal_bgm_split"),
         "audio.separate_vocal_bgm",
-        &normalized_parameters(separation_node),
+        &normalized_parameters(separation_node, settings),
         &[file_hash],
         separation_node.model_id.as_deref(),
         None,
@@ -102,7 +106,7 @@ pub fn plan_chain_cache(file_hash: &str, workflow: &WorkflowDefinition) -> Chain
     let instrumental_fingerprint = compute_native_config_hash(
         &AnalysisNodeId::new("vocal_bgm_split_instrumental"),
         "audio.separate_vocal_bgm",
-        &normalized_parameters(separation_node),
+        &normalized_parameters(separation_node, settings),
         &[file_hash],
         separation_node.model_id.as_deref(),
         None,
@@ -150,7 +154,7 @@ pub fn plan_chain_cache(file_hash: &str, workflow: &WorkflowDefinition) -> Chain
         let isolate_fingerprint = compute_native_config_hash(
             &AnalysisNodeId::new("lead_isolate"),
             "audio.lead_isolate",
-            &normalized_parameters(isolate_node),
+            &normalized_parameters(isolate_node, settings),
             &[&chain_input_hash],
             isolate_node.model_id.as_deref(),
             None,
@@ -189,10 +193,10 @@ pub fn plan_chain_cache(file_hash: &str, workflow: &WorkflowDefinition) -> Chain
         !dereverb_enabled || dereverb_node.is_some_and(|node| node.skip_if_unchanged);
     let cleanup_recipe = serde_json::to_string(&(
         denoise_enabled
-            .then(|| denoise_node.map(normalized_parameters))
+            .then(|| denoise_node.map(|node| normalized_parameters(node, settings)))
             .flatten(),
         dereverb_enabled
-            .then(|| dereverb_node.map(normalized_parameters))
+            .then(|| dereverb_node.map(|node| normalized_parameters(node, settings)))
             .flatten(),
     ))
     .unwrap_or_default();
@@ -372,7 +376,7 @@ fn finalize_and_persist_stem(
 /// or a `source` this cache can't read/capture -- this must never turn an
 /// otherwise-successful worker output into a failed run merely because
 /// caching it hit a snag.
-pub fn persist_cacheable_stem(cache_root: &Path, file_hash: &str, artifact: &str, source: &Path) {
+pub fn persist_cacheable_stem(cache_root: &Path, file_hash: &str, artifact: &str, source: &Path, settings: &uta_model_settings::ModelSettings) {
     let Ok(stored_workflow) = crate::workflow::load_song_workflow(file_hash) else {
         return;
     };
@@ -398,7 +402,7 @@ pub fn persist_cacheable_stem(cache_root: &Path, file_hash: &str, artifact: &str
             let fingerprint = compute_native_config_hash(
                 &AnalysisNodeId::new(node_id),
                 "audio.separate_vocal_bgm",
-                &normalized_parameters(separation_node),
+                &normalized_parameters(separation_node, settings),
                 &[file_hash],
                 separation_node.model_id.as_deref(),
                 None,
@@ -421,7 +425,7 @@ pub fn persist_cacheable_stem(cache_root: &Path, file_hash: &str, artifact: &str
             let fingerprint = compute_native_config_hash(
                 &AnalysisNodeId::new("lead_isolate"),
                 "audio.lead_isolate",
-                &normalized_parameters(isolate_node),
+                &normalized_parameters(isolate_node, settings),
                 &[&chain_input_hash],
                 isolate_node.model_id.as_deref(),
                 None,
@@ -474,10 +478,10 @@ pub fn persist_cacheable_stem(cache_root: &Path, file_hash: &str, artifact: &str
             };
             let cleanup_recipe = serde_json::to_string(&(
                 denoise_enabled
-                    .then(|| denoise_node.map(normalized_parameters))
+                    .then(|| denoise_node.map(|node| normalized_parameters(node, settings)))
                     .flatten(),
                 dereverb_enabled
-                    .then(|| dereverb_node.map(normalized_parameters))
+                    .then(|| dereverb_node.map(|node| normalized_parameters(node, settings)))
                     .flatten(),
             ))
             .unwrap_or_default();
@@ -504,6 +508,29 @@ pub fn persist_cacheable_stem(cache_root: &Path, file_hash: &str, artifact: &str
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn changed_overlap_cannot_reuse_a_stem_from_a_different_request() {
+        let root = temp_root("model-overlap");
+        let _guard = crate::library_db::reconnect_for_test(&root);
+        let file_hash = "song-overlap";
+        let mut workflow = default_workflow(file_hash);
+        workflow.nodes[1].skip_if_unchanged = true;
+        crate::workflow::save_song_workflow(file_hash, workflow.clone(), crate::workflow::WorkflowLayout::default()).unwrap();
+        let mut settings = uta_model_settings::ModelSettings::new();
+        uta_model_settings::set(&mut settings, "bs_roformer_leap_xe90_vocals", "overlap", 4.0).unwrap();
+        let source = root.join("guide-vocals.flac");
+        std::fs::write(&source, b"isolated stem").unwrap();
+        persist_cacheable_stem(&root, file_hash, "guide_vocals", &source, &settings);
+        assert!(plan_chain_cache(file_hash, &workflow, &settings).source_path.is_some());
+        // Independent pitch controls do not invalidate an audio separator.
+        uta_model_settings::set(&mut settings, "rmvpe", "voiced_threshold", 0.1).unwrap();
+        assert!(plan_chain_cache(file_hash, &workflow, &settings).source_path.is_some());
+        uta_model_settings::set(&mut settings, "bs_roformer_leap_xe90_vocals", "overlap", 8.0).unwrap();
+        assert!(plan_chain_cache(file_hash, &workflow, &settings).source_path.is_none());
+        assert!(plan_chain_cache(file_hash, &workflow, &Default::default()).source_path.is_none());
+        assert!(source.exists());
+    }
+
     use super::*;
     use crate::library_db::{AnalysisArtifactRow, analysis_artifacts_publish_batch};
     use crate::workflow::default_workflow;
@@ -561,7 +588,7 @@ mod tests {
         let mut workflow = default_workflow(file_hash);
         workflow.nodes[1].skip_if_unchanged = true;
 
-        let decision = plan_chain_cache(file_hash, &workflow);
+        let decision = plan_chain_cache(file_hash, &workflow, &Default::default());
         assert_eq!(decision.role, AudioRoleWire::OriginalMix);
         assert!(decision.source_path.is_none());
         assert!(decision.fingerprints.separation.is_some());
@@ -575,7 +602,7 @@ mod tests {
         let mut workflow = default_workflow(file_hash);
         workflow.nodes[1].skip_if_unchanged = true;
 
-        let expected = plan_chain_cache(file_hash, &workflow)
+        let expected = plan_chain_cache(file_hash, &workflow, &Default::default())
             .fingerprints
             .separation
             .unwrap();
@@ -587,7 +614,7 @@ mod tests {
             "vocal-content-1",
         );
 
-        let decision = plan_chain_cache(file_hash, &workflow);
+        let decision = plan_chain_cache(file_hash, &workflow, &Default::default());
         assert_eq!(decision.role, AudioRoleWire::GuideVocals);
         assert_eq!(
             decision.source_path,
@@ -616,21 +643,21 @@ mod tests {
 
         let source = root.join("guide-vocals.flac");
         std::fs::write(&source, b"fake vocal stem bytes").unwrap();
-        persist_cacheable_stem(&root, file_hash, "guide_vocals", &source);
+        persist_cacheable_stem(&root, file_hash, "guide_vocals", &source, &Default::default());
 
         let revision = load_active_artifact(file_hash, ArtifactKind::VocalStem)
             .expect("the live event must have published a matching revision");
         assert!(!revision.invalidated);
         assert_eq!(
             revision.config_hash,
-            plan_chain_cache(file_hash, &workflow)
+            plan_chain_cache(file_hash, &workflow, &Default::default())
                 .fingerprints
                 .separation
                 .unwrap(),
             "the persisted fingerprint must match what a future plan looks up"
         );
 
-        let decision = plan_chain_cache(file_hash, &workflow);
+        let decision = plan_chain_cache(file_hash, &workflow, &Default::default());
         assert_eq!(decision.role, AudioRoleWire::GuideVocals);
         assert_eq!(decision.source_path, Some(revision.path));
     }
@@ -663,7 +690,7 @@ mod tests {
         let write = |artifact: &str, name: &str| {
             let source = root.join(format!("{name}.flac"));
             std::fs::write(&source, format!("bytes for {name}")).unwrap();
-            persist_cacheable_stem(&root, file_hash, artifact, &source);
+            persist_cacheable_stem(&root, file_hash, artifact, &source, &Default::default());
         };
         write("guide_vocals", "guide-vocals");
         write("lead_vocal", "lead-vocal");
@@ -682,7 +709,7 @@ mod tests {
 
         assert_eq!(
             isolate_revision.config_hash,
-            plan_chain_cache(file_hash, &workflow)
+            plan_chain_cache(file_hash, &workflow, &Default::default())
                 .fingerprints
                 .isolate
                 .unwrap()
@@ -696,7 +723,7 @@ mod tests {
             "bytes for dereverb-final"
         );
 
-        let decision = plan_chain_cache(file_hash, &workflow);
+        let decision = plan_chain_cache(file_hash, &workflow, &Default::default());
         assert_eq!(decision.role, AudioRoleWire::CleanLeadVocal);
         assert_eq!(decision.source_path, Some(cleanup_revision.path));
     }
@@ -717,7 +744,7 @@ mod tests {
 
         let source = root.join("guide-vocals.flac");
         std::fs::write(&source, b"fake vocal stem bytes").unwrap();
-        persist_cacheable_stem(&root, file_hash, "guide_vocals", &source);
+        persist_cacheable_stem(&root, file_hash, "guide_vocals", &source, &Default::default());
 
         assert!(load_active_artifact(file_hash, ArtifactKind::VocalStem).is_none());
     }
@@ -730,7 +757,7 @@ mod tests {
         let mut workflow = default_workflow(file_hash);
         workflow.nodes[1].skip_if_unchanged = true;
 
-        let first = plan_chain_cache(file_hash, &workflow);
+        let first = plan_chain_cache(file_hash, &workflow, &Default::default());
         publish_active(
             file_hash,
             ArtifactKind::VocalStem,
@@ -746,7 +773,7 @@ mod tests {
             "instrumental-pair-content",
         );
 
-        let decision = plan_chain_cache(file_hash, &workflow);
+        let decision = plan_chain_cache(file_hash, &workflow, &Default::default());
         assert!(decision.cached_sources.contains(&CachedChainSource {
             role: AudioRoleWire::GuideVocals,
             path: std::path::PathBuf::from("vocal-pair.flac"),
@@ -771,7 +798,7 @@ mod tests {
         let mut workflow = default_workflow(file_hash);
         workflow.nodes[1].skip_if_unchanged = true;
 
-        let stale = plan_chain_cache(file_hash, &workflow)
+        let stale = plan_chain_cache(file_hash, &workflow, &Default::default())
             .fingerprints
             .separation
             .unwrap();
@@ -784,7 +811,7 @@ mod tests {
         );
         workflow.nodes[1].model_id = Some("a_different_model".to_string());
 
-        let decision = plan_chain_cache(file_hash, &workflow);
+        let decision = plan_chain_cache(file_hash, &workflow, &Default::default());
         assert_eq!(decision.role, AudioRoleWire::OriginalMix);
         assert!(decision.source_path.is_none());
     }
@@ -797,7 +824,7 @@ mod tests {
         let mut workflow = default_workflow(file_hash);
         workflow.nodes[1].skip_if_unchanged = false;
 
-        let fingerprint = plan_chain_cache(file_hash, &workflow)
+        let fingerprint = plan_chain_cache(file_hash, &workflow, &Default::default())
             .fingerprints
             .separation
             .unwrap();
@@ -809,7 +836,7 @@ mod tests {
             "vocal-content-1",
         );
 
-        let decision = plan_chain_cache(file_hash, &workflow);
+        let decision = plan_chain_cache(file_hash, &workflow, &Default::default());
         assert_eq!(decision.role, AudioRoleWire::OriginalMix);
     }
 
@@ -823,7 +850,7 @@ mod tests {
         workflow.nodes[2].execution_policy = ExecutionPolicy::Always; // lead_isolate
         workflow.nodes[2].skip_if_unchanged = true;
 
-        let separation_fingerprint = plan_chain_cache(file_hash, &workflow)
+        let separation_fingerprint = plan_chain_cache(file_hash, &workflow, &Default::default())
             .fingerprints
             .separation
             .unwrap();
@@ -836,7 +863,7 @@ mod tests {
         );
         // No AnalysisVocalStem published -- isolate itself has never run.
 
-        let decision = plan_chain_cache(file_hash, &workflow);
+        let decision = plan_chain_cache(file_hash, &workflow, &Default::default());
         assert_eq!(decision.role, AudioRoleWire::GuideVocals);
         assert!(decision.fingerprints.isolate.is_some());
     }
@@ -855,7 +882,7 @@ mod tests {
         workflow.nodes[4].execution_policy = ExecutionPolicy::Always; // dereverb
         workflow.nodes[4].skip_if_unchanged = true;
 
-        let separation_fingerprint = plan_chain_cache(file_hash, &workflow)
+        let separation_fingerprint = plan_chain_cache(file_hash, &workflow, &Default::default())
             .fingerprints
             .separation
             .unwrap();
@@ -866,7 +893,7 @@ mod tests {
             &separation_fingerprint,
             "vocal-content-1",
         );
-        let isolate_fingerprint = plan_chain_cache(file_hash, &workflow)
+        let isolate_fingerprint = plan_chain_cache(file_hash, &workflow, &Default::default())
             .fingerprints
             .isolate
             .unwrap();
@@ -877,7 +904,7 @@ mod tests {
             &isolate_fingerprint,
             "isolate-content-1",
         );
-        let cleanup_fingerprint = plan_chain_cache(file_hash, &workflow)
+        let cleanup_fingerprint = plan_chain_cache(file_hash, &workflow, &Default::default())
             .fingerprints
             .cleanup
             .unwrap();
@@ -889,7 +916,7 @@ mod tests {
             "cleanup-content-1",
         );
 
-        let decision = plan_chain_cache(file_hash, &workflow);
+        let decision = plan_chain_cache(file_hash, &workflow, &Default::default());
         assert_eq!(decision.role, AudioRoleWire::CleanLeadVocal);
         assert_eq!(
             decision.source_path,
@@ -925,7 +952,7 @@ mod tests {
         workflow.nodes[4].execution_policy = ExecutionPolicy::Always; // dereverb, box unchecked
         workflow.nodes[4].skip_if_unchanged = false;
 
-        let separation_fingerprint = plan_chain_cache(file_hash, &workflow)
+        let separation_fingerprint = plan_chain_cache(file_hash, &workflow, &Default::default())
             .fingerprints
             .separation
             .unwrap();
@@ -936,7 +963,7 @@ mod tests {
             &separation_fingerprint,
             "vocal-content-1",
         );
-        let cleanup_fingerprint = plan_chain_cache(file_hash, &workflow)
+        let cleanup_fingerprint = plan_chain_cache(file_hash, &workflow, &Default::default())
             .fingerprints
             .cleanup
             .unwrap();
@@ -948,7 +975,7 @@ mod tests {
             "cleanup-content-1",
         );
 
-        let decision = plan_chain_cache(file_hash, &workflow);
+        let decision = plan_chain_cache(file_hash, &workflow, &Default::default());
         assert_eq!(decision.role, AudioRoleWire::GuideVocals);
     }
 

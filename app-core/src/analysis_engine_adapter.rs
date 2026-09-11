@@ -633,6 +633,7 @@ pub fn compile_analyze_request(
         let decision = crate::chain_cache::plan_chain_cache(
             &intent.source.library_file_hash,
             &stored_workflow.definition,
+            &intent.model_settings,
         );
         if let Some(cached_path) = decision.source_path.clone() {
             source_path = cached_path;
