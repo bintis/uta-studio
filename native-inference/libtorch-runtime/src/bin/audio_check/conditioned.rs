@@ -1,9 +1,13 @@
-use super::{Request, audio, progress, required};
+use super::{Request, audio, emit, required};
 use serde_json::{Value, json};
 use std::path::Path;
 use uta_libtorch_runtime::{Model, rosvot, stars};
 #[path = "../../../../ggml-worker/src/stars_g2p.rs"]
 mod g2p;
+
+fn progress(fraction: f32, stage: &str) {
+    emit(&json!({"event":"progress", "fraction":fraction, "stage":stage}));
+}
 
 struct Word {
     id: String,
