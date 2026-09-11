@@ -106,10 +106,13 @@ pub fn publish_wave(
     file.flush()
         .and_then(|_| file.get_ref().sync_all())
         .map_err(|error| error.to_string())?;
+    let peak = samples.iter().fold(0.0_f32, |peak, value| peak.max(value.abs()));
+    let gain = pcm_gain(peak);
     let flac = root.join(format!("{name}.flac"));
     let output = ffmpeg()
         .arg("-i")
         .arg(source)
+        .args(["-af", &format!("volume={gain:.17}:precision=double")])
         .args([
             "-c:a",
             "flac",
@@ -127,9 +130,6 @@ pub fn publish_wave(
             String::from_utf8_lossy(&output.stderr)
         ));
     }
-    let peak = samples
-        .iter()
-        .fold(0.0_f32, |peak, value| peak.max(value.abs()));
     let energy = samples
         .iter()
         .map(|value| f64::from(*value).powi(2))
@@ -138,14 +138,29 @@ pub fn publish_wave(
         json!({"flac":flac,"complete_float_tensor":raw,"samples":samples.len(),"sample_rate":spec.sample_rate,
         "channels":spec.channels,"duration_seconds":samples.len() as f64 / f64::from(spec.channels) / f64::from(spec.sample_rate),
         "peak":peak,"rms":(energy / samples.len().max(1) as f64).sqrt(),
-        "integer_audio_clipped_samples":samples.iter().filter(|value| **value < -1.0 || **value >= 1.0).count(),
+        "pcm_encode_gain":gain,"unscaled_out_of_range_samples":samples.iter().filter(|value| **value < -1.0 || **value >= 1.0).count(),
+        "integer_audio_clipped_samples":samples.iter().filter(|value| (f64::from(**value) * gain).abs() >= 1.0).count(),
+        "gain_scope":"FLAC representation only; exact float tensor and inference inputs are unchanged",
         "finite":true,"float_tensor_is_exact":true,"flac_representation":"signed_32_bit_pcm"}),
     )
+}
+
+fn pcm_gain(peak: f32) -> f64 {
+    if peak >= 1.0 { f64::from(1.0 - f32::EPSILON) / f64::from(peak) } else { 1.0 }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pcm_gain_preserves_quiet_audio_and_prevents_both_polarities_clipping() {
+        assert_eq!(pcm_gain(0.0), 1.0);
+        assert_eq!(pcm_gain(0.9), 1.0);
+        for peak in [1.0, 1.3913388, 3.0] {
+            assert!(f64::from(peak) * pcm_gain(peak) < 1.0);
+            assert!(-f64::from(peak) * pcm_gain(peak) > -1.0);
+        }
+    }
     #[test]
     fn finite_check_checks_every_value() {
         assert!(finite([0.0, 1.0, f64::NAN]).is_err());

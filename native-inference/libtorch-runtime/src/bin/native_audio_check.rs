@@ -257,12 +257,22 @@ fn run(request_path: &Path, root: &Path) -> Result<(), String> {
     }
     result
 }
+fn publish_audio(source: &Path, root: &Path) -> Result<(), String> {
+    std::fs::create_dir(root).map_err(|error| error.to_string())?;
+    let (spec, samples) = audio::read_wav(source)?;
+    let result = audio::publish_wave(root, "audio", source, spec, &samples)?;
+    audio::save_json(&root.join("publication.json"), &result)?;
+    emit(&result);
+    Ok(())
+}
 fn main() {
     let arguments = std::env::args().collect::<Vec<_>>();
     let result = if arguments.len() == 3 {
         run(Path::new(&arguments[1]), Path::new(&arguments[2]))
+    } else if arguments.len() == 4 && arguments[1] == "publish-audio" {
+        publish_audio(Path::new(&arguments[2]), Path::new(&arguments[3]))
     } else {
-        Err("usage: native_audio_check REQUEST_JSON NEW_OUTPUT_DIRECTORY".into())
+        Err("usage: native_audio_check REQUEST_JSON NEW_OUTPUT_DIRECTORY | publish-audio FLOAT_WAV NEW_OUTPUT_DIRECTORY".into())
     };
     if let Err(error) = result {
         eprintln!("{error}");
