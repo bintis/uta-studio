@@ -40,7 +40,7 @@ pub(crate) fn spawn_storage_settings(
             } else if let Some(stats) = cache_stats.log_current.as_ref() {
                 format!(
                     "{} across {} files. Size is from the latest scan; active logs may grow.",
-                    format_bytes(stats.total_bytes),
+                    format_bytes(stats.bytes),
                     stats.file_count
                 )
             } else {
