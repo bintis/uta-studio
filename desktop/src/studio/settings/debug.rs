@@ -191,6 +191,39 @@ pub(crate) fn poll_debug_log_job(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn completed_job(result: Result<String, String>) -> App {
+        let (sender, receiver) = mpsc::channel();
+        sender.send(result).unwrap();
+        let mut app = App::new();
+        app.insert_resource(DebugLogJob { receiver: Some(Mutex::new(receiver)), ..default() });
+        app.insert_resource(ShellState {
+            config: AppConfig::default(), route: StudioRoute::Settings,
+            documentation: DocumentationState::default(), settings_tab: SettingsTab::General,
+            notice: None, settings_scroll_offsets: [0.0; 4],
+        });
+        app.insert_resource(CacheStatsJob::default());
+        app.insert_resource(UiInvalidated::default());
+        app.add_systems(Update, poll_debug_log_job);
+        app
+    }
+
+    #[test]
+    fn failed_log_operation_is_visible_and_refreshes_measured_size() {
+        let mut app = completed_job(Err("isolated filesystem error".to_string()));
+        app.update();
+        assert!(app.world().resource::<ShellState>().notice.as_deref().unwrap().contains("isolated filesystem error"));
+        assert!(app.world().resource::<CacheStatsJob>().log_refresh);
+        assert!(app.world().resource::<DebugLogJob>().receiver.is_none());
+    }
+
+    #[test]
+    fn completed_log_operation_displays_result_and_refreshes_size() {
+        let mut app = completed_job(Ok("Logs cleared.".to_string()));
+        app.update();
+        assert_eq!(app.world().resource::<ShellState>().notice.as_deref(), Some("Logs cleared."));
+        assert!(app.world().resource::<CacheStatsJob>().log_refresh);
+    }
+
     #[test]
     fn off_filter_does_not_enable_debug() {
         let filter = normal_log_filter().to_string();
