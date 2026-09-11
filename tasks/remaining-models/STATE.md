@@ -1,6 +1,6 @@
 # Remaining Models + Final Feature Closure — State
 
-**Updated:** 2026-09-11 (after the same-device Radeon 780M GGML/ROCm comparison)
+**Updated:** 2026-09-11 (after complete-model Super scheduler implementation and CPU verification)
 **Owner:** Rust + upstream-GGML migration
 
 This file stores current effective state only. Historical execution evidence remains in its original records; current source and focused tests override stale historical conclusions. Durable cross-cutting conclusions live in `docs/KEY_CONCLUSIONS.md`.
@@ -293,20 +293,33 @@ Verification and limits:
 The authorized full-song debug execution and artifact verification are complete. Broader
 per-model/linguistic/perceptual qualification and the explicit release pass remain unchanged.
 
-## Super acceleration — IN_PROGRESS, GPU validation paused (2026-09-10)
+## Super acceleration — IMPLEMENTED, GPU performance validation pending (2026-09-11)
 
-**User correction:** multi-GPU means assigning different complete model tasks using dependencies,
-loading order and predicted total device completion time, **not splitting one model across GPUs**.
-Retain the existing opt-in `turbo_acceleration` snapshots, memory-budgeted actual weight hot loading,
-exact-format decoded-audio reuse, shared separation outputs and useful Qwen encoder-to-decoder
-residency. Each model remains on one device with its precision, chunks, synchronization and output
-semantics unchanged. Complete-model task scheduling is not implemented yet; the linear Engine
-orchestrator and global foreground lease require an ownership-aware redesign, not lock removal.
-`844c016` removes the old dual-chunk implementation; its timings do not qualify the corrected goal.
-The correction passed **53 CPU / isolated protocol tests** (four RoFormer, 34 worker, thirteen
-supervisor and two prediction tests; `20260910T095055-5df40fd72c78`). Identity scan passed
-(`20260910T095215-585b34c730c4`). No GPU inference or new release build was run for this correction.
-Design and boundaries: [Super acceleration](../../docs/design/runtime/SUPER_ACCELERATION.md).
+**User correction retained:** multi-GPU assigns different complete model tasks using dependencies,
+loading order and predicted total device completion time; it **never splits one model across GPUs**.
+The opt-in `turbo_acceleration` request snapshot now activates a three-phase whole-task scheduler.
+Measured complete-task seed estimates and per-lane queued finish times place heavy preparation and
+speech work on LibTorch XPU/B580 while ready pitch/note work runs through GGML Vulkan on the AMD
+integrated GPU. Alignment waits for transcript; STARS/ROSVOT wait for alignment plus shared RMVPE;
+fusion waits for joined evidence. One backend/device lane remains serialized through worker exit
+and quiescence while the other physical GPU can progress. Parent-linked cancellation, originating
+failure preservation, child reaping, exact-format audio reuse, preloading and deterministic result
+assembly remain connected.
+
+Settings > Models & runtime owns the mode. Enabling it saves before changing visible state, disables
+global/per-model backend and device controls, and disables Processing Studio model/strategy choices.
+Saved manual choices are not erased: exact Super requests omit them, and turning the mode off makes
+them active again. CPU is never an automatic lane. Diagnostics distinguish requested/predicted
+placement from measured dual-device work.
+
+CPU/protocol verification passed: `20260911T154757-95dfb8ae3cdb` ran 282 Analysis Engine unit tests
+plus four packaged-boundary tests; `20260911T155016-dc91fb281ba3` passed desktop tests; and
+`20260911T152953-39e26b07d908` passed app-core/desktop request and settings coverage. No GPU
+inference or release build was run for this implementation. Corrected dual-GPU wall-time, output
+comparison, device telemetry and host-stability qualification remain pending. The historical
+chunk-splitting implementation remains removed by `844c016`; its timings do not qualify this
+scheduler. Design and boundaries:
+[Super acceleration](../../docs/design/runtime/SUPER_ACCELERATION.md).
 
 Historical verification before the task-granularity correction:
 - Settings/request propagation and save-failure tests passed (`20260910T072710-605f5879a1fc`).
@@ -370,15 +383,15 @@ weighted CPU windows are not GPU or full-pipeline qualification. Sixteen supervi
 owner and two prediction tests passed at `20260910T121202-985dcc11e7d1`; targeted CLI/format checks
 passed at `20260910T123921-8f13ed9beb0b`.
 
-Next: dependency-aware complete-model/device queues, observed task
-phase/cost accounting and queue-aware hot-weight retention/preparation. Qwen reduced readback must
-preserve first-maximum and all-logit finite checks: the pinned Vulkan argmax lane tie rule cannot be
+Next: run an explicitly authorized bounded ordinary/Super dual-GPU comparison with preflight and
+both-device telemetry, then revise seed estimates from complete-task phase observations. Queue-aware
+multi-pending hot-weight retention/preparation remains. Qwen reduced readback must preserve
+first-maximum and all-logit finite checks: the pinned Vulkan argmax lane tie rule cannot be
 substituted directly. Full-model numerical checks, cross-song reuse and Studio publication timing
-remain incomplete. Safety review follows the linked restart/submission/upload records in the
-design document: preserve synchronization/cleanup; do not add arbitrary waits, limits or retries.
-GPU experiments stay paused after the user's restart report; no automatic repeat of the incomplete
-run. Whole-pipeline performance/output qualification for the corrected design is incomplete.
-No production promotion.
+remain incomplete. Safety review follows the linked restart/submission/upload records in the design
+document: preserve synchronization/cleanup; do not add arbitrary waits, limits or retries. GPU
+experiments stay paused until explicitly authorized; no automatic repeat of the incomplete run.
+Whole-pipeline performance/output qualification remains incomplete. No production promotion.
 
 ## Native LibTorch XPU — bounded tests resumed (2026-09-10 UTC)
 

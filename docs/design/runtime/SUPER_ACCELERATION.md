@@ -8,14 +8,16 @@ GPU and Intel B580 using dependencies, loading order and predicted device comple
 identical decoded audio, shared separation results and genuinely consumed device intermediates
 when they reduce whole-pipeline elapsed time. Keeping both GPUs busy is not the objective.
 
-**The earlier chunk-splitting interpretation is withdrawn. Corrected task-level execution is
-not implemented yet; GPU validation is paused after a host restart. No production qualification
-or general speed claim.**
+**The earlier chunk-splitting interpretation is withdrawn. Corrected complete-model task-level
+execution is implemented and covered by CPU/protocol tests. GPU validation remains paused; there
+is no production qualification or measured end-to-end speed claim for this scheduler.**
 
 Reuse the existing stable `turbo_acceleration` setting, default off. Settings > Models & runtime
-owns it. Save errors must be visible and must not leave the UI claiming an unsaved change.
-Each new exact analysis request snapshots the value; changing the preference must not mutate
-already queued/running requests. Existing load/save configuration APIs represent the setting.
+owns it. While enabled, global/per-model runtime and device controls plus Processing Studio model
+choices are visibly disabled; saved manual choices are preserved and become active again when the
+mode is turned off. Super requests omit those manual route fields so the Engine owns placement.
+Save errors are visible and do not leave the UI claiming an unsaved change. Each new exact request
+snapshots the value; changing the preference does not mutate already queued/running requests.
 
 ## Execution ownership
 
@@ -63,9 +65,10 @@ first model's precision for every subsequent model.
   downstream critical-path work and the total finish time across devices. Waiting briefly for
   B580 can beat immediately sending a long critical task to the integrated GPU. Estimates are
   revisable observations, not fixed model/device assignments or frozen acceptance thresholds.
-- Preserve explicit device choices. Unknown timing or memory information is not a reason to
-  block required analysis or infer on CPU. Do not run unrequested calibration inference merely
-  to fill a cost table, or substitute theoretical GPU FLOPS for measured complete-task times.
+- Preserve saved explicit device choices without applying them to a Super request; they become
+  active again when Super mode is disabled. Unknown timing or memory information is not a reason
+  to infer on CPU. Do not run unrequested calibration inference merely to fill a cost table, or
+  substitute theoretical GPU FLOPS for measured complete-task times.
 - Prepare the selected upcoming model on its assigned device, retain its actual typed weights,
   and consume them in that same precision-isolated worker. Model hot loading is not just warming
   the filesystem cache. Residency must include upcoming allocations as well as active consumers.
@@ -73,11 +76,12 @@ first model's precision for every subsequent model.
   output, with multiple downstream readers. Concurrent consumers need coordinated publication
   rather than racing the current disk-cache index or independently decoding the same source.
   Useful tensors remain until their last dependent consumer; no arbitrary raw-stem uploads.
-- The current linear Engine orchestration, thread-local run ownership and global GGML foreground
-  lease do not yet implement this scheduler. Replace orchestration with explicitly owned tasks,
-  device queues and deterministic result assembly; do not merely remove the global lock and
-  claim safe parallel execution. Carry cancellation/reaping, precision isolation, existing
-  synchronization and teardown semantics through that work.
+- The Engine now owns an AMD lightweight queue that can overlap the Intel speech queue after audio
+  preparation. Once transcript alignment and RMVPE are both ready, independently assigned STARS
+  and ROSVOT tasks may also overlap. Foreground/quiescence ownership is keyed by exact backend and
+  device lane, so one lane stays serial through worker shutdown while another physical GPU may
+  progress. Joined tasks inherit request events, shared audio and acceleration ownership; failure
+  cancels siblings, preserves the originating error and joins children before output rollback.
 
 ## Safety review carried forward
 
@@ -338,13 +342,27 @@ concurrent LibTorch manifest edits; `20260910T113503-63b8228d7ca3` stopped at a 
 An earlier supervisor fixture encountered `ETXTBSY`; subsequent explicitly recorded serial checks
 passed. No automatic retry or GPU inference is implied by these follow-up operations.
 
-Remaining implementation: complete-model dependency/device queues, observed whole-task cost/phase
-accounting, queue-aware hot-weight retention and
-preparation, and reduced Qwen readback with exact first-maximum/non-finite semantics. Source review
+Implemented complete-model scheduling uses three dependency phases (audio preparation,
+independent evidence and conditioned evidence), measured complete-task seed costs, predicted lane
+availability and dependency-ready time. It resolves each planned model against the resulting total
+schedule, preferring LibTorch XPU/B580 for heavy work and GGML Vulkan/AMD integrated GPU for ready
+light work; automatic route availability may select the other GPU backend, never CPU. Diagnostics
+record requested mode and predicted placements separately from `dual_device_work_measured`, which
+remains false without device telemetry. The current preload coordinator still has one shared
+pending slot; queue-aware multi-pending residency, persisted/revised runtime observations and
+observed phase/cost accounting remain. Reduced Qwen readback must preserve exact
+first-maximum/non-finite semantics. Source review
 found that pinned Vulkan `argmax.comp` resolves equal maxima by reduction lane, not always original
 index (equal maxima at indices 1 and one subgroup-width can select the latter). Direct substitution
 for host argmax is therefore invalid. Do not change token selection merely to reduce readback.
 Cross-song reuse and Studio publication timing remain separate batch/end-to-end boundaries.
+
+Current CPU/protocol verification: Analysis Engine operation
+`20260911T154757-95dfb8ae3cdb` passed 282 unit tests and four packaged-boundary tests, including
+per-lane serialization, cross-lane admission, dependency/cost placement, inherited task context,
+cancellation and cleanup. Desktop operation `20260911T155016-dc91fb281ba3` passed settings and
+Processing Studio tests; app-core/desktop operation `20260911T152953-39e26b07d908` covered exact
+request projection and save-before-visible-state behavior. These checks did not launch either GPU.
 
 The concurrently authorized independent LibTorch work is preserved. Shared host DSP entry points
 must not call GGML model graphs; scheduler routing must respect the selected backend and precision.
@@ -361,7 +379,8 @@ single-owner chunk processing, immediate failure propagation, preparation reuse,
 cache behavior and cancellation/cleanup. No GPU inference was run, no release binary was rebuilt,
 and no numerical, throughput or host-stability qualification of the corrected design is claimed.
 Product identity scan passed (`20260910T095215-585b34c730c4`); changed source files remain under
-2,000 lines. Useful existing reuse stays connected; complete-model task scheduling remains next.
+2,000 lines. This is historical correction evidence; the later complete-model scheduler retains
+those ownership and cleanup properties.
 
 ## Verification and handoff
 

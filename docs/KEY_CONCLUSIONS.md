@@ -26,16 +26,22 @@ The user's clarified goal is **whole-model task scheduling across GPUs**, based 
 loading order and predicted total execution time, not splitting one model's chunks across cards.
 Keep actual model hot loading, exact-format audio decode reuse, shared separation outputs and
 useful final-consumer device residency. The earlier chunk-splitting measurements do not qualify
-this corrected design. Task-level orchestration remains incomplete and Vulkan Super validation
-remains paused after the reported restart. Existing synchronization, resource lifetimes and cleanup remain;
-process success and available VRAM do not establish host safety. See
+this corrected design. Complete-model orchestration is now implemented: heavy preparation/speech
+work is assigned to LibTorch XPU/B580, independent lightweight evidence runs in a serial AMD
+integrated-GPU/Vulkan queue, and ready STARS/ROSVOT work may overlap across those lanes after their
+alignment/RMVPE dependencies. Per-lane shutdown/quiescence, joined ownership, cancellation and
+deterministic assembly remain. GPU Super validation is still pending; process success and available
+VRAM do not establish host safety. See
 [Super acceleration](design/runtime/SUPER_ACCELERATION.md) and the task index.
 
-The authorized implementation now shares validated audio/PCM ownership, CPU frontend preparation,
+The authorized implementation shares validated audio/PCM ownership, CPU frontend preparation,
 real Qwen window progress and joined task context; it also reuses FCPE/GRU graphs, RMVPE resident
-handoffs and Qwen incremental arenas. Read-only weighted CPU fixtures compared 470,520 finite
-RMVPE/FCPE values bit-for-bit across differing windows. This is bounded CPU numerical evidence,
-not automatic dual-GPU scheduling, GPU qualification or a measured whole-analysis speedup.
+handoffs and Qwen incremental arenas. Super mode preserves selected workflow models but omits saved
+manual backend/device choices from the exact request; those controls and Processing Studio model
+choices are disabled until Super mode is turned off. Read-only weighted CPU fixtures compared
+470,520 finite RMVPE/FCPE values bit-for-bit across differing windows. The complete scheduler's
+latest CPU/protocol suite passed 282 unit and four packaged-boundary tests. This is not GPU
+qualification or a measured whole-analysis speedup.
 
 A later explicit request resumed separate LibTorch XPU testing. The native ABI fixture and bounded
 real-weight FCPE tensor calls completed; 179,640 full CPU/XPU activation pairs were finite, with
