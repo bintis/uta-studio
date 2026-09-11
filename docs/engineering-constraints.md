@@ -37,6 +37,8 @@ Every app feature is represented by a local in-process command contract. `api_ca
 
 Destructive and external commands still appear in the manifest so API coverage is complete, but they are tested with contracts and isolated fixtures rather than the user's live data.
 
+The desktop shell's interactive controls are the `ui.*` command registry in `desktop/src/studio/ui_api.rs`; every button carries the typed command its id names. `UTA_STUDIO_DEBUG_UI_SCRIPT` executes an NDJSON script of those ids with named arguments (`{"command": "ui.settings.select_settings_value", "arguments": {"kind": "compute_backend", "value": "libtorch_xpu"}}`) through the same dispatcher a pointer press uses, one step per few frames after startup, and writes a per-step report (`UTA_STUDIO_DEBUG_UI_REPORT`) with the dispatch outcome and the resulting route, tab, notice and persisted choices; `UTA_STUDIO_DEBUG_SCREENSHOT_PATH` then captures the final frame. This is the command-line equivalent of a click session (`scripts/wayland-smoke.sh` runs it headless under weston, with `VK_DRIVER_FILES` pointing at the lavapipe ICD on machines whose GPU surfaces are unavailable to a headless compositor) and is how settings interactions are verified without a display; run it against an isolated `UTA_STUDIO_DATA_PATH` so the operator's configuration is untouched. Unit tests keep the parser and the registry in agreement in both directions.
+
 ## Visual and interaction direction
 
 The interface is informed by Roon's calm music-library hierarchy and navigation, not copied at pixel level. Uta! Studio adds translucent surfaces, chart-production controls, and its own logo. The key principles are:
