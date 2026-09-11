@@ -26,6 +26,7 @@ pub(crate) enum AppCommand {
     CloseAbout,
     ToggleFullscreen,
     OpenLog,
+    StartDebugLogging,
     RunDiagnostics,
     CancelLeave,
     ConfirmLeave,

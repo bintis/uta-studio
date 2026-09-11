@@ -1,6 +1,7 @@
 use crate::studio::*;
 
 pub fn run() {
+    initialize_studio_logging();
     let StudioStateBundle {
         shell,
         library,
@@ -71,20 +72,15 @@ pub fn run() {
         )))
         .insert_resource(NativeSetup::default())
         .insert_resource(NativeDiagnostics::default())
+        .insert_resource(DebugLogJob::default())
         .insert_resource(NativeAuthoringJob::default())
         .insert_resource(CacheStatsJob::default())
         .insert_resource(StartupBannerState::for_launch(restore_window_mode))
         .add_plugins(
             DefaultPlugins
-                .set(LogPlugin {
-                    // Parley 0.9 asks ICU for non-complex word segmentation even
-                    // for no-wrap labels. ICU 2.2 logs that expected fallback once
-                    // per CJK text node; keep real ICU errors while avoiding that
-                    // misleading warning storm in the native shell.
-                    filter: studio_log_filter(),
-                    custom_layer: app_log_custom_layer,
-                    ..default()
-                })
+                // A reloadable subscriber is initialized before state loading so
+                // Settings can enable detailed capture without restarting.
+                .disable::<LogPlugin>()
                 .set(AssetPlugin {
                     // During the transition, use the canonical repository logo
                     // and the same bundled CJK font as the current desktop UI.
@@ -139,6 +135,7 @@ pub fn run() {
         )
         .add_systems(Update, poll_native_setup)
         .add_systems(Update, poll_native_diagnostics)
+        .add_systems(Update, poll_debug_log_job)
         .add_systems(Update, poll_cache_stats)
         .add_systems(Update, poll_model_settings_job)
         .add_systems(Update, poll_authoring_job)
@@ -299,7 +296,7 @@ pub(crate) fn studio_log_filter() -> String {
 /// `tracing_subscriber::fmt`'s own event formatting into
 /// `app_core::record_log_text`'s bounded ring buffer + best-effort log
 /// file. Composes *alongside* Bevy's own default stdout layer via
-/// `LogPlugin.custom_layer` -- stdout output is unaffected.
+/// the console formatter -- console output is unaffected.
 #[derive(Clone, Copy)]
 pub(crate) struct AppLogWriter;
 
@@ -322,14 +319,6 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for AppLogWriter {
     fn make_writer(&'a self) -> Self::Writer {
         *self
     }
-}
-
-pub(crate) fn app_log_custom_layer(_app: &mut App) -> Option<bevy::log::BoxedLayer> {
-    Some(Box::new(
-        tracing_subscriber::fmt::layer()
-            .with_writer(AppLogWriter)
-            .with_ansi(false),
-    ))
 }
 
 pub(crate) fn asset_root() -> String {

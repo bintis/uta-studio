@@ -482,6 +482,14 @@ pub(crate) fn spawn_general_settings(
                 group,
                 font.clone(),
                 theme,
+                "Full debug logs",
+                "Save all retained app and analysis logs, then capture detailed desktop and future backend output until exit. Reproduce the black screen after pressing DEBUG. Local only; logs may contain paths and lyrics.",
+                Some(("DEBUG", UiAction::from(AppCommand::StartDebugLogging))),
+            );
+            spawn_setting_row(
+                group,
+                font.clone(),
+                theme,
                 "Feature API diagnostics",
                 "Verify local APIs, native audio, and real UTZ/UltraStar exports in a unique temporary folder that is always removed.",
                 Some(("Run checks", UiAction::from(AppCommand::RunDiagnostics))),

@@ -48,6 +48,7 @@ const APP_COMMANDS: &[&str] = &[
     "ui.app.close_about",
     "ui.app.toggle_fullscreen",
     "ui.app.open_log",
+    "ui.app.start_debug_logging",
     "ui.app.run_diagnostics",
     "ui.app.cancel_leave",
     "ui.app.confirm_leave",

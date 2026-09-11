@@ -517,6 +517,7 @@ fn parse_app(name: &str) -> Result<AppCommand, String> {
         "close_about" => AppCommand::CloseAbout,
         "toggle_fullscreen" => AppCommand::ToggleFullscreen,
         "open_log" => AppCommand::OpenLog,
+        "start_debug_logging" => AppCommand::StartDebugLogging,
         "run_diagnostics" => AppCommand::RunDiagnostics,
         "cancel_leave" => AppCommand::CancelLeave,
         "confirm_leave" => AppCommand::ConfirmLeave,

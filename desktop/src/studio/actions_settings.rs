@@ -5,6 +5,7 @@ pub(crate) struct SettingsActionContext<'a> {
     pub(crate) state: StudioStateMut<'a>,
     pub(crate) setup: &'a mut NativeSetup,
     pub(crate) diagnostics: &'a mut NativeDiagnostics,
+    pub(crate) debug_log: &'a mut DebugLogJob,
     pub(crate) theme: &'a mut StudioTheme,
     pub(crate) clear_color: &'a mut ClearColor,
     pub(crate) invalidated: &'a mut UiInvalidated,
@@ -16,6 +17,7 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
         state: studio,
         setup,
         diagnostics,
+        debug_log,
         theme,
         clear_color,
         invalidated,
@@ -74,7 +76,11 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
             invalidated.invalidate(UiDirtyRegion::Settings);
         }
         UiCommand::App(AppCommand::OpenLog) => {
-            let path = app_core::default_uta_studio_dir().join("uta-studio.log");
+            let Some(path) = app_core::get_log_path() else {
+                studio.shell.notice = Some("Application log directory is unavailable.".to_string());
+                invalidated.invalidate(UiDirtyRegion::Settings);
+                return true;
+            };
             studio.shell.notice = Some(if path.is_file() {
                 match open::that_detached(&path) {
                     Ok(()) => localized_message(
@@ -91,6 +97,16 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
                     &[("{path}", &path.display().to_string())],
                 )
             });
+            invalidated.invalidate(UiDirtyRegion::Settings);
+        }
+        UiCommand::App(AppCommand::StartDebugLogging) => {
+            let context = format!(
+                "Uta! Studio {}\nOS: {} / {}\nWindow: {window:?}\nRoute: {:?}\nSettings: {}\n",
+                env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH,
+                studio.shell.route,
+                serde_json::to_string_pretty(&studio.shell.config).unwrap_or_else(|error| error.to_string()),
+            );
+            studio.shell.notice = Some(start_debug_log_job(debug_log, context));
             invalidated.invalidate(UiDirtyRegion::Settings);
         }
         UiCommand::App(AppCommand::RunDiagnostics) => {
