@@ -17,6 +17,7 @@ mod cache;
 mod chain_cache;
 mod chart;
 mod config;
+mod debug_logging;
 mod editor;
 mod error;
 mod export_destination;
@@ -126,6 +127,7 @@ pub use chart::{
     save_vocal_chart, save_vocal_chart_from_revision,
 };
 pub use config::{AppConfig, LibrarySource};
+pub use debug_logging::{debug_logging_error, start_debug_logging};
 pub use editor::{
     ChartLyric, ChartNote, ChartProblem, ClipboardNote, CorrectionType, EDITOR_ACTIONS,
     EditorActionAccess, EditorActionDef, EditorActionGroup, EditorAudioArtifact, EditorDocument,

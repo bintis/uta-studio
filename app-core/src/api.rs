@@ -45,6 +45,20 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
     ),
     capability!(
         "app",
+        "start_debug_logging",
+        "mutation",
+        false,
+        "Create a persistent full log snapshot and enable live debug capture for future backend commands"
+    ),
+    capability!(
+        "app",
+        "debug_logging_error",
+        "read",
+        true,
+        "Read the retained debug snapshot or live-write failure without clearing it"
+    ),
+    capability!(
+        "app",
         "get_recent_logs",
         "read",
         true,

@@ -43,7 +43,7 @@ pub fn record_log_text(text: &str) {
         return;
     }
     let path = get_log_path();
-    record_log_text_at(text, path.as_deref());
+    crate::debug_logging::with_app_log(text, || record_log_text_at(text, path.as_deref()));
 }
 
 fn record_log_text_at(text: &str, path: Option<&std::path::Path>) {

@@ -87,7 +87,14 @@ fn executable_file(path: &Path) -> bool {
 }
 
 pub fn native_command(program: impl AsRef<OsStr>) -> Command {
-    let command = Command::new(program);
+    native_command_with_debug(program, crate::debug_logging::enabled())
+}
+
+fn native_command_with_debug(program: impl AsRef<OsStr>, debug: bool) -> Command {
+    let mut command = Command::new(program);
+    if debug {
+        command.env("UTA_STUDIO_DEBUG", "1");
+    }
     #[cfg(windows)]
     let command = {
         use std::os::windows::process::CommandExt;
@@ -157,20 +164,34 @@ pub fn spawn_stderr_drain(
     let captured = Arc::new(Mutex::new(Vec::new()));
     let output = Arc::clone(&captured);
     let handle = std::thread::spawn(move || {
-        let mut reader = BufReader::new(stderr);
-        let mut buffer = [0_u8; 4096];
-        while let Ok(read) = reader.read(&mut buffer) {
-            if read == 0 {
-                break;
-            }
-            let mut output = output
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let available = MAX_CAPTURED_STDERR_BYTES.saturating_sub(output.len());
-            output.extend_from_slice(&buffer[..read.min(available)]);
-        }
+        drain_stderr(stderr, &output, crate::debug_logging::record_backend_stderr);
     });
     (captured, handle)
+}
+
+fn drain_stderr(
+    stderr: impl Read,
+    output: &Mutex<Vec<u8>>,
+    mut mirror: impl FnMut(&[u8]),
+) {
+    let mut reader = BufReader::new(stderr);
+    let mut buffer = [0_u8; 4096];
+    loop {
+        let read = match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        };
+        // Mirror every raw byte before applying the existing error-memory cap.
+        // The mirror records failures without tracing, panicking or stopping us.
+        mirror(&buffer[..read]);
+        let mut output = output
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let available = MAX_CAPTURED_STDERR_BYTES.saturating_sub(output.len());
+        output.extend_from_slice(&buffer[..read.min(available)]);
+    }
 }
 
 pub fn stderr_text(captured: &Arc<Mutex<Vec<u8>>>) -> String {
@@ -178,4 +199,50 @@ pub fn stderr_text(captured: &Arc<Mutex<Vec<u8>>>) -> String {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     String::from_utf8_lossy(&bytes).trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_is_applied_to_commands_without_changing_process_environment() {
+        let command = native_command_with_debug("unused-backend", true);
+        assert!(command.get_envs().any(|(key, value)| {
+            key == OsStr::new("UTA_STUDIO_DEBUG") && value == Some(OsStr::new("1"))
+        }));
+        let command = native_command_with_debug("unused-backend", false);
+        assert!(!command.get_envs().any(|(key, _)| key == OsStr::new("UTA_STUDIO_DEBUG")));
+    }
+
+    #[test]
+    fn stderr_mirror_receives_every_byte_beyond_bounded_error_memory() {
+        let bytes = vec![0xff; MAX_CAPTURED_STDERR_BYTES * 3];
+        let output = Mutex::new(Vec::new());
+        let mut mirrored = Vec::new();
+        drain_stderr(bytes.as_slice(), &output, |chunk| mirrored.extend_from_slice(chunk));
+        assert_eq!(mirrored, bytes);
+        assert_eq!(*output.lock().unwrap(), bytes[..MAX_CAPTURED_STDERR_BYTES]);
+    }
+
+    #[test]
+    fn failed_mirror_writes_do_not_stop_stderr_draining() {
+        use std::io::Write;
+
+        let bytes = vec![b'x'; MAX_CAPTURED_STDERR_BYTES * 3];
+        let output = Mutex::new(Vec::new());
+        let mut drained = 0;
+        let mut failures = 0;
+        drain_stderr(bytes.as_slice(), &output, |chunk| {
+            // A zero-capacity writer fails deterministically without touching disk.
+            let mut destination: &mut [u8] = &mut [];
+            if destination.write_all(chunk).is_err() {
+                failures += 1;
+            }
+            drained += chunk.len();
+        });
+        assert!(failures > 1);
+        assert_eq!(drained, bytes.len());
+        assert_eq!(output.lock().unwrap().len(), MAX_CAPTURED_STDERR_BYTES);
+    }
 }
