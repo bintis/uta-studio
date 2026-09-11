@@ -69,7 +69,8 @@ impl DebugLogJob {
         if shell.config.debug_logging {
             job.attempted = Some(true);
             match app_core::start_debug_logging(&debug_context(shell))
-                .and_then(|_| set_detailed_logging(true)) {
+                .and_then(|_| set_detailed_logging(true))
+            {
                 Ok(()) => job.applied = true,
                 Err(error) => {
                     app_core::stop_debug_logging();
@@ -82,9 +83,13 @@ impl DebugLogJob {
 }
 
 fn debug_context(shell: &ShellState) -> String {
-    format!("Uta! Studio {}\nOS: {} / {}\nSettings: {}",
-        env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH,
-        serde_json::to_string_pretty(&shell.config).unwrap_or_default())
+    format!(
+        "Uta! Studio {}\nOS: {} / {}\nSettings: {}",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        serde_json::to_string_pretty(&shell.config).unwrap_or_default()
+    )
 }
 
 pub(crate) fn toggle_debug_logging(shell: &mut ShellState, job: &mut DebugLogJob) {
