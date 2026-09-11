@@ -403,9 +403,10 @@ impl AnalysisEngine {
     ) -> EngineResult<(Vec<uta_runtime_manager::ResolvedModel>, Vec<String>)> {
         let automatic_schedule = request.execution_policy.turbo_acceleration.then(|| {
             crate::device_scheduler::schedule_models(
-                plan.requirements.resources.iter().filter_map(|requirement| {
-                    requirement.resource.strip_prefix("model:")
-                }),
+                plan.requirements
+                    .resources
+                    .iter()
+                    .filter_map(|requirement| requirement.resource.strip_prefix("model:")),
             )
         });
         let mut resolved = Vec::new();
