@@ -22,6 +22,17 @@ inline int64_t bounded_projection_row_tile(const at::Tensor& weight) {
     return std::max<int64_t>(1, std::min<int64_t>(maximum_rows, maximum_multiply_accumulates / work_per_row));
 }
 
+// Write directly into an already allocated contiguous row slice. Avoiding an
+// asynchronous temporary linear result plus copy keeps its allocator lifetime
+// out of the queued ROCm projection path.
+inline void projection_out(at::Tensor& output, const at::Tensor& input,
+                           const at::Tensor& weight, const at::Tensor& bias) {
+    if (bias.defined())
+        at::addmm_out(output, bias, input, weight.transpose(0, 1));
+    else
+        at::mm_out(output, input, weight.transpose(0, 1));
+}
+
 // Same shared-weight linear map, with bounded GEMM row count on the selected
 // GPU. Leading batch/sequence axes are flattened, never split semantically.
 // The output is allocated once; all row tiles including the tail remain on GPU.
@@ -44,7 +55,8 @@ inline at::Tensor tiled_projection(const at::Tensor& input, const at::Tensor& we
     for (int64_t start = 0; start < rows; start += row_tile) {
         check_cancel();
         const auto count = std::min<int64_t>(row_tile, rows - start);
-        output.narrow(0, start, count).copy_(at::linear(matrix.narrow(0, start, count), weight, bias));
+        auto output_rows = output.narrow(0, start, count);
+        projection_out(output_rows, matrix.narrow(0, start, count), weight, bias);
     }
     return output.reshape(shape);
 }
@@ -78,7 +90,8 @@ inline at::Tensor tiled_feed_forward(
         check_cancel();
         const auto count = std::min<int64_t>(row_tile, rows - start);
         auto hidden = at::gelu(at::linear(matrix.narrow(0, start, count), input_weight, input_bias), "none");
-        output.narrow(0, start, count).copy_(at::linear(hidden, output_weight, output_bias));
+        auto output_rows = output.narrow(0, start, count);
+        projection_out(output_rows, hidden, output_weight, output_bias);
     }
     return output.reshape(shape);
 }

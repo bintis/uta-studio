@@ -20,9 +20,9 @@ int main(int argc, char** argv) {
         at::set_num_threads(2);
         at::globalContext().setFloat32Precision(at::Float32Backend::GENERIC, at::Float32Op::ALL, at::Float32Precision::IEEE);
         const auto device = at::Device(at::kCUDA, 0);
-        for (const auto rows : {17, 801, 2051, 60000}) {
-            const int64_t width = rows == 60000 ? 384 : rows == 801 ? 1536 : 63;
-            const int64_t channels = rows == 60000 || rows == 801 ? 1536 : 97;
+        for (const auto rows : {17, 801, 2051, 6408, 60000}) {
+            const int64_t width = rows == 60000 || rows == 6408 ? 384 : rows == 801 ? 1536 : 63;
+            const int64_t channels = rows == 60000 || rows == 6408 || rows == 801 ? 1536 : 97;
             const auto input = fixture({rows, width}, 0.31);
             const auto weight = fixture({channels, width}, 1.07);
             const auto bias = fixture({channels}, 0.73);
