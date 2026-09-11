@@ -6,6 +6,13 @@
 #include <iostream>
 
 namespace {
+void synchronize_tile() {
+#if defined(UTA_LIBTORCH_ROCM)
+    const auto status = hipDeviceSynchronize();
+    if (status != hipSuccess)
+        throw std::runtime_error(std::string("ROCm projection tile synchronization failed: ") + hipGetErrorString(status));
+#endif
+}
 at::Tensor fixture(at::IntArrayRef shape, double phase) {
     int64_t count = 1;
     for (auto dimension : shape) count *= dimension;
@@ -59,11 +66,11 @@ int main(int argc, char** argv) {
                 output_parts.reserve(weight_parts.size());
                 for (size_t part = 0; part < weight_parts.size(); ++part)
                     output_parts.push_back(uta::torch_native::tiled_projection(
-                        device_input, weight_parts[part], bias_parts[part], [] {}, row_tile));
+                        device_input, weight_parts[part], bias_parts[part], synchronize_tile, row_tile));
                 device_actual = at::cat(output_parts, -1);
             } else {
                 device_actual = uta::torch_native::tiled_projection(
-                    device_input, device_weight, device_bias, [] {}, row_tile);
+                    device_input, device_weight, device_bias, synchronize_tile, row_tile);
             }
             auto output_shape = input.sizes().vec();
             output_shape.back() = channels;
@@ -111,7 +118,7 @@ int main(int argc, char** argv) {
                                            uta::torch_native::bounded_projection_row_tile(device_output_weight));
             const auto actual = uta::torch_native::tiled_feed_forward(
                 input.to(device), device_input_weight, input_bias.to(device),
-                device_output_weight, output_bias.to(device), [] {}, row_tile).to(at::kCPU);
+                device_output_weight, output_bias.to(device), synchronize_tile, row_tile).to(at::kCPU);
             if (actual.sizes() != at::IntArrayRef({rows, output_channels}))
                 throw std::runtime_error("feed-forward output shape differs");
             double squared_error = 0.0, reference_energy = 0.0, maximum = 0.0;
