@@ -15,7 +15,8 @@ fn normal_log_filter(environment: &str) -> EnvFilter {
         .split(',')
         .filter(|directive| !directive.is_empty())
         .try_fold(defaults.clone(), |filter, directive| {
-            directive.parse::<tracing_subscriber::filter::Directive>()
+            directive
+                .parse::<tracing_subscriber::filter::Directive>()
                 .map(|directive| filter.add_directive(directive))
         })
         .unwrap_or(defaults)
