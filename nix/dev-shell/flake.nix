@@ -101,6 +101,10 @@
             export UTA_STUDIO_PYTORCH_RELEASE="${pytorchRelease}"
             export UTA_STUDIO_ROCM_ARCHITECTURE="${rocmArchitecture}"
             export UTA_STUDIO_ROCM_WHEEL_INDEX="${rocmWheelIndex}"
+            # ROCm 10 keeps fused AOTriton attention opt-in on gfx1103. Native
+            # RoFormer disables dense math attention rather than risking its
+            # quadratic allocation, so explicitly enable the packaged kernel.
+            export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
             export UTA_STUDIO_ROCM_ENVIRONMENT="''${UTA_STUDIO_ROCM_ENVIRONMENT:-$PWD/test-artifacts/libtorch-rocm/runtime}"
             if [ -f "$UTA_STUDIO_ROCM_ENVIRONMENT/.uta-studio-ready" ]; then
               export PATH="$UTA_STUDIO_ROCM_ENVIRONMENT/bin:$PATH"
