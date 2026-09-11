@@ -1,10 +1,68 @@
 # 21J — Melody Path and Score Coherence
 
-**State:** `NEEDS_REVIEW` — current 2026-09-11 regression: source repairs verified; exact failed-song replay and broader fragmentation/listening qualification remain.
+**State:** `NEEDS_REVIEW` — the user's subsequent analysis completes; caller word-granularity and ownership repairs are verified in CPU tests, but fresh measured alignment/downstream chart and broader fragmentation/listening qualification remain.
 
 **Parent:** Card 21 final design-parity audit
 
 **Task class:** Analysis Engine algorithm-quality convergence; no new user-facing tuning surface required
+
+## Caller word alignment follow-up — 2026-09-11 UTC
+
+The user reports that analysis now succeeds but entire lyric sentences attach to notes instead
+of character-level lyrics. The subsequent run `studio-auto-791637-1789144308643134601-1`
+indeed records `completed` after successful singing fusion, candidate selection and chart
+publication. Its published alignment contains **47 whole-line items**, each labeled `word`,
+with **16 unresolved** (`alignment_unresolved_words:16`). The chart contains 820 objects,
+818 pitched. This is execution success, not acceptable word/note alignment.
+
+The input-granularity defect is in `engine/runtime_route.rs::qwen_alignment_words`:
+nonempty canonical transcript tokens bypassed language segmentation. Studio deliberately
+supplies LRC lines and their audio search scopes, so every entire line became one model word.
+`d8031076` now applies the existing language-aware lexical segmentation to caller tokens as
+well as generated text. Child words have distinct deterministic `aligned-word` identities;
+canonical caller line IDs/text remain unchanged. Every child retains its original **whole-line
+search scope**, not an evenly divided synthetic word interval. Punctuation and small kana
+stay with their lexical owner. No model graph, timestamp decoder or inference route changed.
+
+A second inspected defect used cumulative text length over only resolved words to assign
+words back to timed lines. Missing words therefore shifted later text into earlier lines,
+particularly repeated lyrics. `6136aa20` associates measured words with caller scopes by
+actual temporal overlap instead. Existing within-line ownership, note geometry and unresolved
+word semantics remain; no missing word timestamp is fabricated.
+
+Evidence is retained in `test-artifacts/word-note-alignment/`, including a read-only snapshot
+of the actual published alignment, chart, lyric source, singing evidence and completed log.
+The explicitly invoked CPU diagnostic (`ed3cf9d0`, formatted with `362d8cbc`) projects the
+source's 47 caller lines into **507 lexical requests across the same 47 audio scopes**.
+Every character of canonical text is preserved, all word IDs are unique, and every lexical
+unit remains in its original line scope. `word-request-summary.json` is **input projection
+verification only**: no new native alignment or corrected real-song chart was produced.
+Input reconstruction uses retained LRC line starts, published caller line text and the final
+pitch-frame end; its scope is recorded in `input-provenance.json`.
+
+Verification:
+
+- Four caller-language/scope/word-to-chart tests reproduce the whole-line failure
+  (`20260911T164210-b1b07cede73f`) and pass after the fix
+  (`20260911T164308-5c7f8d4c280d`). A fifth missing-word/repeated-line test reproduces
+  ownership drift (`20260911T164604-9cf1170c303a`); the candidate pipeline tests then pass
+  (`20260911T164656-b9545da071c5`). The word-to-chart test uses explicitly synthetic
+  measured intervals, preserving each character's distinct note time without line lyrics.
+- **292 Engine tests + four packaged CLI-boundary tests pass serially**, with the explicit
+  file-input diagnostic ignored by default (`20260911T164930-5a923c1e594b`). Its deliberate
+  real-lyric CPU invocation passes separately (`20260911T164953-34f17513a336`), with full
+  request verification at `20260911T165027-27f175205f0a`.
+- Targeted all-target Engine clippy with warnings denied passes
+  (`20260911T165027-c20d47669bff`); nine UltraStar projection/publication tests pass
+  (`20260911T165223-26fb9c212c44`). Engine finalization tests validate the UTZ chart shape;
+  this is not a real audio-bundle export or editor listening test.
+
+Next: use the corrected backend for fresh **alignment and dependent downstream analysis**
+(including conditioned note experts, fusion and chart finalization). The existing 47-item
+cache cannot be split into truthful measured character times after the fact. Review the new
+word/note correspondence and unresolved items before claiming real-song correction. No new
+GPU inference, source/cache/settings/model mutation, running-desktop replacement, workspace
+release pass or Nix packaging was performed by this follow-up.
 
 ## Current regression follow-up — 2026-09-11 UTC
 
@@ -75,8 +133,9 @@ Focused verification:
 
 The reported overflow mechanism and unsupported acoustic veto are repaired, but
 no reduction of real-song final short-note counts has been demonstrated here.
-Next: retain evidence from the next explicitly authorized failed-song re-analysis,
-then inspect its actual boundaries and voiced gaps before further tuning. Do not
+The user's subsequent successful re-analysis is now retained and inspected in the caller
+word-alignment follow-up above. Fresh word-level measurement and downstream chart review
+are the next action; inspect actual boundaries and voiced gaps before further tuning. Do not
 promote this card to broad quality acceptance based on candidate-count reduction.
 No GPU inference, user cache/settings/model mutation, desktop installation,
 whole-workspace release check or Nix packaging was performed.

@@ -544,14 +544,30 @@ Do not use `Reference` merely as another spelling of KnownLyrics.
 
 ## 15.4 Timed LRC
 
-Timed LRC already contains timing evidence that the current Engine v1 contract cannot fully treat as a precomputed Alignment artifact.
+Timed LRC import retains the original timed transcript in Studio. When Engine analysis is
+requested, Studio sends its canonical line text and original line ranges; these ranges are
+**audio search scopes**, not precomputed word-alignment output. Canonical text does not require
+an ASR substitute.
 
-Until a tested Engine contract supports this exact reuse semantics:
+The Engine applies language-aware lexical segmentation to every caller line, just as it does
+to generated text: CJK character units (with existing small-kana/punctuation attachment), or
+whitespace-delimited words for other languages. Every child unit keeps its original caller
+line scope, so the native aligner measures the words together with real sung context. Caller
+line IDs/text and the resulting child-word IDs are distinct responsibilities. A caller line
+must not be passed to the timestamp classifier as one word merely because it was one input
+token; nor may its duration be evenly divided by character or note count.
 
-- preserve the existing Studio timed-lyrics import path;
-- do not silently run ASR and call it equivalent;
-- if Engine analysis is requested on top of timed LRC, translate times into explicit boundary constraints only when tokenization/timeline semantics are proven equivalent;
-- otherwise mark the operation as not representable by Engine v1.
+Imported inline timestamps remain caller evidence, not automatically relabeled model
+measurements. Explicit boundary guidance uses the authority semantics below. The existing
+line-search route does not claim exact reuse of an imported per-character Alignment artifact.
+Unresolved model words retain uncertainty and are not used as measured word boundaries. When
+associating measured words with timed caller lines, use their actual temporal overlap; counting
+only surviving words would shift text positions after unresolved characters.
+
+This behavior is covered by caller-language/scoping and word-to-chart regression tests.
+The real 47-line input projects to 507 lexical requests, but real timing/output qualification
+still requires rerunning alignment and dependent downstream stages. See
+[the current caller-alignment follow-up](../../../tasks/final-features/followups/21J_MELODY_PATH_SCORE_COHERENCE.md#caller-word-alignment-follow-up--2026-09-11-utc).
 
 ---
 

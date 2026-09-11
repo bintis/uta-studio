@@ -169,6 +169,24 @@ serial Engine/CLI tests and targeted clippy pass; an earlier parallel acoustic-c
 failure remains recorded and unexplained despite passing isolated/serial checks. No new inference
 or installed assets. See [current evidence and next action](../tasks/final-features/followups/21J_MELODY_PATH_SCORE_COHERENCE.md#current-regression-follow-up--2026-09-11-utc).
 
+## Caller word/note alignment (2026-09-11)
+
+The user's subsequent analysis completes, but its published alignment exposes a separate defect:
+47 whole LRC lines were labeled as `word` items (16 unresolved). Nonempty caller tokens bypassed
+lexical segmentation before Qwen alignment. `d8031076` applies the existing language-aware
+segmentation to those lines while retaining each original audio search scope. Canonical line
+identity remains separate from deterministic child-word identity; no evenly divided times or
+new model/backend route is introduced. `6136aa20` also groups surviving measured words by actual
+caller-scope overlap rather than cumulative text lengths that drift after unresolved words.
+
+The real lyric input now projects to **507 lexical requests in the same 47 scopes**, with all text
+preserved. This is an executed CPU request check, not new measured word timing. Five new
+regressions, 292 + four serial Engine/CLI tests, the explicit lyric-input diagnostic, targeted
+clippy and nine UltraStar tests pass. No native alignment/downstream chart rerun or running app
+replacement occurred. Fresh alignment and dependent note/fusion/finalization stages are required;
+old line-level output cannot manufacture character timings. 21J remains `NEEDS_REVIEW`.
+[Detailed evidence](../tasks/final-features/followups/21J_MELODY_PATH_SCORE_COHERENCE.md#caller-word-alignment-follow-up--2026-09-11-utc).
+
 ## Workflow contract
 
 - Current Studio workflow schema is 7.

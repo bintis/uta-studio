@@ -1,6 +1,6 @@
 # Remaining Models + Final Feature Closure — State
 
-**Updated:** 2026-09-11 (after complete-model Super scheduler and note-fusion regression verification)
+**Updated:** 2026-09-11 (after Super scheduling, note fusion and caller word-alignment regression verification)
 **Owner:** Rust + upstream-GGML migration
 
 This file stores current effective state only. Historical execution evidence remains in its original records; current source and focused tests override stale historical conclusions. Durable cross-cutting conclusions live in `docs/KEY_CONCLUSIONS.md`.
@@ -964,6 +964,31 @@ regression; model integration/production readiness is unchanged. No new GPU infe
 mutation or installed build. Evidence and next action:
 [21J current follow-up](../final-features/followups/21J_MELODY_PATH_SCORE_COHERENCE.md#current-regression-follow-up--2026-09-11-utc),
 `test-artifacts/note-fragmentation/comparison.json`.
+
+## Caller word alignment — repaired input granularity; new measured output pending (2026-09-11)
+
+The user's subsequent Japanese-song analysis completes and publishes a chart, confirmed by its
+retained lifecycle log. The new complaint is real: alignment has 47 whole-line `word` items, of
+which 16 are unresolved, instead of character-level measurements. `qwen_alignment_words` passed
+nonempty caller tokens through without segmentation; those tokens are LRC lines/search scopes.
+`d8031076` now applies language-aware lexical segmentation to caller lines and generated text,
+retaining the original caller scopes without dividing audio time by character/note counts.
+`6136aa20` additionally prevents unresolved words from shifting later words into earlier lyric
+lines: measured words are grouped by actual caller-scope overlap, not compressed text offsets.
+
+Five new regressions reproduce these defects and pass after repair. The latest serial suite
+passes 292 Engine tests plus four packaged-boundary tests, and targeted all-target clippy passes.
+An explicitly invoked CPU diagnostic over the retained real lyrics produces **507 lexical input
+units in the same 47 caller scopes**, preserving all text and unique word IDs. These are prepared
+model inputs, **not newly measured word timestamps or a corrected real-song chart**. Nine
+UltraStar tests and Engine UTZ chart finalization tests pass; no real export bundle was created.
+
+Card 21J remains `NEEDS_REVIEW`. Next: fresh alignment plus conditioned note/fusion/finalization
+stages with the corrected backend, then inspect actual character/note correspondence. Existing
+47-line alignment cannot be repaired by evenly splitting it. Source and user caches/models remain
+untouched; no new GPU inference or installed build. Details and operation receipts:
+[caller word alignment](../final-features/followups/21J_MELODY_PATH_SCORE_COHERENCE.md#caller-word-alignment-follow-up--2026-09-11-utc),
+`test-artifacts/word-note-alignment/word-request-summary.json`.
 
 ## Next actions
 
