@@ -15,6 +15,11 @@ pub(crate) fn change_model_parameter(
     text: &str,
     save: impl FnOnce(&AppConfig) -> Result<(), String>,
 ) -> Result<(), String> {
+    if text.trim().eq_ignore_ascii_case("default") && key == "overlap" {
+        return save_config_change(config, |proposed| {
+            if let Some(values) = proposed.model_settings.get_mut(model) { values.remove(key); }
+        }, save);
+    }
     let number = text.trim().parse::<f64>().map_err(|_| "Enter a number for this model parameter".to_string())?;
     let mut proposed = config.clone();
     app_core::model_settings::set(&mut proposed.model_settings, model, key, number)?;
@@ -67,6 +72,7 @@ fn spawn_parameter_row(
 ) {
     let value = model_parameter_value(config, model, parameter);
     let overridden = config.model_settings.get(model).is_some_and(|values| values.contains_key(parameter.key));
+    let display = if parameter.key == "overlap" && !overridden { "Default".to_string() } else { value.to_string() };
     let description = if parameter.key == "overlap" {
         if overridden {
             format!("{} Current overlap: {:.1}%.", parameter.description, (1.0 - 1.0 / value) * 100.0)
@@ -91,7 +97,7 @@ fn spawn_parameter_row(
                 SettingsCommand::AdjustModelParameter(model.to_string(), parameter.key.to_string(), -1).into());
             controls.spawn((
                 ModelParameterInput { model: model.to_string(), key: parameter.key.to_string() },
-                EditableText { visible_width: Some(7.0), ..EditableText::new(&value.to_string()) },
+                EditableText { visible_width: Some(7.0), ..EditableText::new(&display) },
                 Node { width: px(72), height: px(32), padding: UiRect::axes(px(8), px(5)), border: UiRect::all(px(1)),
                     border_radius: BorderRadius::all(px(4)), overflow: Overflow::clip_x(), ..default() },
                 ui_text_font(font.clone(), 10.0), TextColor(theme.foreground),
