@@ -213,6 +213,22 @@ fn infer_params(config: &Value) -> Result<GameInferParams, String> {
     })
 }
 
+#[cfg(test)]
+mod settings_tests {
+    #[test]
+    fn model_settings_reach_game_without_changing_language_or_guidance() {
+        let params = super::infer_params(&serde_json::json!({
+            "language":"ja", "known_boundaries_us":[100000],
+            "model_settings":{"sampling_steps":16,"boundary_threshold":0.4,"note_threshold":0.6}
+        })).unwrap();
+        assert_eq!(params.d3pm_steps, 16);
+        assert_eq!(params.boundary_threshold, 0.4);
+        assert_eq!(params.note_threshold, 0.6);
+        assert_eq!(params.language, 2);
+        assert_eq!(params.known_boundaries, [10]);
+    }
+}
+
 fn validate_artifact_identity(identity: &Value) -> Result<(), String> {
     if identity.get("semantic_output").and_then(Value::as_str) != Some("note_candidate_evidence") {
         return Err("GAME artifact semantic output is invalid".to_string());

@@ -373,6 +373,13 @@ mod tests {
     }
 
     #[test]
+    fn evidence_uses_the_requested_budget_instead_of_the_default() {
+        let tuned = evidence("model".into(), "runtime", "ggml_vulkan", transcription(), 8).unwrap();
+        assert_eq!(tuned.max_generated_tokens, 8);
+        assert!(evidence("model".into(), "runtime", "ggml_vulkan", transcription(), 3).is_err());
+    }
+
+    #[test]
     fn evidence_rejects_inconsistent_assembled_tokens() {
         let mut evidence = evidence(
             "model-generation".to_string(),

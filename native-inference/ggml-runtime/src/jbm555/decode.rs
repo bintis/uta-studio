@@ -173,6 +173,9 @@ mod tests {
         assert_eq!(notes.len(), 2);
         assert_eq!(notes[0].midi, notes[1].midi);
         assert!(notes[0].range.end <= notes[1].range.start);
+        let less_sensitive = decode_notes_with_thresholds(&on_off, &octave, &class, frames, 0.85, OFFSET_THRESHOLD).unwrap();
+        assert_eq!(less_sensitive.len(), 1);
+        assert!(less_sensitive[0].range.start > notes[0].range.start);
     }
 
     #[test]

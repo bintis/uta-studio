@@ -96,7 +96,7 @@ pub fn parse_game_evidence(
         || raw.semantic_output != "note_candidate_evidence"
         || raw.sample_rate != 44_100
         || raw.timestep_ms != 10
-        || raw.d3pm_steps != 8
+        || raw.d3pm_steps == 0
         || !valid_threshold(raw.boundary_decision_threshold)
         || !valid_threshold(raw.presence_decision_threshold)
         || raw.notes.is_empty()
@@ -195,9 +195,9 @@ mod tests {
                 "semantic_output": "note_candidate_evidence",
                 "sample_rate": 44100,
                 "timestep_ms": 10,
-                "d3pm_steps": 8,
-                "boundary_decision_threshold": 0.2,
-                "presence_decision_threshold": 0.2,
+                "d3pm_steps": 16,
+                "boundary_decision_threshold": 0.4,
+                "presence_decision_threshold": 0.6,
                 "notes": [
                     {"start":0.1,"duration":0.2,"midi":69.25,"voiced":true},
                     {"start":0.4,"duration":0.1,"midi":71.75,"voiced":true}
@@ -207,6 +207,9 @@ mod tests {
         )
         .unwrap();
         let evidence = parse_game_evidence(&path, 2_000_000, 500_000).unwrap();
+        assert_eq!(evidence.d3pm_steps, 16);
+        assert_eq!(evidence.notes[0].boundary_decision_threshold, 0.4);
+        assert_eq!(evidence.notes[0].presence_decision_threshold, 0.6);
         assert_eq!(evidence.notes[0].range.start, 2_100_000);
         assert_eq!(evidence.notes[0].midi, 69.25);
         assert_eq!(evidence.notes[1].range.end, 2_500_000);

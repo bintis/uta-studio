@@ -1012,6 +1012,8 @@ mod tests {
         let expected = 10.0 * 2.0_f32.powf(2000.0 / 1200.0);
         assert!((pitches[0].unwrap() - expected).abs() < 1.0e-4);
         assert!(pitches[1..].iter().all(Option::is_none));
+        let less_sensitive = decode_pitch(&activations, &cents, 0.7).unwrap();
+        assert!(less_sensitive.iter().all(Option::is_none));
     }
 
     #[test]

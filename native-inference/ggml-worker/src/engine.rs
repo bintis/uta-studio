@@ -1262,6 +1262,12 @@ mod tests {
         assert_eq!(evidence["backend"], "ggml_vulkan");
         assert_eq!(evidence["model_gguf_sha256"], runtime::RMVPE_GGUF_SHA256);
         assert_eq!(evidence["runtime_manifest_sha256"], runtime_digest);
+        let tuned = root.join("tuned.json");
+        publish_rmvpe_evidence(&raw, &tuned, &runtime_digest, "ggml_vulkan", 0.9).unwrap();
+        let tuned: serde_json::Value = serde_json::from_slice(&std::fs::read(tuned).unwrap()).unwrap();
+        assert!((tuned["voiced_threshold"].as_f64().unwrap() - 0.9).abs() < 0.000001);
+        assert_eq!(tuned["frames"][0]["voiced"], false);
+        assert_eq!(tuned["frames"][0]["hz"], 220.0);
         assert!(!published.with_extension("json.tmp").exists());
         assert!(publish_rmvpe_evidence(&raw, &published, "replacement", "ggml_cpu", 0.03).is_err());
         std::fs::remove_dir_all(root).unwrap();
