@@ -173,6 +173,11 @@ impl Game {
         let mut boundaries = known.clone();
         let mut noise_regions = vec![0_i32; frames];
 
+        let mut segmenter = self.prepare_segmenter(
+            &encoded.segmenter_embeddings,
+            frames,
+            params.language,
+        )?;
         for step in 0..params.d3pm_steps {
             let time = if params.d3pm_steps == 1 {
                 0.0
@@ -186,12 +191,7 @@ impl Game {
                 self.config().region_cycle_length,
                 &mut noise_regions,
             )?;
-            let logits = self.segmenter_logits(
-                &encoded.segmenter_embeddings,
-                &noise_regions,
-                time,
-                params.language,
-            )?;
+            let logits = segmenter.compute(&noise_regions, time)?;
             let probabilities = logits.iter().copied().map(sigmoid).collect::<Vec<_>>();
             boundaries = decode_soft_boundaries(
                 &probabilities,
@@ -202,6 +202,7 @@ impl Game {
             )?;
         }
 
+        drop(segmenter);
         let regions = boundaries_to_regions(&boundaries, Some(&mask))?;
         let region_count = regions
             .iter()

@@ -97,7 +97,33 @@ impl Game {
         if noise_mod.is_empty() {
             return Err("GAME segmenter requires at least one frame".to_string());
         }
-        let frame_count = noise_mod.len();
+        self.validate_segmenter_step(noise_mod, timestep)?;
+        self.prepare_segmenter(x_seg, noise_mod.len(), language)?
+            .compute(noise_mod, timestep)
+    }
+
+    fn validate_segmenter_step(&self, noise_mod: &[i32], timestep: f32) -> Result<(), String> {
+        if noise_mod
+            .iter()
+            .any(|value| *value < 0 || *value >= self.config().region_cycle_length as i32)
+        {
+            return Err("GAME segmenter noise index is invalid".to_string());
+        }
+        if !timestep.is_finite() {
+            return Err("GAME segmenter timestep must be finite".to_string());
+        }
+        Ok(())
+    }
+
+    pub(super) fn prepare_segmenter(
+        &self,
+        x_seg: &[f32],
+        frame_count: usize,
+        language: i32,
+    ) -> Result<SegmenterRun<'_>, String> {
+        if frame_count == 0 {
+            return Err("GAME segmenter requires at least one frame".to_string());
+        }
         if x_seg.len()
             != frame_count
                 .checked_mul(self.config().embedding_dim)
@@ -105,17 +131,8 @@ impl Game {
         {
             return Err("GAME segmenter embedding shape is invalid".to_string());
         }
-        if noise_mod
-            .iter()
-            .any(|value| *value < 0 || *value >= self.config().region_cycle_length as i32)
-        {
-            return Err("GAME segmenter noise index is invalid".to_string());
-        }
         if language < 0 || language > self.config().language_count as i32 {
             return Err("GAME segmenter language index is invalid".to_string());
-        }
-        if !timestep.is_finite() {
-            return Err("GAME segmenter timestep must be finite".to_string());
         }
 
         let frames = i64::try_from(frame_count)
@@ -176,8 +193,6 @@ impl Game {
 
         run.allocate(&self.backend)?;
         set_f32(api, input, x_seg, "GAME segmenter embeddings")?;
-        set_i32(api, noise, noise_mod, "GAME segmenter noise")?;
-        set_f32(api, time, &[timestep], "GAME segmenter timestep")?;
         set_i32(api, language_input, &[language], "GAME segmenter language")?;
         let positions_data = (0..frame_count)
             .map(|position| {
@@ -186,12 +201,14 @@ impl Game {
             })
             .collect::<Result<Vec<_>, _>>()?;
         set_i32(api, positions, &positions_data, "GAME segmenter positions")?;
-        run.compute(&self.backend)?;
-        let logits = get_f32(api, logits)?;
-        if logits.len() != frame_count {
-            return Err("GAME segmenter output shape is invalid".to_string());
-        }
-        Ok(logits)
+        Ok(SegmenterRun {
+            model: self,
+            run,
+            noise,
+            time,
+            logits,
+            frames: frame_count,
+        })
     }
 
     /// Runs GAME's joint region/frame estimator. Region IDs are zero before
@@ -1152,6 +1169,36 @@ fn get_f32(api: &ModelApi, tensor: TensorPtr) -> Result<Vec<f32>, String> {
     Ok(values)
 }
 
+/// One inference-window owner: immutable conditioning stays on device while
+/// each diffusion step updates only noise and time. Drop before the estimator
+/// allocates its different graph; no model-global stale-input cache.
+pub(super) struct SegmenterRun<'model> {
+    model: &'model Game,
+    run: GraphRun,
+    noise: TensorPtr,
+    time: TensorPtr,
+    logits: TensorPtr,
+    frames: usize,
+}
+
+impl SegmenterRun<'_> {
+    pub(super) fn compute(&mut self, noise: &[i32], time: f32) -> Result<Vec<f32>, String> {
+        if noise.len() != self.frames {
+            return Err("GAME segmenter noise timeline disagrees with prepared window".to_string());
+        }
+        self.model.validate_segmenter_step(noise, time)?;
+        let api = self.model.api();
+        set_i32(api, self.noise, noise, "GAME segmenter noise")?;
+        set_f32(api, self.time, &[time], "GAME segmenter timestep")?;
+        self.run.compute(&self.model.backend)?;
+        let logits = get_f32(api, self.logits)?;
+        if logits.len() != self.frames {
+            return Err("GAME segmenter output shape is invalid".to_string());
+        }
+        Ok(logits)
+    }
+}
+
 struct GraphRun {
     runtime: Arc<GgmlRuntime>,
     context: ContextPtr,
@@ -1326,6 +1373,25 @@ mod tests {
             .unwrap();
         assert_eq!(segmenter.len(), output.frames);
         assert!(segmenter.iter().all(|value| value.is_finite()));
+        {
+            let mut prepared = model
+                .prepare_segmenter(&output.segmenter_embeddings, output.frames, 0)
+                .unwrap();
+            for step in 0..3 {
+                let noise = noise_mod.iter().map(|value| {
+                    (value + step) % model.config().region_cycle_length as i32
+                }).collect::<Vec<_>>();
+                let time = step as f32 * 0.5;
+                let actual = prepared.compute(&noise, time).unwrap();
+                let expected = model.segmenter_logits(
+                    &output.segmenter_embeddings, &noise, time, 0,
+                ).unwrap();
+                assert!(actual.iter().all(|value| value.is_finite()));
+                assert_eq!(actual, expected);
+            }
+            assert!(prepared.compute(&[], 0.0).is_err());
+            assert!(prepared.compute(&noise_mod, f32::NAN).is_err());
+        }
         if let Some(path) = std::env::var_os("UTA_TEST_GAME_SEGMENTER_OUTPUT") {
             let mut bytes = Vec::with_capacity(segmenter.len() * 4);
             for value in segmenter {
