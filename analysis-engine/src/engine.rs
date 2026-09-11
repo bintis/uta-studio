@@ -734,15 +734,14 @@ impl AnalysisEngine {
             source_duration,
             cancellation: cancellation.clone(),
         };
-        let (light_model_task, mut light_context) =
-            if request.execution_policy.turbo_acceleration {
-                (
-                    Some(owner.start(true, move || light_models::run(light_context))?),
-                    None,
-                )
-            } else {
-                (None, Some(light_context))
-            };
+        let (light_model_task, mut light_context) = if request.execution_policy.turbo_acceleration {
+            (
+                Some(owner.start(true, move || light_models::run(light_context))?),
+                None,
+            )
+        } else {
+            (None, Some(light_context))
+        };
         let needs_transcribe = has_capability(&plan, "speech.transcribe");
         let needs_alignment = has_capability(&plan, "speech.align");
         let transcript_evidence = if needs_transcribe {
@@ -1023,8 +1022,7 @@ impl AnalysisEngine {
         let game_evidence = light_output.game_evidence;
         let game_conditioned_boundary_count = light_output.game_conditioned_boundary_count;
         let mut timed_note_evidence = light_output.timed_note_evidence;
-        let shared_rmvpe_evidence_path =
-            light_output.shared_rmvpe_evidence_path.as_deref();
+        let shared_rmvpe_evidence_path = light_output.shared_rmvpe_evidence_path.as_deref();
         let run_stars_notes = has_capability(&plan, "notes.stars");
         let run_stars_technique = has_capability(&plan, "technique.analyze");
         let run_rosvot = has_capability(&plan, "notes.rosvot");

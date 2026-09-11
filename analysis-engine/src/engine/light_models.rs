@@ -141,8 +141,7 @@ pub(super) fn run(context: LightModelContext) -> EngineResult<LightModelOutput> 
         )?;
         let model = resolved_model(resolved, "basic_pitch")?;
         let directory = create_task_dir(&context.output_root, "worker/basic-pitch")?;
-        let (component, config) =
-            model_dispatch(model, request, "note+onset+contour_activation")?;
+        let (component, config) = model_dispatch(model, request, "note+onset+contour_activation")?;
         let outputs = run_native_task(
             model,
             component,
@@ -207,8 +206,7 @@ pub(super) fn run(context: LightModelContext) -> EngineResult<LightModelOutput> 
         known_boundaries.dedup();
         game_conditioned_boundary_count = known_boundaries.len();
         let directory = create_task_dir(&context.output_root, "worker/game")?;
-        let (component, mut config) =
-            model_dispatch(model, request, "note_candidate_evidence")?;
+        let (component, mut config) = model_dispatch(model, request, "note_candidate_evidence")?;
         config["language"] = serde_json::json!(request.lyrics.language);
         config["known_boundaries_us"] = serde_json::json!(known_boundaries);
         let outputs = run_native_task(
@@ -312,8 +310,7 @@ pub(super) fn run(context: LightModelContext) -> EngineResult<LightModelOutput> 
             vocal_preparation_generation: &vocal_preparation_generation,
         };
         let directory = create_task_dir(&context.output_root, "worker/jbm555")?;
-        let (component, mut config) =
-            model_dispatch(model, request, "note_candidate_evidence")?;
+        let (component, mut config) = model_dispatch(model, request, "note_candidate_evidence")?;
         config["source_start"] = serde_json::json!(context.source_start);
         config["source_duration"] = serde_json::json!(context.source_duration);
         config["upstream_revision"] = serde_json::json!("jbm555-public");
@@ -324,8 +321,7 @@ pub(super) fn run(context: LightModelContext) -> EngineResult<LightModelOutput> 
         config["mix_audio_identity"] = serde_json::json!(mix_audio_identity);
         config["vocal_audio_identity"] = serde_json::json!(vocal_audio_identity);
         config["separator_model_generation"] = serde_json::json!(separator_model_generation);
-        config["vocal_preparation_generation"] =
-            serde_json::json!(vocal_preparation_generation);
+        config["vocal_preparation_generation"] = serde_json::json!(vocal_preparation_generation);
         let outputs = run_native_task_with_inputs(
             model,
             component,
