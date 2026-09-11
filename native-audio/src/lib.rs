@@ -123,9 +123,13 @@ fn platform_backend() -> Result<Box<dyn AudioBackend>, String> {
     // but not its separately installed element plugins. Restore the build's
     // plugin directories without mutating process environment after threading.
     let explicit_paths = [
-        "GST_PLUGIN_SYSTEM_PATH_1_0", "GST_PLUGIN_SYSTEM_PATH",
-        "GST_PLUGIN_PATH_1_0", "GST_PLUGIN_PATH",
-    ].iter().any(|name| std::env::var_os(name).is_some());
+        "GST_PLUGIN_SYSTEM_PATH_1_0",
+        "GST_PLUGIN_SYSTEM_PATH",
+        "GST_PLUGIN_PATH_1_0",
+        "GST_PLUGIN_PATH",
+    ]
+    .iter()
+    .any(|name| std::env::var_os(name).is_some());
     for path in packaged_plugin_paths(env!("UTA_STUDIO_PACKAGED_GST_PLUGIN_PATH"), explicit_paths) {
         gstreamer::Registry::get().scan_path(path);
     }
@@ -138,8 +142,12 @@ fn platform_backend() -> Result<Box<dyn AudioBackend>, String> {
 #[cfg(target_os = "linux")]
 fn packaged_plugin_paths(paths: &str, explicit_paths: bool) -> Vec<std::path::PathBuf> {
     // An explicit path (including empty) belongs to the launcher/operator.
-    if explicit_paths { return Vec::new(); }
-    std::env::split_paths(paths).filter(|path| !path.as_os_str().is_empty()).collect()
+    if explicit_paths {
+        return Vec::new();
+    }
+    std::env::split_paths(paths)
+        .filter(|path| !path.as_os_str().is_empty())
+        .collect()
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -148,8 +156,13 @@ mod packaged_plugin_tests {
 
     #[test]
     fn packaged_paths_exclude_empty_entries_and_respect_process_override() {
-        assert_eq!(packaged_plugin_paths("/plugins/base:/plugins/good:", false),
-            vec![std::path::PathBuf::from("/plugins/base"), std::path::PathBuf::from("/plugins/good")]);
+        assert_eq!(
+            packaged_plugin_paths("/plugins/base:/plugins/good:", false),
+            vec![
+                std::path::PathBuf::from("/plugins/base"),
+                std::path::PathBuf::from("/plugins/good")
+            ]
+        );
         assert!(packaged_plugin_paths("", false).is_empty());
         assert!(packaged_plugin_paths("/plugins/base", true).is_empty());
     }
