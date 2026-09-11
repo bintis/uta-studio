@@ -243,11 +243,16 @@ private:
         auto normalized = normalize(sequence, name(prefix, "attn_norm", "norm.weight"));
         runtime->checkpoint(prefix + ".normalization");
         const auto batch = sequence.size(0), length = sequence.size(1);
-        auto qkv = project(normalized, weights->get(name(prefix, "qkv", "qkv.weight"))).chunk(3, -1);
-        runtime->checkpoint(prefix + ".qkv");
-        auto query = qkv[0].reshape({batch, length, heads, head_dimension}).transpose(1, 2);
-        auto key = qkv[1].reshape({batch, length, heads, head_dimension}).transpose(1, 2);
-        auto value = qkv[2].reshape({batch, length, heads, head_dimension}).transpose(1, 2);
+        const auto qkv_weights = weights->get(name(prefix, "qkv", "qkv.weight")).chunk(3, 0);
+        auto query = project(normalized, qkv_weights[0])
+            .reshape({batch, length, heads, head_dimension}).transpose(1, 2);
+        runtime->checkpoint(prefix + ".query_projection");
+        auto key = project(normalized, qkv_weights[1])
+            .reshape({batch, length, heads, head_dimension}).transpose(1, 2);
+        runtime->checkpoint(prefix + ".key_projection");
+        auto value = project(normalized, qkv_weights[2])
+            .reshape({batch, length, heads, head_dimension}).transpose(1, 2);
+        runtime->checkpoint(prefix + ".value_projection");
         if (!polar && runtime->backend == "libtorch_xpu") {
             auto rotation = runtime->precision == "mixed_attention"
                 ? interleaved_roformer_rotation_half : interleaved_roformer_rotation;

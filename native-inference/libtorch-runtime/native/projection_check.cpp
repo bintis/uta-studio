@@ -31,8 +31,20 @@ int main(int argc, char** argv) {
             const auto bias = fixture({channels}, 0.73);
             const auto device_input = input.to(device), device_weight = weight.to(device), device_bias = bias.to(device);
             const auto row_tile = uta::torch_native::bounded_projection_row_tile(device_input, device_weight);
-            const auto device_actual = uta::torch_native::tiled_projection(
-                device_input, device_weight, device_bias, [] {}, row_tile);
+            at::Tensor device_actual;
+            if (rows == 6408) {
+                const auto weight_parts = device_weight.chunk(3, 0);
+                const auto bias_parts = device_bias.chunk(3, 0);
+                std::vector<at::Tensor> output_parts;
+                output_parts.reserve(weight_parts.size());
+                for (size_t part = 0; part < weight_parts.size(); ++part)
+                    output_parts.push_back(uta::torch_native::tiled_projection(
+                        device_input, weight_parts[part], bias_parts[part], [] {}, row_tile));
+                device_actual = at::cat(output_parts, -1);
+            } else {
+                device_actual = uta::torch_native::tiled_projection(
+                    device_input, device_weight, device_bias, [] {}, row_tile);
+            }
             auto output_shape = input.sizes().vec();
             output_shape.back() = channels;
             if (device_actual.sizes() != at::IntArrayRef(output_shape))
@@ -55,7 +67,9 @@ int main(int argc, char** argv) {
             }
             const auto nmse = squared_error / std::max(reference_energy, 1e-30);
             const bool passed = nmse <= 1e-10 && maximum <= 5e-5;
-            std::cout << std::setprecision(12) << "{\"event\":\"tiled_projection_check\",\"backend\":\"rocm\",\"rows\":" << rows
+            std::cout << std::setprecision(12) << "{\"event\":\""
+                      << (rows == 6408 ? "split_qkv_projection_check" : "tiled_projection_check")
+                      << "\",\"backend\":\"rocm\",\"rows\":" << rows
                       << ",\"row_tile\":" << row_tile << ",\"compared_elements\":" << compared << ",\"nmse\":" << nmse
                       << ",\"maximum_absolute_error\":" << maximum << ",\"passed\":" << (passed ? "true" : "false") << "}\n" << std::flush;
             if (!passed) throw std::runtime_error("projection disagrees with complete double CPU reference");
