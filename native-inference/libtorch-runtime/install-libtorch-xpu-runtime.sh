@@ -44,6 +44,7 @@ copy_sdk_libraries() {
   local directory
   local directories=()
   IFS=: read -r -a directories <<< "${UTA_STUDIO_XPU_LIBRARY_DIRS:?set SDK runtime library directories for SYCL and oneMKL}"
+  rm -rf -- "$runtime_root/deps/lib"
   mkdir -p "$runtime_root/deps/lib"
   for directory in "${directories[@]}"; do
     cp -a "$directory"/. "$runtime_root/deps/lib/"
@@ -54,16 +55,21 @@ copy_sdk_libraries() {
 }
 
 build() {
-  local compiler="${CXX:-icpx}" prefix="$work_root/install"
+  local compiler="${CXX:-c++}" prefix="$work_root/install"
   local actual_commit
   actual_commit="$(git -C "$source_root" rev-parse HEAD)"
   mkdir -p "$work_root" "$runtime_root/torch/lib" "$runtime_root/lib"
+  # Replacing the one current build must not retain files from disabled
+  # components in an earlier install tree. Installed runtime publication stays
+  # explicit; this removes only build-owned install output.
+  rm -rf -- "$prefix"
   copy_sdk_libraries
   # ATen's CPU library owns common dispatch/host operations even for XPU.
   # Removing that library is not equivalent to disabling a CPU fallback.
   XPU_ENABLE_KINETO=0 cmake -S "$source_root" -B "$work_root/torch-build" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CXX_COMPILER="$compiler" \
+    -DPython_EXECUTABLE="${UTA_STUDIO_LIBTORCH_BUILD_PYTHON:-python3}" \
     -DCMAKE_INSTALL_PREFIX="$prefix" \
     -DCMAKE_INSTALL_RPATH="$runtime_root/torch/lib;$runtime_root/deps/lib" \
     -DBUILD_SHARED_LIBS=ON \
@@ -92,6 +98,8 @@ build() {
     -j "${UTA_STUDIO_LIBTORCH_BUILD_JOBS:-4}"
   # Copy runtime DSOs only; headers, CMake exports and codegen stay build-only.
   local library
+  rm -rf -- "$runtime_root/torch/lib"
+  mkdir -p "$runtime_root/torch/lib"
   while IFS= read -r -d '' library; do
     cp -a "$library" "$runtime_root/torch/lib/"
   done < <(find "$prefix/lib" -maxdepth 1 \( -type f -o -type l \) -name '*.so*' -print0)
