@@ -256,10 +256,17 @@ private:
     }
     at::Tensor feed_forward(const at::Tensor& sequence, const std::string& prefix) const {
         auto current = normalize(sequence, name(prefix, "ff_norm", "norm.weight"));
-        current = project(current, weights->get(name(prefix, "ff1_w", "in.weight")), weights->get(name(prefix, "ff1_b", "in.bias")));
+        const auto input_weight = weights->get(name(prefix, "ff1_w", "in.weight"));
+        const auto input_bias = weights->get(name(prefix, "ff1_b", "in.bias"));
+        const auto output_weight = weights->get(name(prefix, "ff2_w", "out.weight"));
+        const auto output_bias = weights->get(name(prefix, "ff2_b", "out.bias"));
+        if (runtime->backend == "libtorch_rocm" && current.numel() / current.size(-1) > 1024)
+            return sequence + tiled_feed_forward(current, input_weight, input_bias, output_weight, output_bias,
+                [this] { check_cancel(); });
+        current = project(current, input_weight, input_bias);
         runtime->checkpoint(prefix + ".feed_forward_projection");
         current = at::gelu(current, "none");
-        return sequence + project(current, weights->get(name(prefix, "ff2_w", "out.weight")), weights->get(name(prefix, "ff2_b", "out.bias")));
+        return sequence + project(current, output_weight, output_bias);
     }
 };
 } // namespace
