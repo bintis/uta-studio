@@ -9,7 +9,7 @@ This file stores current effective state only. Historical execution evidence rem
 
 Studio has one model execution boundary: Rust-owned graphs calling the shared libraries built from upstream `ggml-org/ggml` revision `8c63e70982c95ceb862e3a1073a2c1beef75d60a`. The package is upstream GGML plus exactly the backend patches `native-inference/ggml-worker/runtime-recipe.json` declares, and contains no app-owned C/C++ model graph, shim, model CLI, or model-inference subprocess. The repository contains no model conversion or model-rewrite script; container migration is `cargo xtask gguf`. Vulkan remains the default. CPU is an explicitly selected experimental reference mode; GPU and integrated-GPU requests never fall back to it.
 
-The backend alignment is complete: every authorized model now runs through that one boundary, and the Runtime Manager catalog contains exactly these seventeen models and one `ggml_vulkan` shared-library runtime.
+The backend alignment is complete: every authorized model runs through that boundary by default, and the Runtime Manager catalog contains exactly these eighteen models plus two native runtimes: the pinned `ggml_vulkan` shared-library runtime and, since 2026-09-11, the explicitly selectable `libtorch_xpu` native LibTorch runtime executed by the same packaged worker (see the product-route section below).
 
 | Resource | Capability | State | integration_ready | production_ready | Current conclusion |
 | --- | --- | --- | --- | --- | --- |
@@ -666,7 +666,7 @@ Source media, installed assets and unrelated user changes remain untouched;
 no CPU/GGML inference fallback, Vulkan stress, workspace release checks or Nix
 packaging were performed. See [execution design](../../docs/design/runtime/LIBTORCH_EXECUTION.md).
 
-## All-resource LibTorch AMD ROCm 10 — HALTED AFTER SEVENTH GPU RESET (2026-09-11)
+## All-resource LibTorch AMD ROCm 10 — HALTED AFTER EIGHTH GPU RESET (2026-09-11)
 
 **Zero of eighteen resources qualified; the full-song phase was not started.** The isolated Nix
 shell and official **ROCm 10.0.0 + PyTorch 2.13.0** packages, including the Radeon 780M `gfx1103`
@@ -784,16 +784,45 @@ combined band-split checkpoint completed.
 
 The same trace then completed the first two 1024-row QKV projection tiles and failed on the third,
 `start=2048, rows=1024`; the final sample records `amdgpu-reset-dev`. The actual input is
-`[8,801,384]`, so flattening into 1024-row tiles crosses independent batch boundaries. Commit
-`b26ca72` instead keeps each complete 801-row sequence together, producing eight batch-aligned
-`801 x 384 -> 1536` contractions without removing data. The exact three-dimensional oracle was
-added and the native build passed. It has not been GPU-executed after this seventh reset, so it is a
-built candidate rather than a verified repair.
+`[8,801,384]`, so commit `b26ca72` instead kept each complete 801-row sequence together. Its exact
+three-dimensional projection/FFN oracle passed **8/8**, including all 9,842,688 batch-aligned QKV
+values at NMSE `9.1871552793e-14` and maximum error `4.57103271057e-6`; no reset worker was sampled.
+
+Real Denoise nevertheless completed all 60 band projections and then reset on the first 801-row QKV
+tile. This falsifies cross-batch tile boundaries as the cause. Commit `e8b06e9` now bounds each
+ROCm attention subproblem itself to at most 1024 projected sequence rows. The 801/1722-row time axes
+run one independent batch at a time, while short frequency axes retain up to eight batches. This
+reduces simultaneous normalized/QKV/attention intermediates without removing any context or value.
+The native build passed but no GPU execution followed the eighth reset, so it remains an unverified
+candidate.
 
 The sweep remains **three passed, one failed, fourteen not run**. No subsequent model was launched
 and full-song execution was not started. Do not resume AMD ROCm model, oracle or stress execution
-without another explicit human decision after this seventh code-triggered GPU reset. CPU/GGML
+without another explicit human decision after this eighth code-triggered GPU reset. CPU/GGML
 fallback remains prohibited. See [LibTorch execution](../../docs/design/runtime/LIBTORCH_EXECUTION.md).
+
+## LibTorch XPU production route — IMPLEMENTED (2026-09-11)
+
+The user authorized promoting native LibTorch XPU execution to production level after the recorded
+full-song results measured it faster than the GGML route. Commits `c9c2138` (Runtime Manager +
+Engine), `995dd07` (worker route and Python-free installer), `8e33711` (Studio settings backend
+selection) and `822eecf` (readiness hint) implement it; details are in
+[LibTorch execution](../../docs/design/runtime/LIBTORCH_EXECUTION.md#product-route--implemented-and-selectable-2026-09-11).
+
+- `runtime:libtorch_xpu` is a catalog runtime with a production-pinned `libtorch_xpu` capability;
+  every model advertises the capability beside its pinned `ggml` default. Readiness requires
+  `lib/libuta_libtorch.so` under the installed runtime directory (`native_library_missing` otherwise).
+- The Engine dispatches `backend: libtorch_xpu` on the discrete GPU only; the worker opens each model
+  through the native C ABI with the qualified precision policy and publishes the same typed artifacts.
+- Studio's Settings > Models & runtime offers *Compute backend* (pinned default / GGML Vulkan / LibTorch
+  XPU) and lists LibTorch in every per-model runtime menu. Selection never falls back.
+- Focused checks: runtime-manager 35 + 10, analysis-engine 278, worker 38, app-core 434 (four
+  real-CLI tests need a built debug `uta-analyze`), desktop settings 9 tests pass.
+- The previously used isolated XPU torch tree under `test-artifacts/` no longer exists; the runtime is
+  reinstalled Python-free into `~/.local/share/uta-studio/runtime/libtorch-xpu` by
+  `install-libtorch-xpu-runtime.sh` (curl + unzip + CMake).
+
+**12-second production verification:** pending — recorded below once executed.
 
 ## Next actions
 
@@ -819,6 +848,7 @@ fallback remains prohibited. See [LibTorch execution](../../docs/design/runtime/
 | Current Rust GGML integration | NEEDS_REVIEW | Focused control-plane, runtime, worker, and desktop suites pass, and fifteen of seventeen models executed on both AMD 780M and Intel B580. FireRed's whole-chain decoder, the installed/pinned GGUF container mismatch, the missing Qwen ASR F16 artifact, strict numerical/perceptual parity, and runtime-manifest hardening remain. |
 | Final repository/package acceptance | PENDING | Whole-workspace, packaged-product, and Nix release checks are reserved for the explicit release pass. |
 | Production model release | PENDING | Do not infer production readiness from historical implementations or current smoke runs. |
+| LibTorch XPU product route | IMPLEMENTED | Runtime Manager, Engine, worker and Studio settings expose `libtorch_xpu` as an explicit production-pinned second route; verification status is recorded in the LibTorch XPU production route section. |
 
 ## Operation provenance
 

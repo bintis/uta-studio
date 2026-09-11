@@ -193,7 +193,7 @@ word timings; STARS uses a separate actual FireRed Chinese alignment branch with
 primary-provider substitution follows. Full details, exact commits/operations,
 timings and remaining integration work: [full-song results](../../LIBTORCH_XPU_FULLSONG_RESULTS.md).
 
-## AMD ROCm 10 all-resource validation — halted after seventh GPU reset 2026-09-11
+## AMD ROCm 10 all-resource validation — halted after eighth GPU reset 2026-09-11
 
 **RESUMED AT ZERO OF EIGHTEEN FOR THE ORIGINAL TWELVE-SECOND SWEEP.** The authorized isolated environment resolves the official AMD stable
 combination, **ROCm 10.0.0 + PyTorch 2.13.0**, with the Radeon 780M `device-gfx1103` package. The
@@ -302,17 +302,62 @@ Denoise trace completed all **60/60** band projections and the combined band-spl
 
 That trace then completed QKV projection rows `0..1023` and `1024..2047` before an unspecified launch
 failure on `start=2048, rows=1024`; the final sample records another `amdgpu-reset-dev`. The actual
-QKV input shape is `[8,801,384]`, so the 1024-row flattening crosses independent batches. Commit
-`b26ca72` uses the complete 801-row penultimate sequence axis whenever it fits under the work bound,
-producing eight batch-aligned contractions without truncating data. Its exact three-dimensional
-oracle was added and the native build passed. No GPU execution followed this seventh reset, so the
-change remains an unverified candidate.
+QKV input shape is `[8,801,384]`, so commit `b26ca72` kept each complete 801-row sequence together.
+Its exact three-dimensional projection/FFN oracle passed **8/8**, including all 9,842,688 QKV values,
+with no active reset worker sampled.
+
+Real Denoise still completed all sixty band projections and reset on the first batch-aligned
+801-row QKV tile. Cross-batch tile boundaries are therefore not causal. Commit `e8b06e9` instead
+bounds each complete ROCm attention subproblem to at most 1024 projected sequence rows: long
+801/1722-row time attention runs one independent batch at a time, while short frequency attention
+retains up to eight. Complete K/V context and arithmetic are retained while simultaneous
+normalization, QKV and attention intermediates shrink. The native build passed. No GPU execution
+followed this eighth reset, so this remains an unverified candidate.
 
 The bounded result remains **three passed, one failed, fourteen not run**. Full-song execution was
 not started. Further AMD ROCm model, oracle or stress execution requires another explicit human
-decision after this seventh reset. CPU/GGML fallback remains prohibited. Previous XPU results remain
+decision after this eighth reset. CPU/GGML fallback remains prohibited. Previous XPU results remain
 separate, and this work establishes no product routing, whole-model parity, listening quality,
 driver stability or production readiness.
+
+## Product route — implemented and selectable (2026-09-11)
+
+The user authorized promoting the native LibTorch XPU implementation to a production route on
+2026-09-11. It is now wired through every boundary without changing the process architecture:
+
+- **Runtime Manager** catalogs a second runtime resource, `runtime:libtorch_xpu`, whose executable
+  component is the same packaged `uta-ggml-worker`. Every model advertises a production-pinned
+  `libtorch_xpu` capability (`evidence_id: validation:libtorch-xpu-fullsong-real-2026-09-11`) beside its
+  pinned `ggml` default and depends on both runtimes; `resolve_model_with_backend(..., libtorch_xpu)`
+  resolves the same model files with `runtime_id: libtorch_xpu`. The runtime is usable only when
+  `lib/libuta_libtorch.so` exists under the installed runtime directory (`UTA_STUDIO_LIBTORCH_RUNTIME_DIR`,
+  else `<runtime store>/libtorch-xpu`); otherwise it reports `native_library_missing` and every LibTorch
+  selection fails closed. `native-inference/runtime-lock.json` names both selectable runtimes; GGML remains
+  the pinned default and no backend ever falls back to the other.
+- **Analysis Engine** maps a resolved `libtorch_xpu` model to worker backend `libtorch_xpu` on the discrete
+  GPU, rejects CPU/iGPU device classes for it, records `backend: libtorch_xpu` / `device: xpu` provenance in
+  the result fingerprint, and accepts `libtorch_xpu` in every typed artifact validator.
+- **Worker** (`native-inference/ggml-worker/src/libtorch.rs`): a task whose config names `backend:
+  libtorch_xpu` validates `runtime-manifest.json`, applies the manifest's declared process environment
+  (`ONEAPI_DEVICE_SELECTOR`, Level Zero driver path, SYCL kernel cache, strict oneDNN math), loads the
+  native library through the existing `uta-libtorch-runtime` C ABI, opens the model on the explicit XPU
+  device with the qualified precision policy (mixed attention for the six separators, strict elsewhere)
+  and writes the same raw engine outputs as the GGML route, so publication stays shared. Each model
+  module's request parsing and evidence publication is a backend-agnostic `infer_with`; LibTorch result
+  structs are converted field-for-field. Super-acceleration preloads are never attempted for LibTorch.
+- **Studio**: Settings > Models & runtime has a *Compute backend* selector (pinned default / GGML Vulkan /
+  LibTorch XPU) persisted as `compute_backend` and sent as the exact `requested_backend`; per-model runtime
+  menus list the advertised LibTorch capability and per-model overrides accept `libtorch_xpu`. An
+  unavailable backend fails in Plan Preview.
+- **Installation** is Python-free: `native-inference/libtorch-runtime/install-libtorch-xpu-runtime.sh`
+  fetches the official `torch 2.13.0+xpu` wheel archive and its pinned native dependency wheels with
+  curl (bounded parallel byte ranges), unpacks only shared libraries and C++ headers with unzip, builds
+  `libuta_libtorch.so` with CMake inside `bash dev.sh`, and writes `runtime-manifest.json` with library
+  digests and the machine's driver environment. The runtime recipe is
+  `native-inference/libtorch-runtime/runtime-recipe.json`.
+
+The 12-second production verification of this route is recorded in the section below and in
+`tasks/remaining-models/STATE.md`.
 
 ## Source references
 
