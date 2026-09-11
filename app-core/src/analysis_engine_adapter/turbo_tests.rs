@@ -8,6 +8,10 @@ fn super_acceleration_is_captured_in_the_exact_request() {
         None,
     );
     let intent = AnalysisRequestIntent {
+        model_settings: BTreeMap::from([(
+            "bs_roformer_leap_xe90_vocals".to_string(),
+            BTreeMap::from([("overlap".to_string(), serde_json::json!(8))]),
+        )]),
         turbo_acceleration: true,
         request_id: "super-acceleration".to_string(),
         source: ResolvedAnalysisSource {
@@ -38,6 +42,8 @@ fn super_acceleration_is_captured_in_the_exact_request() {
         ordinary.requested_artifacts
     );
     assert_eq!(accelerated.analysis, ordinary.analysis);
+    assert_eq!(accelerated.execution_policy.model_settings, ordinary.execution_policy.model_settings);
+    assert_eq!(accelerated.execution_policy.model_settings["bs_roformer_leap_xe90_vocals"]["overlap"], 8);
     assert_eq!(accelerated.execution_policy.requested_backend, None);
     assert!(
         accelerated

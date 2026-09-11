@@ -5,6 +5,7 @@ members = [
   "app-core",
   "desktop",
   "native-audio",
+  "model-settings",
   "runtime-manager",
   "fusion-agent-adapter",
   "native-inference/audio-reuse",

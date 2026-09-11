@@ -10,6 +10,7 @@ name = "uta-ggml-worker"
 path = "src/main.rs"
 
 [dependencies]
+uta-model-settings = { path = "../../model-settings" }
 hound = "3.5"
 uta-audio-reuse = { path = "../audio-reuse" }
 serde = { version = "1", features = ["derive"] }

@@ -13,6 +13,7 @@ name = "uta-analyze"
 path = "src/bin/uta-analyze.rs"
 
 [dependencies]
+uta-model-settings = { path = "../model-settings" }
 uta-audio-reuse = { path = "../native-inference/audio-reuse" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -80,6 +80,10 @@ pub struct AppConfig {
     /// saved choices are inactive while Super acceleration owns placement.
     #[serde(default)]
     pub model_device_overrides: BTreeMap<String, String>,
+    /// Model-owned quality controls snapshotted for future analysis only.
+    #[serde(default)]
+    #[ts(type = "Record<string, Record<string, number>>")]
+    pub model_settings: uta_model_settings::ModelSettings,
     /// Human-readable operator guidance retained in JSON because JSON has no
     /// comment syntax. Runtime routing never parses this field.
     #[serde(default = "default_model_backend_note")]
@@ -125,6 +129,7 @@ impl Default for AppConfig {
             cpu_thread_count: None,
             model_backend_overrides: BTreeMap::new(),
             model_device_overrides: BTreeMap::new(),
+            model_settings: BTreeMap::new(),
             model_backend_note: default_model_backend_note(),
             analysis_experience: crate::analysis_experience::AnalysisExperienceSettings::default(),
             auto_analyze: None,

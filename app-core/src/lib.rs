@@ -17,6 +17,7 @@ mod cache;
 mod chain_cache;
 mod chart;
 mod config;
+pub use uta_model_settings as model_settings;
 mod debug_logging;
 mod editor;
 mod error;

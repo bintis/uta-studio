@@ -261,6 +261,8 @@ pub struct RequestedArtifactsWire {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionPolicyWire {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_settings: uta_model_settings::ModelSettings,
     /// Complete-model automatic GPU placement. Manual route fields are absent
     /// while enabled and return from persisted settings when disabled.
     #[serde(default)]
@@ -309,6 +311,7 @@ pub struct AnalyzeRequestWire {
 
 fn production_execution_policy() -> ExecutionPolicyWire {
     ExecutionPolicyWire {
+        model_settings: BTreeMap::new(),
         runtime_policy: RuntimePolicyWire::Production,
         turbo_acceleration: false,
         requested_backend: None,

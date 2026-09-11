@@ -56,6 +56,7 @@ pub const SATISFIABLE_CAPABILITIES: &[&str] = &[
 
 impl AnalyzeRequest {
     pub fn validate(&self) -> EngineResult<()> {
+        uta_model_settings::validate(&self.execution_policy.model_settings).map_err(invalid)?;
         if self.contract != ANALYZE_REQUEST_CONTRACT || self.version != ANALYZE_REQUEST_VERSION {
             return Err(EngineError::new(
                 EngineErrorCode::UnsupportedContractVersion,
@@ -597,6 +598,9 @@ impl RequestedArtifacts {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutionPolicy {
+    /// Model-owned quality controls are independent of automatic device placement.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub model_settings: uta_model_settings::ModelSettings,
     /// Opt-in complete-model multi-GPU scheduling and per-analysis resource
     /// reuse. When enabled, the Engine owns backend/device placement and
     /// ignores manual route fields without modifying their persisted source.
@@ -627,6 +631,7 @@ pub struct ExecutionPolicy {
 impl Default for ExecutionPolicy {
     fn default() -> Self {
         Self {
+            model_settings: BTreeMap::new(),
             runtime_policy: RuntimePolicy::Production,
             turbo_acceleration: false,
             requested_backend: None,

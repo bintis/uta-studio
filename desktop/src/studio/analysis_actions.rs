@@ -90,6 +90,7 @@ pub(crate) fn rebuild_engine_plan_preview(draft: &mut PlanPreviewDraft, config: 
         .unwrap_or(0);
     draft.engine_preview = app_core::preview_engine_run(
         app_core::EngineRunDraft {
+            model_settings: config.model_settings.clone(),
             turbo_acceleration: config.turbo_acceleration.unwrap_or(false),
             file_hash: draft.file_hash.clone(),
             request_id: format!("studio-{nonce}"),

@@ -6385,6 +6385,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "uta-audio-reuse",
+ "uta-model-settings",
  "uta-runtime-manager",
  "utz",
  "windows-sys 0.61.2",
@@ -6433,6 +6434,7 @@ dependencies = [
  "uta-ggml-runtime",
  "uta-gpu-probes",
  "uta-libtorch-runtime",
+ "uta-model-settings",
 ]
 
 [[package]]
@@ -6455,6 +6457,13 @@ dependencies = [
  "serde_json",
  "unicode-normalization",
  "uta-ggml-runtime",
+]
+
+[[package]]
+name = "uta-model-settings"
+version = "0.8.4"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]
@@ -6507,6 +6516,7 @@ dependencies = [
  "ts-rs",
  "ureq",
  "urlencoding",
+ "uta-model-settings",
  "utz",
  "walkdir",
  "windows-sys 0.61.2",
