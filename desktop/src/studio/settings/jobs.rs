@@ -195,10 +195,7 @@ pub(crate) fn setup_folders(config: &AppConfig, request: SetupRequest) -> app_co
     app_core::SetupFolders {
         data_path: None,
         cache_paths: config.cache_paths.clone(),
-        compute_backend: match config.compute_backend.as_deref() {
-            Some("ggml" | "ggml_vulkan" | "vulkan") => app_core::ComputeBackend::Ggml,
-            _ => app_core::ComputeBackend::Auto,
-        },
+        compute_backend: app_core::ComputeBackend::from_setting(config.compute_backend.as_deref()),
         model_target: request.target,
     }
 }

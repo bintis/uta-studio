@@ -15,6 +15,7 @@ pub const FUSION_AGENT_ADAPTER_RESOURCE_ID: &str = "fusion_agent_adapter";
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeBackendPresentation {
     Ggml,
+    LibtorchXpu,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -232,6 +233,7 @@ pub fn runtime_model_presentations() -> Vec<RuntimeModelPresentation> {
 pub(crate) fn map_backend(value: NativeBackendWire) -> RuntimeBackendPresentation {
     match value {
         NativeBackendWire::Ggml => RuntimeBackendPresentation::Ggml,
+        NativeBackendWire::LibtorchXpu => RuntimeBackendPresentation::LibtorchXpu,
     }
 }
 

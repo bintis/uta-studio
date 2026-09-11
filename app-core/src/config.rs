@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::backend_cli::NativeBackendWire;
 use crate::cache::{CachePaths, config_path};
 
 static CONFIG_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -101,7 +102,7 @@ fn default_data_path_option() -> Option<PathBuf> {
 }
 
 fn default_model_backend_note() -> String {
-    "All packaged inference models use GGML. CPU is an explicit experimental reference mode; GPU and integrated-GPU requests never fall back to it."
+    "Every packaged inference model runs on the pinned GGML Vulkan runtime by default, or on the native LibTorch XPU runtime when \"libtorch_xpu\" is selected globally or per model. A selected backend never falls back to the other; CPU is an explicit experimental GGML reference mode that GPU and integrated-GPU requests never fall back to."
         .to_string()
 }
 
@@ -149,18 +150,19 @@ impl AppConfig {
             self.data_path = Some(Self::default_data_path());
         }
         self.compute_backend = Some(
-            match self.compute_backend.as_deref() {
-                Some("ggml" | "ggml_vulkan" | "vulkan") => "ggml",
-                _ => "auto",
-            }
-            .to_string(),
+            self.compute_backend
+                .as_deref()
+                .and_then(NativeBackendWire::parse_setting)
+                .map_or("auto", NativeBackendWire::setting_value)
+                .to_string(),
         );
         self.model_backend_overrides.retain(|model_id, backend| {
-            !model_id.trim().is_empty()
-                && matches!(backend.as_str(), "ggml" | "ggml_vulkan" | "vulkan")
+            !model_id.trim().is_empty() && NativeBackendWire::parse_setting(backend).is_some()
         });
         for backend in self.model_backend_overrides.values_mut() {
-            *backend = "ggml".to_string();
+            if let Some(parsed) = NativeBackendWire::parse_setting(backend) {
+                *backend = parsed.setting_value().to_string();
+            }
         }
         self.model_device_overrides.retain(|model_id, device| {
             !model_id.trim().is_empty()
@@ -545,6 +547,28 @@ mod tests {
         }
         .with_defaults();
         assert_eq!(config.compute_backend.as_deref(), Some("auto"));
+    }
+
+    #[test]
+    fn libtorch_xpu_is_a_persisted_backend_choice_globally_and_per_model() {
+        let config = AppConfig {
+            compute_backend: Some("libtorch_xpu".to_string()),
+            model_backend_overrides: BTreeMap::from([
+                ("rmvpe".to_string(), "libtorch_xpu".to_string()),
+                ("fcpe".to_string(), "vulkan".to_string()),
+                ("stars".to_string(), "libtorch_rocm".to_string()),
+            ]),
+            ..AppConfig::default()
+        }
+        .with_defaults();
+        assert_eq!(config.compute_backend.as_deref(), Some("libtorch_xpu"));
+        assert_eq!(
+            config.model_backend_overrides,
+            BTreeMap::from([
+                ("rmvpe".to_string(), "libtorch_xpu".to_string()),
+                ("fcpe".to_string(), "ggml".to_string()),
+            ])
+        );
     }
 
     #[test]

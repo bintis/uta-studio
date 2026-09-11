@@ -78,10 +78,34 @@ impl fmt::Display for RuntimeResourceRefWire {
     }
 }
 
+/// Hand-mirrors Runtime Manager's native backend identifiers. `Ggml` is the
+/// pinned default; `LibtorchXpu` is the explicit native LibTorch route on the
+/// discrete Intel GPU. Neither is ever a fallback for the other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NativeBackendWire {
     Ggml,
+    LibtorchXpu,
+}
+
+impl NativeBackendWire {
+    /// Parses the persisted settings spelling of a backend. GGML accepts its
+    /// historical aliases; LibTorch is spelled exactly as Runtime Manager does.
+    pub fn parse_setting(value: &str) -> Option<Self> {
+        match value {
+            "ggml" | "ggml_vulkan" | "vulkan" => Some(Self::Ggml),
+            "libtorch_xpu" => Some(Self::LibtorchXpu),
+            _ => None,
+        }
+    }
+
+    /// The canonical spelling persisted in settings and shown to workers.
+    pub fn setting_value(self) -> &'static str {
+        match self {
+            Self::Ggml => "ggml",
+            Self::LibtorchXpu => "libtorch_xpu",
+        }
+    }
 }
 
 /// Device-class preference, orthogonal to `NativeBackendWire`. Hand-mirrors
@@ -141,6 +165,7 @@ pub enum ReadinessReasonWire {
     BackendUnvalidated,
     CpuProductionForbidden,
     UnsupportedPlatform,
+    NativeLibraryMissing,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

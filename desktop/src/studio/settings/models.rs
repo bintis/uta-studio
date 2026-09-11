@@ -25,6 +25,16 @@ pub(crate) fn spawn_model_settings(
         "MODEL RUNTIME ROUTING",
         "Choose a device and Runtime Manager route per installed model. These controls do not select workflow outputs.",
         |group| {
+            spawn_select_setting_row(
+                group,
+                font.clone(),
+                icons.clone(),
+                theme,
+                "Compute backend",
+                "Native runtime for every model that has no per-model runtime choice below. GGML Vulkan is the pinned default; LibTorch XPU runs the same models natively on the Intel Arc GPU and needs the installed LibTorch XPU runtime. A selected backend never falls back to the other.",
+                SettingsSelectKind::ComputeBackend,
+                session,
+            );
             spawn_switch_setting_row(
                 group,
                 font.clone(),
@@ -269,12 +279,14 @@ pub(crate) fn spawn_model_settings(
 fn backend_value(backend: app_core::RuntimeBackendPresentation) -> &'static str {
     match backend {
         app_core::RuntimeBackendPresentation::Ggml => "ggml",
+        app_core::RuntimeBackendPresentation::LibtorchXpu => "libtorch_xpu",
     }
 }
 
 fn backend_label(backend: app_core::RuntimeBackendPresentation) -> &'static str {
     match backend {
-        app_core::RuntimeBackendPresentation::Ggml => "GGML",
+        app_core::RuntimeBackendPresentation::Ggml => "GGML Vulkan",
+        app_core::RuntimeBackendPresentation::LibtorchXpu => "LibTorch XPU",
     }
 }
 
@@ -382,11 +394,19 @@ fn spawn_model_backend_settings(
     }
 }
 
-/// GGML resolves GPU/iGPU to the matching physical adapter when the model runs.
+/// GGML resolves GPU/iGPU to the matching physical adapter when the model
+/// runs; LibTorch XPU executes only on the discrete Intel GPU.
 fn device_preference_caption(
-    _selected_backend: Option<app_core::RuntimeBackendPresentation>,
+    selected_backend: Option<app_core::RuntimeBackendPresentation>,
 ) -> &'static str {
-    "CPU is an explicit experimental reference mode. GPU and iGPU requests fail instead of falling back to CPU."
+    match selected_backend {
+        Some(app_core::RuntimeBackendPresentation::LibtorchXpu) => {
+            "LibTorch XPU runs on the discrete Intel GPU only; CPU and iGPU selections fail instead of falling back."
+        }
+        _ => {
+            "CPU is an explicit experimental reference mode. GPU and iGPU requests fail instead of falling back to CPU."
+        }
+    }
 }
 
 fn selected_device_label(selected: Option<&str>) -> &'static str {

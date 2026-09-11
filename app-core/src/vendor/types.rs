@@ -19,6 +19,7 @@ pub enum ComputeBackend {
     #[default]
     Auto,
     Ggml,
+    LibtorchXpu,
 }
 
 impl ComputeBackend {
@@ -26,6 +27,16 @@ impl ComputeBackend {
         match self {
             Self::Auto => "auto",
             Self::Ggml => "ggml",
+            Self::LibtorchXpu => "libtorch_xpu",
+        }
+    }
+
+    /// Maps the persisted settings spelling to the setup selection.
+    pub fn from_setting(value: Option<&str>) -> Self {
+        match value.and_then(crate::backend_cli::NativeBackendWire::parse_setting) {
+            Some(crate::backend_cli::NativeBackendWire::Ggml) => Self::Ggml,
+            Some(crate::backend_cli::NativeBackendWire::LibtorchXpu) => Self::LibtorchXpu,
+            None => Self::Auto,
         }
     }
 }

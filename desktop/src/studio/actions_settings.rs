@@ -170,11 +170,25 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
                         _ => app_core::AnalysisDefaultTarget::FullCandidate,
                     };
                 }
+                SettingsSelectKind::ComputeBackend => {
+                    // "auto" keeps each model's Runtime Manager-pinned route;
+                    // an explicit backend applies to every model without a
+                    // per-model override and never falls back.
+                    studio.shell.config.compute_backend = Some(match value.as_str() {
+                        "ggml" | "ggml_vulkan" | "vulkan" => "ggml".to_string(),
+                        "libtorch_xpu" => "libtorch_xpu".to_string(),
+                        _ => "auto".to_string(),
+                    });
+                }
             }
             studio.dialogs.open_settings_select = None;
             studio.shell.notice = save_config_error(&studio.shell.config).or_else(|| {
                 Some(match kind {
                     SettingsSelectKind::UiLanguage => "Interface language updated.".to_string(),
+                    SettingsSelectKind::ComputeBackend => format!(
+                        "Compute backend set to {}. It applies to future analysis requests; per-model runtime choices below take precedence, and an unavailable backend fails in Plan Preview without fallback.",
+                        settings_select_label(*kind, value)
+                    ),
                     _ => localized_message(
                         &studio.shell.config,
                         UiMessage::AnalysisEngineSelected,
@@ -263,7 +277,7 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
             studio.dialogs.open_model_runtime_select = None;
             let valid = backend
                 .as_deref()
-                .is_none_or(|backend| matches!(backend, "ggml"));
+                .is_none_or(|backend| matches!(backend, "ggml" | "libtorch_xpu"));
             if !valid {
                 studio.shell.notice = Some("Unsupported model backend selection.".to_string());
             } else {

@@ -53,15 +53,39 @@ log() { printf '[install-libtorch-xpu] %s\n' "$*" >&2; }
 fail() { log "$*"; exit 1; }
 
 fetch() {
-  # fetch URL DESTINATION: single explicit transfer, resumable, no retry loop.
-  local url="$1" destination="$2"
+  # fetch URL DESTINATION: one explicit transfer split into bounded parallel
+  # byte ranges (the release CDN throttles a single connection), then joined.
+  # No retry loop: a failed part fails the whole fetch and leaves nothing behind.
+  local url="$1" destination="$2" size parts workers
   if [ -s "$destination" ]; then
     log "retained $(basename "$destination")"
     return 0
   fi
-  log "fetching $url"
-  curl --fail --location --silent --show-error --continue-at - \
-    --output "$destination.partial" "$url"
+  size="$(curl --fail --location --silent --show-error --head "$url" \
+    | tr -d '\r' | grep -i '^content-length:' | tail -n 1 | awk '{print $2}')"
+  [ -n "$size" ] && [ "$size" -gt 0 ] || fail "cannot determine size of $url"
+  workers="${UTA_STUDIO_LIBTORCH_FETCH_WORKERS:-32}"
+  parts="$destination.parts"
+  rm -rf "$parts"
+  mkdir -p "$parts"
+  log "fetching $url ($size bytes, $workers parallel ranges)"
+  local block=$((4 * 1024 * 1024)) offset=0 index=0
+  while [ "$offset" -lt "$size" ]; do
+    local end=$((offset + block - 1))
+    [ "$end" -ge "$size" ] && end=$((size - 1))
+    printf '%08d %d %d\n' "$index" "$offset" "$end"
+    offset=$((end + 1))
+    index=$((index + 1))
+  done > "$parts/ranges"
+  xargs -P "$workers" -L 1 sh -c \
+    'curl --fail --location --silent --show-error --range "$2-$3" --output "$0/$1" "$4"' \
+    "$parts" < <(awk -v url="$url" '{print $1, $2, $3, url}' "$parts/ranges") \
+    || fail "a byte range of $url failed"
+  cat "$parts"/[0-9]* > "$destination.partial"
+  local actual
+  actual="$(stat -c %s "$destination.partial")"
+  [ "$actual" = "$size" ] || fail "assembled $actual bytes, expected $size for $url"
+  rm -rf "$parts"
   mv "$destination.partial" "$destination"
 }
 

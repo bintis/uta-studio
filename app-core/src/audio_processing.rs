@@ -152,6 +152,7 @@ fn audio_model_status_from_details(
 fn native_backend_label(backend: NativeBackendWire) -> &'static str {
     match backend {
         NativeBackendWire::Ggml => "ggml",
+        NativeBackendWire::LibtorchXpu => "libtorch_xpu",
     }
 }
 

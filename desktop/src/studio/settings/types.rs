@@ -37,6 +37,7 @@ impl SettingsTab {
 pub(crate) enum SettingsSelectKind {
     UiLanguage,
     AnalysisTarget,
+    ComputeBackend,
 }
 
 #[derive(Clone, Copy)]

@@ -692,9 +692,10 @@ pub fn compile_analyze_request(
             runtime_policy: RuntimePolicyWire::Production,
             requested_backend: match intent.compute_backend.as_deref() {
                 None | Some("auto") => None,
-                Some("ggml" | "ggml_vulkan" | "vulkan") => Some(NativeBackendWire::Ggml),
-                Some(other) => {
-                    return Err(format!("unsupported analysis compute backend: {other}"));
+                Some(configured) => {
+                    Some(NativeBackendWire::parse_setting(configured).ok_or_else(|| {
+                        format!("unsupported analysis compute backend: {configured}")
+                    })?)
                 }
             },
             model_backend_overrides: intent
@@ -704,14 +705,9 @@ pub fn compile_analyze_request(
                     if !valid_identifier(&model_id) {
                         return Err(format!("invalid model backend override id: {model_id}"));
                     }
-                    let backend = match backend.as_str() {
-                        "ggml" | "ggml_vulkan" | "vulkan" => NativeBackendWire::Ggml,
-                        other => {
-                            return Err(format!(
-                                "unsupported backend {other} for model {model_id}"
-                            ));
-                        }
-                    };
+                    let backend = NativeBackendWire::parse_setting(&backend).ok_or_else(|| {
+                        format!("unsupported backend {backend} for model {model_id}")
+                    })?;
                     Ok((model_id, backend))
                 })
                 .collect::<Result<_, String>>()?,
@@ -1577,6 +1573,74 @@ mod tests {
                 RuntimePolicyWire::Production
             );
         }
+    }
+
+    #[test]
+    fn request_compiler_forwards_the_explicit_libtorch_xpu_selection() {
+        let request = compile_analyze_request(
+            AnalysisRequestIntent {
+                request_id: "backend-libtorch".to_string(),
+                turbo_acceleration: false,
+                source: ResolvedAnalysisSource {
+                    library_file_hash: "library".to_string(),
+                    path: std::env::temp_dir().join("source.flac"),
+                    sha256: "a".repeat(64),
+                    role: AudioRoleWire::OriginalMix,
+                },
+                lyrics: StudioLyricsContext::default(),
+                target_override: Some(AnalysisDefaultTarget::PitchEvidence),
+                requested_outputs: None,
+                compute_backend: Some("libtorch_xpu".to_string()),
+                model_backend_overrides: BTreeMap::from([(
+                    "rmvpe".to_string(),
+                    "ggml_vulkan".to_string(),
+                )]),
+                default_device_class: None,
+                model_device_overrides: BTreeMap::new(),
+            },
+            &effective(AnalysisDefaultTarget::PitchEvidence),
+        )
+        .unwrap();
+        assert_eq!(
+            request.execution_policy.requested_backend,
+            Some(NativeBackendWire::LibtorchXpu)
+        );
+        assert_eq!(
+            request
+                .execution_policy
+                .model_backend_overrides
+                .get("rmvpe"),
+            Some(&NativeBackendWire::Ggml)
+        );
+        assert_eq!(
+            serde_json::to_value(&request.execution_policy).unwrap()["requested_backend"],
+            "libtorch_xpu"
+        );
+        let rejected = compile_analyze_request(
+            AnalysisRequestIntent {
+                request_id: "backend-rocm".to_string(),
+                turbo_acceleration: false,
+                source: ResolvedAnalysisSource {
+                    library_file_hash: "library".to_string(),
+                    path: std::env::temp_dir().join("source.flac"),
+                    sha256: "a".repeat(64),
+                    role: AudioRoleWire::OriginalMix,
+                },
+                lyrics: StudioLyricsContext::default(),
+                target_override: Some(AnalysisDefaultTarget::PitchEvidence),
+                requested_outputs: None,
+                compute_backend: Some("libtorch_rocm".to_string()),
+                model_backend_overrides: BTreeMap::new(),
+                default_device_class: None,
+                model_device_overrides: BTreeMap::new(),
+            },
+            &effective(AnalysisDefaultTarget::PitchEvidence),
+        )
+        .unwrap_err();
+        assert!(
+            rejected.contains("unsupported analysis compute backend"),
+            "{rejected}"
+        );
     }
 
     #[test]

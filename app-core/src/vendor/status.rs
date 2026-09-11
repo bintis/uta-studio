@@ -108,9 +108,7 @@ fn status_for(
 }
 
 fn backend_label(backend: NativeBackendWire) -> &'static str {
-    match backend {
-        NativeBackendWire::Ggml => "ggml",
-    }
+    backend.setting_value()
 }
 
 fn validation_label(validation: ValidationStateWire) -> &'static str {

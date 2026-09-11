@@ -2088,5 +2088,13 @@
   "Completed": "已完成",
   "Open song": "打开歌曲",
   "Rerun": "重新运行",
-  "Completed successfully · outputs and run history are retained until you rerun or delete this entry": "运行已成功完成 · 输出和运行历史会保留，直到你重新运行或删除此记录"
+  "Completed successfully · outputs and run history are retained until you rerun or delete this entry": "运行已成功完成 · 输出和运行历史会保留，直到你重新运行或删除此记录",
+  "Compute backend": "计算后端",
+  "Native runtime for every model that has no per-model runtime choice below. GGML Vulkan is the pinned default; LibTorch XPU runs the same models natively on the Intel Arc GPU and needs the installed LibTorch XPU runtime. A selected backend never falls back to the other.": "用于下方没有单独运行时选择的所有模型的原生运行时。GGML Vulkan 是固定默认值；LibTorch XPU 在 Intel Arc GPU 上原生运行相同模型，需要已安装的 LibTorch XPU 运行时。所选后端不会回退到另一个后端。",
+  "Pinned default (GGML Vulkan)": "固定默认（GGML Vulkan）",
+  "GGML Vulkan": "GGML Vulkan",
+  "LibTorch XPU": "LibTorch XPU",
+  "Native library not installed": "原生库未安装",
+  "LibTorch XPU runs on the discrete Intel GPU only; CPU and iGPU selections fail instead of falling back.": "LibTorch XPU 仅在独立 Intel GPU 上运行；选择 CPU 或 iGPU 会直接失败，不会回退。",
+  "Compute backend set to {}. It applies to future analysis requests; per-model runtime choices below take precedence, and an unavailable backend fails in Plan Preview without fallback.": "计算后端已设为 {}。它适用于之后的分析请求；下方的每模型运行时选择优先，不可用的后端会在计划预览中直接失败，不会回退。"
 }
