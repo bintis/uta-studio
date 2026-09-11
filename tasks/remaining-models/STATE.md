@@ -666,7 +666,7 @@ Source media, installed assets and unrelated user changes remain untouched;
 no CPU/GGML inference fallback, Vulkan stress, workspace release checks or Nix
 packaging were performed. See [execution design](../../docs/design/runtime/LIBTORCH_EXECUTION.md).
 
-## All-resource LibTorch AMD ROCm 10 — HALTED AFTER GPU RESET (2026-09-11)
+## All-resource LibTorch AMD ROCm 10 — PAUSED AFTER SINGLE-CHUNK PASS (2026-09-11)
 
 **Zero of eighteen resources qualified; the full-song phase was not started.** The isolated Nix
 shell and official **ROCm 10.0.0 + PyTorch 2.13.0** packages, including the Radeon 780M `gfx1103`
@@ -694,10 +694,26 @@ are complete. Evidence: `bounded/observations/leap-vocals-feed-forward/`,
 `bounded/diagnostics/leap-display-reset-sample-summary.json`, and operation
 `20260911T104236-afa6881e15ef`.
 
-Do not run another AMD ROCm model, operator stress check, remaining bounded resource or full-song
-execution without new explicit human authorization after reviewing this display/GPU-reset incident.
-Do not infer qualification from the passing synthetic checks, and do not substitute CPU or GGML.
-See [LibTorch execution](../../docs/design/runtime/LIBTORCH_EXECUTION.md).
+After reviewing the incident, the user explicitly authorized one fix and one single-chunk test.
+Commit `37eef2a` bounds normalization, QKV, rotary, SDPA, gate and output intermediates along the
+independent RoFormer batch axis while every query retains its complete key/value sequence. A real
+9.000-second excerpt contains 396,900 frames, below the Leap overlap-add step, and therefore emitted
+`total: 1` then `completed: 1`. The run passed in 32.614 seconds with 1,823,576 KiB peak sampled GTT.
+Both guide-vocal and instrumental publications decode as 9.000-second, 44.1 kHz stereo signed-32-bit
+FLAC: 793,800 finite, non-silent values each. Exact float-stem reconstruction maximum error is
+`5.960464477539063e-8`. Neither in-run nor immediate post-run passive samples list
+`amdgpu-reset-dev`; the boot ID stayed unchanged.
+
+This one success does not qualify the original twelve-second resource: that sweep remains zero of
+eighteen, and the full-song phase remains unstarted. Pre-run, in-run and post-run AMD sysfs busy
+readings stayed abnormally high at 69–99%, despite no visible compute-engine owner before launch, so
+the timing is not a clean performance measurement and reset recovery is not established. Evidence:
+`single-chunk/observation/result.json`, `single-chunk/case/evidence.json`,
+`single-chunk/flac-verification.json`, and `single-chunk/observation-summary.json`.
+
+The one-run authorization is consumed. Do not run another AMD ROCm model, operator stress check,
+remaining bounded resource or full-song execution without new explicit human authorization. Do not
+substitute CPU or GGML. See [LibTorch execution](../../docs/design/runtime/LIBTORCH_EXECUTION.md).
 
 ## Next actions
 

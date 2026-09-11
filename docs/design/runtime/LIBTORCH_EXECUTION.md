@@ -193,7 +193,7 @@ word timings; STARS uses a separate actual FireRed Chinese alignment branch with
 primary-provider substitution follows. Full details, exact commits/operations,
 timings and remaining integration work: [full-song results](../../LIBTORCH_XPU_FULLSONG_RESULTS.md).
 
-## AMD ROCm 10 all-resource validation — halted after GPU reset 2026-09-11
+## AMD ROCm 10 all-resource validation — paused after single-chunk pass 2026-09-11
 
 **HALTED AT ZERO OF EIGHTEEN.** The authorized isolated environment resolves the official AMD stable
 combination, **ROCm 10.0.0 + PyTorch 2.13.0**, with the Radeon 780M `device-gfx1103` package. The
@@ -219,10 +219,25 @@ completion record. No result artifact was published. Evidence is under
 `observations/leap-vocals-feed-forward/` and
 `diagnostics/leap-display-reset-sample-summary.json`.
 
-No remaining bounded resource or full-song ROCm execution may run without new explicit human
-authorization after incident review. Passing synthetic operators do not qualify the real model;
-CPU/GGML fallback remains prohibited. Previous XPU results stay separate, and this work establishes
-no product routing, parity, listening quality or production readiness.
+The user then authorized one memory fix and one single-chunk retest. Commit `37eef2a` partitions the
+complete RoFormer attention block along independent batches, bounding normalization, QKV, rotary,
+full-context SDPA, gate and output intermediates without partitioning any key/value sequence. The
+9.000-second real excerpt is below the Leap overlap-add step and produced exactly one full-size model
+chunk. It completed in 32.614 seconds at 1,823,576 KiB peak sampled GTT. Both signed-32-bit FLAC stems
+fully decode to 793,800 finite, non-silent values; exact float-stem reconstruction differs from the
+mix by at most `5.960464477539063e-8`. No `amdgpu-reset-dev` worker appeared in the in-run or immediate
+post-run passive samples.
+
+The sysfs AMD busy value was already 99% before launch and remained 69–99% through observation and
+99% afterwards despite no visible pre-run compute owner. Consequently this is a functional
+single-chunk pass, not a clean throughput measurement or proof that the earlier reset/display fault
+is resolved. The original twelve-second sweep remains zero of eighteen and full-song execution was
+not started. Evidence: `test-artifacts/amd-libtorch-rocm10/single-chunk/`.
+
+The one-run authorization is consumed. No remaining bounded resource or full-song ROCm execution may
+run without new explicit human authorization. CPU/GGML fallback remains prohibited. Previous XPU
+results stay separate, and this work establishes no product routing, whole-model parity, listening
+quality, driver stability or production readiness.
 
 ## Source references
 
