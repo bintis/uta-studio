@@ -66,7 +66,7 @@ fn primary_settings_pages_use_shared_contained_groups() {
     let analysis = include_str!("analysis.rs");
 
     assert_eq!(general.matches("spawn_settings_group(").count(), 3);
-    assert_eq!(storage.matches("spawn_settings_group(").count(), 3);
+    assert_eq!(storage.matches("spawn_settings_group(").count(), 4);
     assert_eq!(models.matches("spawn_settings_group(").count(), 2);
     assert_eq!(analysis.matches("spawn_settings_stage_group(").count(), 6);
     assert!(!analysis.contains("spawn_settings_stage_header("));

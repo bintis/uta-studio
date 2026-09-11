@@ -561,6 +561,7 @@ mod tests {
     fn every_typed_ui_api_has_a_dispatch_handler() {
         let commands = include_str!("commands.rs");
         let handlers = [
+            include_str!("actions.rs"),
             include_str!("actions_chrome.rs"),
             include_str!("actions_content.rs"),
             include_str!("actions_settings.rs"),
