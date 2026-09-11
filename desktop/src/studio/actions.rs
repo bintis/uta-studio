@@ -43,7 +43,7 @@ pub(crate) fn handle_actions(
         dispatch_action(action, &mut commands, &mut context);
     }
     if context.keys.just_pressed(KeyCode::Enter)
-        && let Some(entity) = context.focus.0
+        && let Some(entity) = context.focus.get()
         && let Ok((input, _)) = context.model_inputs.get(entity)
     {
         let action = SettingsCommand::ApplyModelParameter(input.model.clone(), input.key.clone());
