@@ -165,6 +165,12 @@ public:
         return {{"spectrum", stems == 1 ? separated.front() : at::stack(separated, 0)}};
     }
 private:
+    std::function<void(int64_t, int64_t)> tile_checkpoint(const std::string& stage) const {
+        if (!runtime->trace_synchronization) return {};
+        return [this, stage](int64_t start, int64_t count) {
+            runtime->checkpoint(stage + ".start." + std::to_string(start) + ".rows." + std::to_string(count));
+        };
+    }
     at::Tensor normalize(const at::Tensor& input, const std::string& name) const {
         return runtime->backend == "libtorch_xpu"
             ? fused_roformer_normalization(input, weights->get(name))
@@ -175,7 +181,8 @@ private:
         const auto rows = input.numel() / input.size(-1);
         const auto row_tile = bounded_projection_row_tile(weight);
         if (rows <= row_tile) return at::linear(input, weight, bias);
-        return tiled_projection(input, weight, bias, [this] { check_cancel(); }, row_tile);
+        return tiled_projection(input, weight, bias, [this] { check_cancel(); }, row_tile,
+                                tile_checkpoint("roformer.projection"));
     }
     std::string architecture;
     bool public_names = false, polar = false, final_norm = false, output_norm = false, skips = false, zero_dc = false;
@@ -282,7 +289,7 @@ private:
         const auto row_tile = std::min(bounded_projection_row_tile(input_weight), bounded_projection_row_tile(output_weight));
         if (runtime->backend == "libtorch_rocm" && current.numel() / current.size(-1) > row_tile)
             return sequence + tiled_feed_forward(current, input_weight, input_bias, output_weight, output_bias,
-                [this] { check_cancel(); }, row_tile);
+                [this] { check_cancel(); }, row_tile, tile_checkpoint("roformer.feed_forward"));
         current = project(current, input_weight, input_bias);
         runtime->checkpoint(prefix + ".feed_forward_projection");
         current = at::gelu(current, "none");

@@ -38,7 +38,8 @@ inline void projection_out(at::Tensor& output, const at::Tensor& input,
 // The output is allocated once; all row tiles including the tail remain on GPU.
 inline at::Tensor tiled_projection(const at::Tensor& input, const at::Tensor& weight,
                                   const at::Tensor& bias, const std::function<void()>& check_cancel,
-                                  int64_t row_tile = 1024) {
+                                  int64_t row_tile = 1024,
+                                  const std::function<void(int64_t, int64_t)>& checkpoint_tile = {}) {
     if (input.dim() < 2 || weight.dim() != 2 || input.size(-1) <= 0 || weight.size(0) <= 0 ||
         input.size(-1) != weight.size(1) || input.scalar_type() != at::kFloat ||
         weight.scalar_type() != input.scalar_type() || weight.device() != input.device() ||
@@ -57,6 +58,7 @@ inline at::Tensor tiled_projection(const at::Tensor& input, const at::Tensor& we
         const auto count = std::min<int64_t>(row_tile, rows - start);
         auto output_rows = output.narrow(0, start, count);
         projection_out(output_rows, matrix.narrow(0, start, count), weight, bias);
+        if (checkpoint_tile) checkpoint_tile(start, count);
     }
     return output.reshape(shape);
 }
@@ -67,7 +69,8 @@ inline at::Tensor tiled_projection(const at::Tensor& input, const at::Tensor& we
 inline at::Tensor tiled_feed_forward(
     const at::Tensor& input, const at::Tensor& input_weight, const at::Tensor& input_bias,
     const at::Tensor& output_weight, const at::Tensor& output_bias,
-    const std::function<void()>& check_cancel, int64_t row_tile = 1024) {
+    const std::function<void()>& check_cancel, int64_t row_tile = 1024,
+    const std::function<void(int64_t, int64_t)>& checkpoint_tile = {}) {
     if (input.dim() < 2 || input_weight.dim() != 2 || output_weight.dim() != 2 ||
         input.size(-1) <= 0 || input_weight.size(0) <= 0 || output_weight.size(0) <= 0 ||
         input.size(-1) != input_weight.size(1) || input_weight.size(0) != output_weight.size(1) ||
@@ -92,6 +95,7 @@ inline at::Tensor tiled_feed_forward(
         auto hidden = at::gelu(at::linear(matrix.narrow(0, start, count), input_weight, input_bias), "none");
         auto output_rows = output.narrow(0, start, count);
         projection_out(output_rows, hidden, output_weight, output_bias);
+        if (checkpoint_tile) checkpoint_tile(start, count);
     }
     return output.reshape(shape);
 }
