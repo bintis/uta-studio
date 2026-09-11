@@ -454,9 +454,7 @@ impl WorkflowExecution {
                 WorkflowExecutionPolicy::Disabled => false,
                 WorkflowExecutionPolicy::MaximumOnly => profile == AnalysisProfile::Maximum,
                 WorkflowExecutionPolicy::OnDisagreement
-                | WorkflowExecutionPolicy::DisagreementWindows => {
-                    profile != AnalysisProfile::Fast
-                }
+                | WorkflowExecutionPolicy::DisagreementWindows => profile != AnalysisProfile::Fast,
             })
     }
 
@@ -544,9 +542,7 @@ impl WorkflowExecution {
                 WorkflowExecutionPolicy::Disabled => false,
                 WorkflowExecutionPolicy::MaximumOnly => profile == AnalysisProfile::Maximum,
                 WorkflowExecutionPolicy::OnDisagreement
-                | WorkflowExecutionPolicy::DisagreementWindows => {
-                    profile != AnalysisProfile::Fast
-                }
+                | WorkflowExecutionPolicy::DisagreementWindows => profile != AnalysisProfile::Fast,
             })
     }
 
@@ -997,13 +993,14 @@ fn producer_policy_covers_consumer(
     match consumer {
         WorkflowExecutionPolicy::Disabled => true,
         WorkflowExecutionPolicy::Always => producer == WorkflowExecutionPolicy::Always,
-        WorkflowExecutionPolicy::OnDisagreement
-        | WorkflowExecutionPolicy::DisagreementWindows => matches!(
-            producer,
-            WorkflowExecutionPolicy::Always
-                | WorkflowExecutionPolicy::OnDisagreement
-                | WorkflowExecutionPolicy::DisagreementWindows
-        ),
+        WorkflowExecutionPolicy::OnDisagreement | WorkflowExecutionPolicy::DisagreementWindows => {
+            matches!(
+                producer,
+                WorkflowExecutionPolicy::Always
+                    | WorkflowExecutionPolicy::OnDisagreement
+                    | WorkflowExecutionPolicy::DisagreementWindows
+            )
+        }
         WorkflowExecutionPolicy::MaximumOnly => matches!(
             producer,
             WorkflowExecutionPolicy::Always | WorkflowExecutionPolicy::MaximumOnly
@@ -1324,9 +1321,7 @@ mod tests {
             serde_json::json!("bs_roformer_leap_xe90_instrumental");
         split["execution_invocations"][0]["provider_id"] =
             serde_json::json!("bs_roformer_leap_xe90_instrumental");
-        let workflow = WorkflowExecution::from_request(&request)
-            .unwrap()
-            .unwrap();
+        let workflow = WorkflowExecution::from_request(&request).unwrap().unwrap();
         assert_eq!(
             workflow.model_for_engine_capability("audio.extract_vocals"),
             Some("bs_roformer_leap_xe90_instrumental")
@@ -1357,9 +1352,7 @@ mod tests {
             .get_mut(WORKFLOW_EXECUTION_EXTENSION_KEY)
             .unwrap()["workflow_schema_version"] = serde_json::json!(WORKFLOW_SCHEMA_VERSION - 1);
         assert_eq!(
-            WorkflowExecution::from_request(&request)
-                .unwrap_err()
-                .code,
+            WorkflowExecution::from_request(&request).unwrap_err().code,
             EngineErrorCode::UnsupportedContractVersion
         );
     }

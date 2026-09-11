@@ -76,7 +76,10 @@ impl TimedNoteExpertEvidence {
         }
         for (label, value) in [
             ("model hash", self.provenance.model_hash.as_deref()),
-            ("runtime identity", self.provenance.runtime_identity.as_deref()),
+            (
+                "runtime identity",
+                self.provenance.runtime_identity.as_deref(),
+            ),
             (
                 "calibration version",
                 self.provenance.calibration_version.as_deref(),
@@ -89,11 +92,7 @@ impl TimedNoteExpertEvidence {
             if let Some(value) = value
                 && !identity(value)
             {
-                reasons.push(format!(
-                    "{label} length {} value {}",
-                    value.len(),
-                    value
-                ));
+                reasons.push(format!("{label} length {} value {}", value.len(), value));
             }
         }
         for dependency in &self.provenance.depends_on {

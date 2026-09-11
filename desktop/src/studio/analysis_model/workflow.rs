@@ -26,8 +26,7 @@ pub(crate) fn exact_workflow_plan_from_engine(
     app_core::WorkflowExecutionWire,
     Option<app_core::WorkflowExecutionPlanWire>,
 )> {
-    let request: app_core::AnalyzeRequestWire =
-        serde_json::from_str(&engine.request_json).ok()?;
+    let request: app_core::AnalyzeRequestWire = serde_json::from_str(&engine.request_json).ok()?;
     let workflow = request
         .extensions
         .get(app_core::WORKFLOW_EXECUTION_EXTENSION_KEY)
@@ -97,9 +96,7 @@ fn exact_state(state: app_core::WorkflowNodeExecutionStateWire) -> GraphNodeStat
         app_core::WorkflowNodeExecutionStateWire::Ready => GraphNodeState::Waiting,
         app_core::WorkflowNodeExecutionStateWire::Deferred => GraphNodeState::Deferred,
         app_core::WorkflowNodeExecutionStateWire::Disabled => GraphNodeState::Disabled,
-        app_core::WorkflowNodeExecutionStateWire::ProfileSkipped => {
-            GraphNodeState::ProfileSkipped
-        }
+        app_core::WorkflowNodeExecutionStateWire::ProfileSkipped => GraphNodeState::ProfileSkipped,
         app_core::WorkflowNodeExecutionStateWire::NotRequested => GraphNodeState::NotRequested,
     }
 }

@@ -223,9 +223,10 @@ fn fallback_weight(plan: &AnalysisPlanWire, capability: &str, model: Option<&str
             "audio.decode" => 8_000,
             "analysis.acoustic_dsp" => 10_000,
             "fusion.candidate_graph"
-                if plan.workflow_execution.as_ref().is_some_and(|workflow| {
-                    workflow.fusion_mode == FusionModeWire::AiJudgment
-                }) =>
+                if plan
+                    .workflow_execution
+                    .as_ref()
+                    .is_some_and(|workflow| workflow.fusion_mode == FusionModeWire::AiJudgment) =>
             {
                 45_000
             }
