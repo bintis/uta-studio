@@ -214,7 +214,8 @@ private:
     std::string name(const std::string& prefix, const std::string& public_suffix, const std::string& private_suffix) const {
         return prefix + (public_names ? '.' + public_suffix : '_' + private_suffix);
     }
-    at::Tensor attend(const at::Tensor& sequence, const std::string& prefix, bool time) {
+    at::Tensor attend_tile(const at::Tensor& sequence, const std::string& prefix,
+                           const PositionCache& cache, double scale) {
         auto normalized = normalize(sequence, name(prefix, "attn_norm", "norm.weight"));
         runtime->checkpoint(prefix + ".normalization");
         const auto batch = sequence.size(0), length = sequence.size(1);
@@ -223,7 +224,6 @@ private:
         auto query = qkv[0].reshape({batch, length, heads, head_dimension}).transpose(1, 2);
         auto key = qkv[1].reshape({batch, length, heads, head_dimension}).transpose(1, 2);
         auto value = qkv[2].reshape({batch, length, heads, head_dimension}).transpose(1, 2);
-        const auto& cache = positions(length, time);
         if (!polar && runtime->backend == "libtorch_xpu") {
             auto rotation = runtime->precision == "mixed_attention"
                 ? interleaved_roformer_rotation_half : interleaved_roformer_rotation;
@@ -237,7 +237,6 @@ private:
         if (runtime->trace_synchronization)
             std::cerr << "[uta-libtorch-layout] " << prefix << " query=" << query.strides()
                       << " key=" << key.strides() << " value=" << value.strides() << std::endl;
-        const double scale = 1.0 / std::sqrt(static_cast<double>(head_dimension));
         auto attended = runtime->precision == "mixed_attention"
             ? (runtime->backend == "libtorch_rocm"
                 ? partitioned_fused_attention(query, key, value, scale, [this] { check_cancel(); })
@@ -253,6 +252,22 @@ private:
         attended = gated_roformer_attention(attended, gates);
         attended = attended.reshape({batch, length, heads * head_dimension});
         return sequence + project(attended, weights->get(name(prefix, "out", "out.weight")));
+    }
+    at::Tensor attend(const at::Tensor& sequence, const std::string& prefix, bool time) {
+        const auto batch = sequence.size(0), length = sequence.size(1);
+        const auto& cache = positions(length, time);
+        const double scale = 1.0 / std::sqrt(static_cast<double>(head_dimension));
+        constexpr int64_t batch_tile = 8;
+        if (runtime->backend != "libtorch_rocm" || batch <= batch_tile)
+            return attend_tile(sequence, prefix, cache, scale);
+        auto output = at::empty_like(sequence);
+        for (int64_t begin = 0; begin < batch; begin += batch_tile) {
+            check_cancel();
+            const auto count = std::min<int64_t>(batch_tile, batch - begin);
+            output.narrow(0, begin, count).copy_(
+                attend_tile(sequence.narrow(0, begin, count), prefix, cache, scale));
+        }
+        return output;
     }
     at::Tensor feed_forward(const at::Tensor& sequence, const std::string& prefix) const {
         auto current = normalize(sequence, name(prefix, "ff_norm", "norm.weight"));
