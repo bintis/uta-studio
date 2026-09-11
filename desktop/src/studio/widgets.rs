@@ -767,13 +767,21 @@ mod editor_surface_tests {
         app.insert_resource(StudioTheme::new(false));
         app.add_systems(Update, update_button_visuals);
         let resting = Color::srgb(0.1, 0.12, 0.14);
-        let surface = app.world_mut().spawn((
-            Button, EditorTimelineSurface, BackgroundColor(resting),
-        )).id();
-        for interaction in [Interaction::None, Interaction::Hovered, Interaction::Pressed] {
+        let surface = app
+            .world_mut()
+            .spawn((Button, EditorTimelineSurface, BackgroundColor(resting)))
+            .id();
+        for interaction in [
+            Interaction::None,
+            Interaction::Hovered,
+            Interaction::Pressed,
+        ] {
             app.world_mut().entity_mut(surface).insert(interaction);
             app.update();
-            assert_eq!(app.world().get::<BackgroundColor>(surface).unwrap().0, resting);
+            assert_eq!(
+                app.world().get::<BackgroundColor>(surface).unwrap().0,
+                resting
+            );
         }
     }
 }
