@@ -63,6 +63,30 @@ pub(crate) struct DebugLogJob {
     pub(crate) clear_requested: bool,
 }
 
+impl DebugLogJob {
+    pub(crate) fn for_launch(shell: &mut ShellState) -> Self {
+        let mut job = Self::default();
+        if shell.config.debug_logging {
+            job.attempted = Some(true);
+            match app_core::start_debug_logging(&debug_context(shell))
+                .and_then(|_| set_detailed_logging(true)) {
+                Ok(()) => job.applied = true,
+                Err(error) => {
+                    app_core::stop_debug_logging();
+                    shell.notice = Some(format!("Could not restore DEBUG capture: {error}"));
+                }
+            }
+        }
+        job
+    }
+}
+
+fn debug_context(shell: &ShellState) -> String {
+    format!("Uta! Studio {}\nOS: {} / {}\nSettings: {}",
+        env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH,
+        serde_json::to_string_pretty(&shell.config).unwrap_or_default())
+}
+
 pub(crate) fn toggle_debug_logging(shell: &mut ShellState, job: &mut DebugLogJob) {
     let mut config = shell.config.clone();
     config.debug_logging = !config.debug_logging;
@@ -125,13 +149,7 @@ pub(crate) fn poll_debug_log_job(
         job.attempted = Some(enabled);
     }
     job.reported_error = None;
-    let context = format!(
-        "Uta! Studio {}\nOS: {} / {}\nSettings: {}",
-        env!("CARGO_PKG_VERSION"),
-        std::env::consts::OS,
-        std::env::consts::ARCH,
-        serde_json::to_string_pretty(&shell.config).unwrap_or_default()
-    );
+    let context = debug_context(&shell);
     let (sender, receiver) = mpsc::channel();
     job.receiver = Some(Mutex::new(receiver));
     std::thread::spawn(move || {

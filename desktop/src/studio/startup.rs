@@ -3,7 +3,7 @@ use crate::studio::*;
 pub fn run() {
     initialize_studio_logging();
     let StudioStateBundle {
-        shell,
+        mut shell,
         library,
         analysis,
         editor,
@@ -11,6 +11,7 @@ pub fn run() {
         jobs,
         playback,
     } = StudioStateBundle::load();
+    let debug_log = DebugLogJob::for_launch(&mut shell);
     let native_audio = Arc::new(uta_studio_audio::EditorAudioPlayer::new());
     let native_library_audio = Arc::new(uta_studio_audio::EditorAudioPlayer::new());
     let transparent = shell.config.window_transparency.unwrap_or(false);
@@ -72,7 +73,7 @@ pub fn run() {
         )))
         .insert_resource(NativeSetup::default())
         .insert_resource(NativeDiagnostics::default())
-        .insert_resource(DebugLogJob::default())
+        .insert_resource(debug_log)
         .insert_resource(NativeAuthoringJob::default())
         .insert_resource(CacheStatsJob::default())
         .insert_resource(StartupBannerState::for_launch(restore_window_mode))
