@@ -34,7 +34,7 @@ python3 tools/record-operation.py gpu-before-run -- bash dev.sh -c nvtop --snaps
 
 这不是系统／内核日志采集器，无法补回此前被过滤的事件，无法改变已经启动的 worker 的日志级别，也不打开编译期 GGML Vulkan 日志。已有分析文件仅做快照；并发后端 stderr 共用原始文件，可能交错。写入不承诺逐条 fsync 或断电尾部完整；日志开启后的吞吐不能当正常性能结果。
 
-2026-09-11 针对性验证：app-core 快照／stderr 10 个隔离测试，桌面 DEBUG 3 个测试、Workflow 22 个测试、UI 脚本 4 个测试通过；桌面构建通过。隔离 Weston/Wayland + lavapipe smoke 实际开启 DEBUG 并确认后续 DEBUG 行，另在合成 workflow 身份上切换并保存 GAME small/large/medium。证据 `test-artifacts/debug-workflow-ui/`；操作记录从 `test-artifacts/operations/20260911T171855-e6d7ee77524a/` 起。初次编译暴露 plugin-group builder 调用错误并已修复；初次 smoke 缺少 PATH 中的 weston，补用已安装 store 路径后通过。最初空工作流 smoke 只证明命令分发，不能证明 GAME 变更，后续有载入工作流的 smoke 才证明切换保存。没有模型推理、真实 GPU 黑屏复现、Windows 或物理鼠标点击验证；没有提升生产就绪状态。
+2026-09-11 针对性验证：app-core 快照／stderr 10 个隔离测试，桌面 DEBUG 4 个测试、Workflow 22 个测试、UI 脚本 4 个测试及 API 目录 2 个测试通过；桌面构建通过。隔离 Weston/Wayland + lavapipe smoke 实际开启 DEBUG 并确认后续 DEBUG 行，另在合成 workflow 身份上切换并保存 GAME small/large/medium。证据 `test-artifacts/debug-workflow-ui/`；操作记录从 `test-artifacts/operations/20260911T171855-e6d7ee77524a/` 起。初次编译暴露 plugin-group builder 调用错误并已修复；初次 smoke 缺少 PATH 中的 weston，补用已安装 store 路径后通过。最初空工作流 smoke 只证明命令分发，不能证明 GAME 变更，后续有载入工作流的 smoke 才证明切换保存。审查还修复了选择性 `RUST_LOG` 覆盖时丢失默认目标过滤的问题，以及从 Workflow 进入 Settings 后返回会丢失未保存草稿的恢复路径。最终 `d0358fd` 构建通过，`return-report.ndjson` 的三次 Back 均回到原 Workflow；独立 SQLite 检查确认离开前未保存的 GAME large 在返回后保存成功（操作 `20260911T172908-f85e1b79ce6d`）。没有模型推理、真实 GPU 黑屏复现、Windows 或物理鼠标点击验证；没有提升生产就绪状态。
 
 ### 全链路 debug 日志
 
