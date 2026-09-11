@@ -12,9 +12,38 @@ extern "C" void uta_libtorch_rocm_projection(
     const float* weight, int64_t weight_row_stride, int64_t weight_channel_stride,
     const float* bias, int64_t bias_stride,
     int64_t rows, int64_t input_channels, int64_t output_channels, void* stream_pointer);
+extern "C" void uta_libtorch_rocm_batched_projection(
+    float* output, int64_t output_group_stride, int64_t output_row_stride, int64_t output_channel_stride,
+    const float* input, int64_t input_group_stride, int64_t input_row_stride, int64_t input_channel_stride,
+    const float* weight, int64_t weight_group_stride, int64_t weight_row_stride, int64_t weight_channel_stride,
+    int64_t groups, int64_t rows, int64_t input_channels, int64_t output_channels, void* stream_pointer);
 #endif
 
 namespace uta::torch_native {
+#if defined(UTA_LIBTORCH_ROCM)
+inline void rocm_batched_projection_out(
+    at::Tensor& output, const at::Tensor& input, const at::Tensor& weight,
+    int64_t weight_row_stride, int64_t weight_channel_stride) {
+    if (output.dim() != 4 || input.dim() != 4 || weight.dim() != 4 ||
+        output.size(0) != input.size(0) || input.size(0) != weight.size(0) ||
+        output.size(1) != input.size(1) || input.size(1) != weight.size(1) ||
+        output.size(2) != input.size(2) || output.scalar_type() != at::kFloat ||
+        input.scalar_type() != at::kFloat || weight.scalar_type() != at::kFloat ||
+        output.device() != input.device() || input.device() != weight.device() || !input.is_cuda() ||
+        (input.size(0) > 1 && input.stride(0) != input.size(1) * input.stride(1)) ||
+        (weight.size(0) > 1 && weight.stride(0) != weight.size(1) * weight.stride(1)) ||
+        (output.size(0) > 1 && output.stride(0) != output.size(1) * output.stride(1)))
+        throw std::invalid_argument("ROCm batched projection requires compatible regular GPU F32 groups");
+    const auto stream = c10::cuda::getCurrentCUDAStream(input.get_device()).stream();
+    uta_libtorch_rocm_batched_projection(
+        output.data_ptr<float>(), output.stride(1), output.stride(2), output.stride(3),
+        input.const_data_ptr<float>(), input.stride(1), input.stride(2), input.stride(3),
+        weight.const_data_ptr<float>(), weight.stride(1), weight_row_stride, weight_channel_stride,
+        input.size(0) * input.size(1), input.size(2), input.size(3), output.size(3),
+        reinterpret_cast<void*>(stream));
+}
+#endif
+
 // Cap the contraction work submitted by one GEMM as well as its row count.
 // This scheduling bound is derived from matrix dimensions and does not alter
 // the shared weights or split a row's contraction.

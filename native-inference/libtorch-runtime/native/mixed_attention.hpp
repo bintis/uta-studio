@@ -1,5 +1,8 @@
 #pragma once
 #include <ATen/ATen.h>
+#if defined(UTA_LIBTORCH_ROCM)
+#include "projection.hpp"
+#endif
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -44,7 +47,14 @@ inline at::Tensor explicit_mixed_attention(
     for (int64_t begin = 0; begin < rows; begin += query_tile) {
         const auto count = std::min<int64_t>(query_tile, rows - begin);
         auto rounded_query = query.narrow(2, begin, count).to(at::kHalf).to(at::kFloat).contiguous();
+#if defined(UTA_LIBTORCH_ROCM)
+        auto scores = at::empty({query.size(0), query_heads, count, keys}, query.options().dtype(at::kFloat));
+        rocm_batched_projection_out(scores, rounded_query, rounded_key,
+                                    rounded_key.stride(2), rounded_key.stride(3));
+        scores.mul_(scale);
+#else
         auto scores = at::matmul(rounded_query, rounded_key.transpose(-1, -2)) * scale;
+#endif
         if (mask.defined()) {
             auto piece = mask.dim() >= 2 && mask.size(-2) == rows ? mask.narrow(-2, begin, count) : mask;
             if (piece.scalar_type() == at::kBool)
@@ -58,7 +68,15 @@ inline at::Tensor explicit_mixed_attention(
         }
         auto probabilities = at::softmax(scores, -1);
         probabilities = at::where(at::isneginf(scores).all(-1, true), at::zeros_like(probabilities), probabilities);
+#if defined(UTA_LIBTORCH_ROCM)
+        auto attended_float = at::empty(
+            {query.size(0), query_heads, count, value.size(3)}, query.options().dtype(at::kFloat));
+        rocm_batched_projection_out(attended_float, probabilities, rounded_value,
+                                    rounded_value.stride(3), rounded_value.stride(2));
+        auto attended = attended_float.to(at::kHalf).to(at::kFloat);
+#else
         auto attended = at::matmul(probabilities, rounded_value).to(at::kHalf).to(at::kFloat);
+#endif
         output.narrow(2, begin, count).copy_(attended);
     }
     return output;
