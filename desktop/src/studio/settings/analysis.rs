@@ -145,20 +145,13 @@ pub(crate) fn spawn_analysis_settings(
         font.clone(),
         theme,
         "05 · ADVANCED PERFORMANCE / MODEL-OWNED PARAMETERS",
-        "Request-owned performance behavior",
-        "Only parameters represented by a versioned request or workflow contract belong here. Installed tools, acceleration and downloadable artifacts remain in Models & runtime.",
-        "Production defaults",
+        "Per-model quality & sensitivity",
+        "Overlap, sampling and decoding controls apply to future requests on both native backends, including Super. Existing chart data changes only after re-analysis. Batch size controls throughput and memory, not quality; unsupported native controls are explained rather than simulated.",
+        "Model-owned controls",
         None,
         None,
         |group| {
-            spawn_setting_row(
-                group,
-                font.clone(),
-                theme,
-                "Advanced execution",
-                "Use Processing Studio for per-song execution conditions and exact graph intent. Packaged worker-private tensor parameters are not duplicated as Studio settings.",
-                None::<(&str, UiAction)>,
-            );
+            spawn_model_tuning(group, font.clone(), session, theme);
         },
     );
     spawn_settings_stage_group(

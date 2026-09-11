@@ -125,14 +125,14 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "load_config",
         "read",
         true,
-        "Load persisted settings, including DEBUG logging and super acceleration"
+        "Load persisted settings, including model-owned quality controls, DEBUG logging and super acceleration"
     ),
     capability!(
         "config",
         "save_config",
         "mutation",
         false,
-        "Persist settings, including DEBUG logging and super acceleration for subsequent exact analysis requests"
+        "Persist settings, including per-model overlap, sensitivity and decoding controls, DEBUG logging and super acceleration for subsequent exact analysis requests"
     ),
     capability!(
         "models",

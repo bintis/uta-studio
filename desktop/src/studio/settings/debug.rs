@@ -215,6 +215,7 @@ mod tests {
             route: StudioRoute::Settings,
             documentation: DocumentationState::default(),
             settings_tab: SettingsTab::General,
+            model_tuning: "bs_roformer_leap_xe90_vocals".to_string(),
             notice: None,
             settings_scroll_offsets: [0.0; 4],
         });

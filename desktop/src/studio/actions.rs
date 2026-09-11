@@ -5,6 +5,8 @@ pub(crate) struct ActionSystemParams<'w, 's> {
     keys: Res<'w, ButtonInput<KeyCode>>,
     text_inputs: EditorTextInputs<'w, 's>,
     search_inputs: LibrarySearchInputs<'w, 's>,
+    model_inputs: Query<'w, 's, (&'static ModelParameterInput, &'static EditableText)>,
+    focus: Res<'w, bevy::input_focus::InputFocus>,
     windows: PrimaryWindowAndAnalysisViewport<'w, 's>,
     audio: Res<'w, NativeAudio>,
     library_audio: Res<'w, NativeLibraryAudio>,
@@ -40,6 +42,13 @@ pub(crate) fn handle_actions(
         }
         dispatch_action(action, &mut commands, &mut context);
     }
+    if context.keys.just_pressed(KeyCode::Enter)
+        && let Some(entity) = context.focus.0
+        && let Ok((input, _)) = context.model_inputs.get(entity)
+    {
+        let action = SettingsCommand::ApplyModelParameter(input.model.clone(), input.key.clone());
+        dispatch_action(&action.into(), &mut commands, &mut context);
+    }
     // Scripted interactions (`UTA_STUDIO_DEBUG_UI_SCRIPT`) take the same path
     // as a pointer press: one registered command per step, dispatched here.
     let banner_done = context.startup_banner.done;
@@ -67,6 +76,19 @@ pub(crate) fn handle_actions(
 
 /// Dispatches one UI command exactly as a pointer press on its button would.
 fn dispatch_action(action: &UiAction, commands: &mut Commands, context: &mut ActionSystemParams) {
+    // Apply/Enter reads the visible numeric field, then uses the same mutation
+    // command as NDJSON automation and +/- controls.
+    if let UiCommand::Settings(SettingsCommand::ApplyModelParameter(model, key)) = &action.0 {
+        let value = context.model_inputs.iter().find(|(input, _)| input.model == *model && input.key == *key)
+            .map(|(_, text)| text.value().to_string());
+        if let Some(value) = value {
+            dispatch_action(&SettingsCommand::SetModelParameter(model.clone(), key.clone(), value).into(), commands, context);
+        } else {
+            context.shell.notice = Some("Open this model's controls before applying an edited value".to_string());
+            context.invalidated.invalidate(UiDirtyRegion::Settings);
+        }
+        return;
+    }
     {
         let request = action.api_request();
         bevy::log::info!(

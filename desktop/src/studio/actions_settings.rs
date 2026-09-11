@@ -402,6 +402,42 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
             }
             invalidated.invalidate(UiDirtyRegion::Settings);
         }
+        UiCommand::Settings(SettingsCommand::SelectModelTuning(model)) => {
+            if app_core::model_settings::MODELS.iter().any(|item| item.id == model) {
+                studio.shell.model_tuning = model.clone();
+                studio.shell.notice = None;
+            } else {
+                studio.shell.notice = Some(format!("Unknown model: {model}"));
+            }
+            invalidated.invalidate(UiDirtyRegion::Settings);
+        }
+        UiCommand::Settings(SettingsCommand::SetModelParameter(model, key, value)) => {
+            studio.shell.notice = Some(match change_model_parameter(&mut studio.shell.config, model, key, value, AppConfig::save) {
+                Ok(()) => "Model setting saved. Applies to the next analysis; existing charts are unchanged.".to_string(),
+                Err(error) => format!("Could not save model setting: {error}"),
+            });
+            invalidated.invalidate(UiDirtyRegion::Settings);
+        }
+        UiCommand::Settings(SettingsCommand::AdjustModelParameter(model, key, delta)) => {
+            let result = app_core::model_settings::parameter(model, key).ok_or_else(|| format!("Unknown model parameter: {model}.{key}"))
+                .and_then(|parameter| {
+                    let value = model_parameter_value(&studio.shell.config, model, parameter) + f64::from(*delta) * parameter.step;
+                    change_model_parameter(&mut studio.shell.config, model, key, &value.to_string(), AppConfig::save)
+                });
+            studio.shell.notice = Some(match result {
+                Ok(()) => "Model setting saved. Applies to the next analysis; existing charts are unchanged.".to_string(),
+                Err(error) => format!("Could not save model setting: {error}"),
+            });
+            invalidated.invalidate(UiDirtyRegion::Settings);
+        }
+        UiCommand::Settings(SettingsCommand::ResetModelParameters(model)) => {
+            studio.shell.notice = Some(match save_config_change(&mut studio.shell.config,
+                |proposed| { proposed.model_settings.remove(model); }, AppConfig::save) {
+                Ok(()) => "Model defaults restored for future analysis. Existing charts are unchanged.".to_string(),
+                Err(error) => format!("Could not restore model defaults: {error}"),
+            });
+            invalidated.invalidate(UiDirtyRegion::Settings);
+        }
         UiCommand::Settings(SettingsCommand::ToggleTurboAcceleration) => {
             studio.shell.notice = Some(
                 match toggle_turbo_acceleration(&mut studio.shell.config, AppConfig::save) {

@@ -49,6 +49,8 @@ struct UiScriptRecord<'a> {
     compute_backend: Option<String>,
     model_backend_overrides: std::collections::BTreeMap<String, String>,
     model_device_overrides: std::collections::BTreeMap<String, String>,
+    model_settings: app_core::model_settings::ModelSettings,
+    model_tuning: String,
 }
 
 #[derive(Resource)]
@@ -224,6 +226,8 @@ impl UiScriptState {
             compute_backend: config.compute_backend.clone(),
             model_backend_overrides: config.model_backend_overrides.clone(),
             model_device_overrides: config.model_device_overrides.clone(),
+            model_settings: config.model_settings.clone(),
+            model_tuning: shell.model_tuning.clone(),
         });
     }
 
@@ -605,6 +609,11 @@ fn parse_settings(name: &str, arguments: &serde_json::Value) -> Result<SettingsC
             text(arguments, "model_id")?,
             optional_text(arguments, "device")?,
         ),
+        "select_model_tuning" => SettingsCommand::SelectModelTuning(text(arguments, "model_id")?),
+        "set_model_parameter" => SettingsCommand::SetModelParameter(text(arguments, "model_id")?, text(arguments, "parameter")?, arguments.get("value").map(|value| value.as_str().map(str::to_string).unwrap_or_else(|| value.to_string())).ok_or("missing value")?),
+        "adjust_model_parameter" => SettingsCommand::AdjustModelParameter(text(arguments, "model_id")?, text(arguments, "parameter")?, integer(arguments, "delta")?),
+        "apply_model_parameter" => SettingsCommand::ApplyModelParameter(text(arguments, "model_id")?, text(arguments, "parameter")?),
+        "reset_model_parameters" => SettingsCommand::ResetModelParameters(text(arguments, "model_id")?),
         "toggle_turbo_acceleration" => SettingsCommand::ToggleTurboAcceleration,
         "set_analysis_quality" => SettingsCommand::SetAnalysisQuality(quality_profile(arguments)?),
         "toggle_preserve_continuous_pitch" => SettingsCommand::TogglePreserveContinuousPitch,
@@ -1008,6 +1017,14 @@ mod tests {
                 ),
             }
         }
+    }
+
+    #[test]
+    fn model_quality_commands_keep_model_ownership_and_numeric_values() {
+        assert_eq!(parse("ui.settings.set_model_parameter", serde_json::json!({"model_id":"bs_roformer_leap_xe90_vocals", "parameter":"overlap", "value":8})),
+            UiCommand::Settings(SettingsCommand::SetModelParameter("bs_roformer_leap_xe90_vocals".into(), "overlap".into(), "8".into())));
+        assert_eq!(parse("ui.settings.adjust_model_parameter", serde_json::json!({"model_id":"rmvpe", "parameter":"voiced_threshold", "delta":-1})),
+            UiCommand::Settings(SettingsCommand::AdjustModelParameter("rmvpe".into(), "voiced_threshold".into(), -1)));
     }
 
     #[test]
