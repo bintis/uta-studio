@@ -11,7 +11,7 @@
   "components": {
     "ggml_vulkan": {
       "runtime_repository": "ggml-org/ggml",
-      "runtime_commit": "8c63e70982c95ceb862e3a1073a2c1beef75d60a",
+      "source_selection": "upstream_default_branch_head",
       "build_recipe": "native-inference/ggml-worker/runtime-recipe.json",
       "backend": "vulkan_with_explicit_cpu_experimental",
       "model_format": "gguf",
@@ -20,8 +20,7 @@
     },
     "libtorch_xpu": {
       "runtime_repository": "pytorch/pytorch",
-      "runtime_release": "2.13.0+xpu",
-      "runtime_index": "https://download.pytorch.org/whl/xpu",
+      "source_selection": "upstream_default_branch_head",
       "build_recipe": "native-inference/libtorch-runtime/runtime-recipe.json",
       "backend": "xpu_explicit_no_fallback",
       "model_format": "gguf",

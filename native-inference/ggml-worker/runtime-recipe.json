@@ -3,7 +3,7 @@
   "rust_binding": "ggml-c-abi",
   "ggml": {
     "repository": "ggml-org/ggml",
-    "commit": "8c63e70982c95ceb862e3a1073a2c1beef75d60a",
+    "source_selection": "upstream_default_branch_head",
     "shared_libraries_only": true,
     "backends": [
       "vulkan",
@@ -20,7 +20,7 @@
       },
       {
         "file": "native-inference/ggml-worker/patches/0002-vulkan-flash-attention-on-8x16x16-coopmat.patch",
-        "sha256": "feec3e869669b101ae9e7b78ab74f9612c3f384a86ce6dfaa9feef6db0f8ed5b",
+        "sha256": "2fe202140e1f4720b8c2b257094046fa2fd747bec1f115dd456c745f4c89c058",
         "scope": "ggml Vulkan backend only",
         "reason": "GGML's cooperative-matrix flash attention is gated on a 16x16x16 shape, so on Intel Xe, which reports only 8x16x16 through VK_KHR_cooperative_matrix, attention always falls back to the scalar shader and never reaches the matrix engine. Attention is about two thirds of a separation pass. M is the MatBc tile constant in flash_attn_cm1.comp, so this adds an M=8 build of the same shader and selects it where that is the only shape the device has. It also makes that shader honour GGML_PREC_F32 in the PV accumulator, which upstream leaves in float16_t; without that the coopmat path moves a separated stem by about 1e-2 relative RMS."
       },
@@ -50,7 +50,7 @@
       },
       {
         "file": "native-inference/ggml-worker/patches/0007-vulkan-query-owned-attention.patch",
-        "sha256": "f1df9236d4450be04f0949ab4b069aedb7e264a60b5318514ad23f21d6c8b022",
+        "sha256": "e27ded78e20d56721195fb9f3d8786c2a726e01def72704e783f370deb6de044",
         "scope": "Intel Xe2 M8 F16 K/V H64 F32-accumulator attention with more than thirty-two queries, four native SIMD32 subgroups",
         "reason": "Each subgroup owns eight complete query rows through QK, softmax and PV. Clustered four-lane row reductions, cached Q fragments, persistent F32 output fragments and coalesced shared K/V reduce the measured B580 time-attention kernel from 96.79 to 63.73 ms. The six-second production graph retains finite repeatable output with 72.05 dB SNR against the control; cross-version output is not bit-identical. Preserve full key context, existing F16 probability rounding, F32 accumulators, masks and tails. Small-query/GQA capacity and other device/type paths remain unchanged. UTA_STUDIO_GGML_FA_QUERY_OWNED=0 selects the prior path; explicit query-row or staging diagnostics also retain it. See docs/ROFORMER_B580_ATTENTION.md."
       },

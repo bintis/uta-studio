@@ -3,31 +3,33 @@ set -euo pipefail
 
 # Explicit local source build. The product runtime contains only upstream GGML
 # shared libraries; every model graph and invocation is owned by Rust.
-readonly GGML_COMMIT="8c63e70982c95ceb862e3a1073a2c1beef75d60a"
-
-: "${UTA_GGML_SOURCE_DIR:?set UTA_GGML_SOURCE_DIR to the pinned GGML checkout}"
-ggml_source="${UTA_GGML_SOURCE_DIR}"
+work="${UTA_STUDIO_GGML_WORK_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/uta-studio/native-runtime}"
+ggml_source="${work}/source"
 build="${UTA_GGML_BUILD_DIR:-${HOME}/.cache/uta-studio/native-runtime/build/ggml-vulkan}"
 destination="${UTA_GGML_RUNTIME_DIR:-${HOME}/.local/share/uta-studio/runtime/ggml-vulkan}"
 jobs="${UTA_GGML_BUILD_JOBS:-2}"
 
-for tool in git cmake sha256sum patchelf; do
+for tool in git cmake patchelf; do
     command -v "${tool}" >/dev/null || { printf 'missing build tool: %s\n' "${tool}" >&2; exit 2; }
 done
-actual_commit="$(git -C "${ggml_source}" rev-parse HEAD 2>/dev/null || true)"
-[[ "${actual_commit}" == "${GGML_COMMIT}" ]] || {
-    printf 'GGML source identity mismatch: %s\n' "${actual_commit}" >&2
-    exit 3
-}
-git -C "${ggml_source}" diff --quiet --ignore-submodules -- || {
-    printf 'GGML source checkout has uncommitted runtime changes\n' >&2
-    exit 3
-}
+mkdir -p "${work}"
+source_staging="$(mktemp -d "${work}/source.XXXXXX")"
+trap 'rm -rf -- "${source_staging}"' EXIT
+if [[ -n "${UTA_GGML_SOURCE_DIR:-}" ]]; then
+    # Copy an explicit checkout (including local edits) rather than patching or
+    # resetting the operator's tree. There is no clean-tree or commit gate.
+    cp -a "${UTA_GGML_SOURCE_DIR}"/. "${source_staging}/"
+else
+    git clone --depth 1 https://github.com/ggml-org/ggml.git "${source_staging}"
+fi
+rm -rf -- "${ggml_source}"
+mv -- "${source_staging}" "${ggml_source}"
+trap - EXIT
+actual_commit="$(git -C "${ggml_source}" rev-parse HEAD)"
 
-# Local patches. The runtime is upstream GGML plus exactly the patches this
-# recipe declares; each one is applied to the verified checkout after the
-# identity check above. The resulting runtime is accepted by its stable
-# library roles and required ABI symbols rather than a mutable recipe version.
+# Apply the declared backend fixes to the private current-source checkout.
+# A conflicting patch must be rebased; never silently drop precision fixes or
+# fetch an older upstream revision to make it apply.
 readonly patch_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/patches"
 if [[ -d "${patch_dir}" ]]; then
     shopt -s nullglob
@@ -40,11 +42,6 @@ if [[ -d "${patch_dir}" ]]; then
     done
     shopt -u nullglob
 fi
-restore_ggml_source() {
-    git -C "${ggml_source}" checkout -- . 2>/dev/null || true
-}
-trap restore_ggml_source EXIT
-
 rm -rf "${build}" "${destination}.staging"
 # Keep GGML's embedded source provenance consistent across local builds.
 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.abbrev GIT_CONFIG_VALUE_0=12 \
@@ -60,7 +57,7 @@ cmake -S "${ggml_source}" -B "${build}" \
 cmake --build "${build}" --target ggml -j"${jobs}"
 
 staging="${destination}.staging"
-trap 'rm -rf -- "${staging}"; restore_ggml_source' EXIT
+trap 'rm -rf -- "${staging}"' EXIT
 mkdir -p "${staging}/lib"
 copy_library() {
     local pattern="$1" destination_name="$2"
@@ -79,13 +76,12 @@ for library in "${staging}"/lib/*; do
 done
 
 {
-    printf '{\n  "libraries": {\n'
+    printf '{\n  "source_repository": "ggml-org/ggml",\n  "source_commit": "%s",\n  "libraries": {\n' "${actual_commit}"
     first=1
     for library in "${staging}"/lib/*; do
         name="$(basename "${library}")"
-        digest="$(sha256sum "${library}" | cut -d' ' -f1)"
         (( first )) || printf ',\n'
-        printf '    "lib/%s": "%s"' "${name}" "${digest}"
+        printf '    "lib/%s": "source-build"' "${name}"
         first=0
     done
     printf '\n  }\n}\n'
@@ -93,6 +89,5 @@ done
 
 rm -rf "${destination}"
 mv -- "${staging}" "${destination}"
-restore_ggml_source
 trap - EXIT
-printf 'Pinned GGML shared-library runtime built at %s\n' "${destination}"
+printf 'Current-source GGML runtime (%s) built at %s\n' "${actual_commit}" "${destination}"

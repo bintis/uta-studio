@@ -153,9 +153,8 @@ diff --git a/src/ggml-vulkan/ggml-vulkan.cpp b/src/ggml-vulkan/ggml-vulkan.cpp
 diff --git a/src/ggml-vulkan/vulkan-shaders/flash_attn_base.glsl b/src/ggml-vulkan/vulkan-shaders/flash_attn_base.glsl
 --- a/src/ggml-vulkan/vulkan-shaders/flash_attn_base.glsl
 +++ b/src/ggml-vulkan/vulkan-shaders/flash_attn_base.glsl
-@@ -100,7 +100,10 @@
- #define FA_TYPE_IQ4_NL 20u
- #define FA_TYPE_BF16 30u
+@@ -91,6 +91,9 @@
+ #include "fa_types.glsl"
  
 -#if defined(BFLOAT16)
 +// FA_O_F32 keeps the PV accumulator in F32. Without it the cooperative-matrix

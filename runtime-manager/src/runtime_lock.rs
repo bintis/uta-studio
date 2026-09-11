@@ -5,11 +5,11 @@ use serde::{Deserialize, Serialize};
 pub const RUNTIME_LOCK_JSON: &str = include_str!("../../native-inference/runtime-lock.json");
 
 pub const GGML_RUNTIME_RECIPE_SHA256: &str =
-    "1d1ece1e929b70b2d95c5ea3694940ebd385595b9dd99f5c3d6623a06e0e81ef";
+    "083b9b01482ad012f96cae8acd9d4da40f5c11fecbfcfbe8a200ecc1cea3ae9d";
 /// Identity of `native-inference/libtorch-runtime/runtime-recipe.json`. It is
 /// provenance metadata carried in resolved routes, not a verification gate.
 pub const LIBTORCH_XPU_RUNTIME_RECIPE_SHA256: &str =
-    "e51e32bd8801a842f1f50dbcdf44a613df73e3677ac2bdd91f7a1297a3050d03";
+    "9a7ab279294916c2944f2161edde9ff4a47ab55e74007e22fe57aa2978bd4707";
 pub const RMVPE_GGUF_SHA256: &str =
     "1b4095d1b57818f5e812b1986ea5a7d7e6d64ccd9e1b1d7b71f4091304513fd2";
 pub const RMVPE_GGUF_SIZE_BYTES: u64 = 361_625_344;
