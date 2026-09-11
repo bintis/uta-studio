@@ -234,7 +234,9 @@ fn separation_picker_exposes_only_typed_executable_strategies() {
 #[test]
 fn super_acceleration_explains_routing_without_locking_model_choices() {
     let cards = include_str!("node_card.rs");
-    assert!(cards.contains("Super acceleration assigns the backend and device for your chosen model"));
+    assert!(
+        cards.contains("Super acceleration assigns the backend and device for your chosen model")
+    );
     assert!(cards.contains("not its models"));
 }
 
