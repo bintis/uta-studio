@@ -153,6 +153,12 @@ impl Game {
         ggml!(api, ggml_set_input(language_input));
         let positions = ggml!(api, ggml_new_tensor_1d(run.context, GGML_TYPE_I32, frames));
         ggml!(api, ggml_set_input(positions));
+        // INPUT only schedules allocation. OUTPUT prevents gallocr from
+        // overwriting/recycling these immutable values between diffusion steps.
+        // They are retained on device, not added to the host readback.
+        for retained in [input, language_input, positions] {
+            ggml!(api, ggml_set_output(retained));
+        }
 
         let noise_embedding = ggml!(
             api,
