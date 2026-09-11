@@ -22,7 +22,16 @@ fn accumulate(mask: &[f32], frames: usize, frequencies: usize, indices: &[usize]
     for channel in 0..2 {
         let mut spectrum = Spectrogram { data: vec![0.0; frequencies * frames * 2], n_freq: frequencies, n_frames: frames };
         if tiled {
-            accumulate_channel_mask(mask, indices, 0, width, channel, &mut spectrum);
+            // Diagnostic-only rejected candidate; not model-routed.
+            for begin in (0..frames).step_by(32) {
+                for (position, frequency) in indices.iter().copied().enumerate() {
+                    if frequency % 2 != channel { continue; }
+                    for frame in begin..(begin + 32).min(frames) {
+                        let source = frame * width + position * 2;
+                        spectrum.add(frequency / 2, frame, mask[source], mask[source + 1]);
+                    }
+                }
+            }
         } else {
             for (position, frequency) in indices.iter().copied().enumerate() {
                 if frequency % 2 != channel { continue; }

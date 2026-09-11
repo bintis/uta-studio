@@ -44,18 +44,14 @@ fn accumulate_channel_mask(
     stride_time: usize, channel: usize, spectrum: &mut Spectrogram,
 ) {
     let feature_count = frequency_indices.len() * 2;
-    const FRAME_STRIP: usize = 32;
-    for begin in (0..spectrum.n_frames).step_by(FRAME_STRIP) {
-        let end = (begin + FRAME_STRIP).min(spectrum.n_frames);
-        // Different frames are independent. Within each frame/frequency the
-        // original band order is retained, including overlapping mel bands.
-        for (position, stereo_frequency) in frequency_indices.iter().copied().enumerate() {
-            if stereo_frequency % 2 != channel { continue; }
-            let frequency = stereo_frequency / 2;
-            for frame in begin..end {
-                let source = frame * stride_time + stem * feature_count + position * 2;
-                spectrum.add(frequency, frame, mask[source], mask[source + 1]);
-            }
+    // Whole frequency rows outperform frame strips for this accumulation.
+    // Keep the original band order, including overlapping mel bands.
+    for (position, stereo_frequency) in frequency_indices.iter().copied().enumerate() {
+        if stereo_frequency % 2 != channel { continue; }
+        let frequency = stereo_frequency / 2;
+        for frame in 0..spectrum.n_frames {
+            let source = frame * stride_time + stem * feature_count + position * 2;
+            spectrum.add(frequency, frame, mask[source], mask[source + 1]);
         }
     }
 }
@@ -220,7 +216,7 @@ mod tests {
     }
 
     #[test]
-    fn tiled_mask_accumulation_preserves_order_and_storage_bits() {
+    fn mask_accumulation_preserves_order_and_storage_bits() {
         let indices = [5, 0, 2, 5, 0, 1, 4, 0];
         let width = indices.len() * 2;
         let stems = 2;
