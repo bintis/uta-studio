@@ -146,6 +146,34 @@ OpenCL-dependent fused-SDPA failure was not rerun or repaired here. Next work us
 non-retrying model-specific real-audio/conditioning checks and explicit attention dependency
 diagnosis. Successful exit does not establish later host stability.
 
+## All-resource real full-song XPU validation — authorized 2026-09-11
+
+**IN_PROGRESS.** The user authorized all models' real full-song XPU execution and
+fixing diagnosed problems before continuing. The current catalog and native
+factory both contain **eighteen** resources, including the independent XE90
+instrumental checkpoint. Earlier seventeen-resource counts and the earlier
+ROCm RMVPE failure are historical: `901c134` implements native fused GRU cells,
+and the recorded subsequent 30-second ROCm run completed with 3,001 frames.
+Neither correction establishes current XPU qualification.
+
+Use the existing real Chinese song `崔子格 - 卜卦.flac` read-only, so STARS can
+receive genuine transcript-derived Chinese phonemes rather than invented
+conditioning for the previous Japanese song. Keep diagnostics, decoded scratch,
+new native builds and every output in `test-artifacts/libtorch-xpu-fullsong-real/`.
+The authorization receipt is `20260911T063344-cba0c64793b8`.
+
+Plan: complete reusable native ASR/alignment host adapters and an isolated Rust
+real-audio diagnostic entry; run all eighteen resources serially on explicitly
+selected B580 XPU; feed actual separated vocals, RMVPE pitch and ASR/alignment
+outputs into dependent models; retain complete tensors/evidence and lossless
+stems. Record host/GPU load before each execution and continuous observations.
+Diagnose failures, commit each independent repair, run focused checks, then
+continue with new evidence directories. No blind retries, synthetic lyrics/F0,
+CPU/GGML inference fallback, installed-asset replacement, source mutation,
+Vulkan Super restart, counter pressure or power/clock changes. This is model
+qualification work, not authorization to claim Studio routing or production
+readiness. Missing completion records remain unknown.
+
 ## Source references
 
 - Local measured motivation: `docs/ROFORMER_B580_LIBTORCH_XPU.md`.

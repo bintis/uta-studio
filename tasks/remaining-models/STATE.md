@@ -628,6 +628,22 @@ power-loss cause remains unresolved; process success does not prove later host
 stability. Observe bounded runs and inspect anomalies rather than automatically
 retrying. Installed assets and unrelated user changes remain untouched.
 
+## All-resource real full-song LibTorch XPU — IN_PROGRESS (2026-09-11)
+
+The user authorized real full-song execution for every model and repair of
+diagnosed failures before continuing. Current source contains eighteen catalog
+and native resource entries, including XE90 instrumental; older seventeen-model
+counts above are historical. ROCm RMVPE has a later successful 30-second run after
+`901c134`, but that does not qualify XPU. Use the existing Chinese song
+`崔子格 - 卜卦.flac` read-only with actual dependency outputs, not synthetic
+pitch/transcript/phonemes. Evidence: `test-artifacts/libtorch-xpu-fullsong-real/`;
+authorization `20260911T063344-cba0c64793b8`. First implement the missing native
+speech host adapters and isolated real-audio diagnostics, then serially execute,
+diagnose/commit/verify repairs and record complete outputs. Preserve all prior
+failures, current precision/chunk semantics, source/installed assets and other
+users' processes. No blind retries, Vulkan/counter stress or production promotion.
+See [LibTorch execution](../../docs/design/runtime/LIBTORCH_EXECUTION.md).
+
 ## Next actions
 
 1. Install the STARS and ROSVOT GGUF generations into the managed store with their manifests and
