@@ -89,7 +89,10 @@ pub fn parse_game_evidence(
         )
         || raw.source_commit != GAME_SOURCE_COMMIT
         || raw.model_gguf_size_bytes == 0
-        || !matches!(raw.backend.as_str(), "ggml_cpu" | "ggml_vulkan")
+        || !matches!(
+            raw.backend.as_str(),
+            "ggml_cpu" | "ggml_vulkan" | "libtorch_xpu"
+        )
         || raw.semantic_output != "note_candidate_evidence"
         || raw.sample_rate != 44_100
         || raw.timestep_ms != 10

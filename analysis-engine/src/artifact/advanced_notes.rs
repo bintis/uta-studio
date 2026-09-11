@@ -397,7 +397,10 @@ pub fn parse_advanced_note_evidence(
     if !capability_identity_valid
         || evidence.model_id != expected_model
         || evidence.upstream_commit != commit
-        || !matches!(evidence.backend.as_str(), "ggml_cpu" | "ggml_vulkan")
+        || !matches!(
+            evidence.backend.as_str(),
+            "ggml_cpu" | "ggml_vulkan" | "libtorch_xpu"
+        )
         || evidence.shared_frontend_profile != FRONTEND_PROFILE
         || evidence.word_boundary_source != "timed_transcript"
         || evidence.frame_step_num != 128

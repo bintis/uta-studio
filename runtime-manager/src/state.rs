@@ -101,6 +101,9 @@ pub enum ReadinessReason {
     BackendUnvalidated,
     CpuProductionForbidden,
     UnsupportedPlatform,
+    /// The runtime's installed native shared library is absent from its
+    /// runtime directory, so the worker cannot execute this route.
+    NativeLibraryMissing,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

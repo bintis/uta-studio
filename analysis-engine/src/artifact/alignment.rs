@@ -52,7 +52,10 @@ impl AlignmentArtifact {
             || self.source_expert.trim().is_empty()
             || self.model_sha256.trim().is_empty()
             || self.runtime_manifest_sha256.trim().is_empty()
-            || !matches!(self.backend.as_str(), "ggml_cpu" | "ggml_vulkan")
+            || !matches!(
+                self.backend.as_str(),
+                "ggml_cpu" | "ggml_vulkan" | "libtorch_xpu"
+            )
             || self.items.is_empty()
         {
             return Err(invalid("alignment evidence identity is invalid"));

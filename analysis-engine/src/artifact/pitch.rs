@@ -65,7 +65,10 @@ pub fn parse_rmvpe_pitch(
     .map_err(|error| invalid(format!("RMVPE evidence JSON is invalid: {error}")))?;
     if raw.schema_version != 1
         || raw.model_id != "rmvpe"
-        || !matches!(raw.backend.as_str(), "ggml_vulkan" | "ggml_cpu")
+        || !matches!(
+            raw.backend.as_str(),
+            "ggml_vulkan" | "ggml_cpu" | "libtorch_xpu"
+        )
         || raw.timeline_step_ms == 0
         || raw.sample_rate == 0
         || raw.frames.is_empty()
@@ -181,7 +184,10 @@ pub fn parse_fcpe_pitch(
     if raw.schema_version != 1
         || raw.model_id != "fcpe"
         || raw.model_gguf_size_bytes != 43_309_760
-        || !matches!(raw.backend.as_str(), "ggml_vulkan" | "ggml_cpu")
+        || !matches!(
+            raw.backend.as_str(),
+            "ggml_vulkan" | "ggml_cpu" | "libtorch_xpu"
+        )
         || raw.timeline_step_ms != 10
         || raw.sample_rate != 16_000
         || raw.window_samples != 32_000

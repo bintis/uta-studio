@@ -757,7 +757,15 @@ impl RuntimeManager {
             .map(|capability| capability.validation)
             .unwrap_or_else(|| strongest_validation(&runtime.backends));
         let install = self.generic_install_state(resource);
-        let executable_ready = executable_for_runtime(runtime, &self.paths).is_some();
+        let worker_ready = executable_for_runtime(runtime, &self.paths).is_some();
+        // A runtime that declares a native library is present only when that
+        // installed file exists; the worker executable alone is not the runtime.
+        let native_library_ready = runtime.native_library.as_deref().is_none_or(|relative| {
+            self.paths
+                .runtime_native_library(&runtime.id, relative)
+                .is_some()
+        });
+        let executable_ready = worker_ready && native_library_ready;
         let mut reasons = Vec::new();
         if selected.is_none() {
             reasons.push(ReadinessReason::BackendUnvalidated);
@@ -768,8 +776,11 @@ impl RuntimeManager {
             InstallState::Corrupt => reasons.push(ReadinessReason::Corrupt),
             InstallState::Absent | InstallState::Installed | InstallState::Legacy => {}
         }
-        if !executable_ready {
+        if !worker_ready {
             reasons.push(ReadinessReason::ExecutableMissing);
+        }
+        if !native_library_ready {
+            reasons.push(ReadinessReason::NativeLibraryMissing);
         }
         let effective_install_state = if install.state == InstallState::Absent && executable_ready {
             InstallState::Legacy
@@ -1230,10 +1241,13 @@ fn select_capability(
             .find(|capability| capability.backend == pinned)
             .filter(supported);
     }
+    // Without a pin, GGML stays the default; a runtime that offers only its
+    // own native backend selects that backend rather than reporting no route.
     capabilities
         .iter()
         .find(|capability| capability.backend == NativeBackend::Ggml)
         .filter(supported)
+        .or_else(|| capabilities.iter().find(supported))
 }
 
 fn strongest_validation(capabilities: &[BackendCapability]) -> ValidationState {
@@ -1548,5 +1562,183 @@ mod tests {
             )
         );
         std::fs::remove_dir_all(store).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod libtorch_route_tests {
+    use super::*;
+    use crate::catalog::{LIBTORCH_XPU_NATIVE_LIBRARY, LIBTORCH_XPU_RUNTIME_ID};
+    use crate::manifest::{
+        INSTALL_MANIFEST_SCHEMA, INSTALL_MANIFEST_SCHEMA_VERSION, InstallManifest, InstalledFile,
+        generation_id,
+    };
+    use std::path::Path;
+
+    struct Scratch(PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn scratch(label: &str) -> Scratch {
+        let root = std::env::temp_dir().join(format!(
+            "uta-runtime-libtorch-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        Scratch(root)
+    }
+
+    fn install_managed_model(store: &Path, model_id: &str, filename: &str) {
+        let resource = ResourceRef::model(model_id).unwrap();
+        let manifest = InstallManifest {
+            schema: INSTALL_MANIFEST_SCHEMA.to_string(),
+            schema_version: Some(INSTALL_MANIFEST_SCHEMA_VERSION),
+            resource: resource.clone(),
+            catalog_version: None,
+            source: None,
+            source_sha256: None,
+            model_recipe_digest: Some("recipe".to_string()),
+            conversion_recipe_digest: None,
+            runtime_recipe_digest: None,
+            files: vec![InstalledFile {
+                path: PathBuf::from(filename),
+                sha256: "provenance-only".to_string(),
+                size: 5,
+            }],
+            created_timestamp: "1".to_string(),
+        };
+        let bytes = serde_json::to_vec(&manifest).unwrap();
+        let generation = generation_id(&bytes);
+        let resource_root = store.join("models").join(model_id);
+        let generation_root = resource_root.join("generations").join(&generation);
+        std::fs::create_dir_all(&generation_root).unwrap();
+        std::fs::write(generation_root.join(filename), b"model").unwrap();
+        std::fs::write(generation_root.join("install-manifest.json"), bytes).unwrap();
+        std::fs::write(
+            resource_root.join("current.json"),
+            serde_json::to_vec(&CurrentPointer { generation }).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn worker_executable(root: &Path) -> PathBuf {
+        let path = root.join("uta-ggml-worker");
+        std::fs::write(&path, b"#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        path
+    }
+
+    #[test]
+    fn libtorch_route_requires_the_installed_native_library() {
+        let scratch = scratch("missing-library");
+        let store = scratch.0.join("store");
+        install_managed_model(&store, "rmvpe", "rmvpe-f32.gguf");
+        let worker = worker_executable(&scratch.0);
+        let paths = StorePaths::new(&store)
+            .with_runtime_override("uta-ggml-worker", &worker)
+            .with_runtime_library_root(LIBTORCH_XPU_RUNTIME_ID, scratch.0.join("libtorch-xpu"));
+        let manager = RuntimeManager::with_default_catalog(paths).unwrap();
+        let runtime = manager
+            .status(
+                &ResourceRef::runtime(LIBTORCH_XPU_RUNTIME_ID).unwrap(),
+                RuntimePolicy::Production,
+            )
+            .unwrap();
+        assert!(!runtime.usable);
+        assert!(
+            runtime
+                .reasons
+                .contains(&ReadinessReason::NativeLibraryMissing)
+        );
+        assert!(
+            !runtime
+                .reasons
+                .contains(&ReadinessReason::ExecutableMissing)
+        );
+        let error = manager
+            .resolve_model_with_backend(
+                "rmvpe",
+                RuntimePolicy::Production,
+                Some(NativeBackend::LibtorchXpu),
+            )
+            .unwrap_err();
+        assert_eq!(error.code, "runtime_missing", "{}", error.message);
+        // The pinned GGML route is unaffected by a missing LibTorch library.
+        let ggml = manager
+            .resolve_model("rmvpe", RuntimePolicy::Production)
+            .unwrap();
+        assert_eq!(ggml.backend, NativeBackend::Ggml);
+        assert_eq!(ggml.runtime_id, "ggml_vulkan");
+    }
+
+    #[test]
+    fn libtorch_route_resolves_the_shared_worker_and_its_runtime_identity() {
+        let scratch = scratch("installed-library");
+        let store = scratch.0.join("store");
+        install_managed_model(&store, "rmvpe", "rmvpe-f32.gguf");
+        let worker = worker_executable(&scratch.0);
+        let library_root = scratch.0.join("libtorch-xpu");
+        std::fs::create_dir_all(library_root.join("lib")).unwrap();
+        std::fs::write(library_root.join(LIBTORCH_XPU_NATIVE_LIBRARY), b"elf").unwrap();
+        let paths = StorePaths::new(&store)
+            .with_runtime_override("uta-ggml-worker", &worker)
+            .with_runtime_library_root(LIBTORCH_XPU_RUNTIME_ID, &library_root);
+        let manager = RuntimeManager::with_default_catalog(paths).unwrap();
+        let status = manager
+            .status_with_backend(
+                &ResourceRef::model("rmvpe").unwrap(),
+                RuntimePolicy::Production,
+                Some(NativeBackend::LibtorchXpu),
+            )
+            .unwrap();
+        let runtime = manager
+            .status(
+                &ResourceRef::runtime(LIBTORCH_XPU_RUNTIME_ID).unwrap(),
+                RuntimePolicy::Production,
+            )
+            .unwrap();
+        let resolved = manager
+            .resolve_model_with_backend(
+                "rmvpe",
+                RuntimePolicy::Production,
+                Some(NativeBackend::LibtorchXpu),
+            )
+            .unwrap_or_else(|error| panic!("{error:?}\nmodel={status:?}\nruntime={runtime:?}"));
+        assert_eq!(resolved.backend, NativeBackend::LibtorchXpu);
+        assert_eq!(resolved.runtime_id, LIBTORCH_XPU_RUNTIME_ID);
+        assert_eq!(resolved.runtime_executable, worker);
+        assert_eq!(
+            resolved.runtime_recipe_digest.as_deref(),
+            Some(crate::runtime_lock::LIBTORCH_XPU_RUNTIME_RECIPE_SHA256)
+        );
+        // The default pinned route still resolves GGML without any request.
+        let pinned = manager
+            .resolve_model("rmvpe", RuntimePolicy::Production)
+            .unwrap();
+        assert_eq!(pinned.backend, NativeBackend::Ggml);
+        let status = manager
+            .status_with_backend(
+                &ResourceRef::model("rmvpe").unwrap(),
+                RuntimePolicy::Production,
+                Some(NativeBackend::LibtorchXpu),
+            )
+            .unwrap();
+        assert_eq!(status.selected_backend, Some(NativeBackend::LibtorchXpu));
+        assert_eq!(
+            status.runtime_resource,
+            Some(ResourceRef::runtime(LIBTORCH_XPU_RUNTIME_ID).unwrap())
+        );
     }
 }

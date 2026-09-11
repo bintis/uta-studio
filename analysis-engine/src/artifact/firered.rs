@@ -81,7 +81,10 @@ pub fn parse_firered_transcript(path: &Path) -> EngineResult<TranscriptArtifact>
         || raw.selected_source_revision != REVISION
         || raw.model_content_digest.trim().is_empty()
         || raw.runtime_content_digest.trim().is_empty()
-        || !matches!(raw.backend.as_str(), "ggml_cpu" | "ggml_vulkan")
+        || !matches!(
+            raw.backend.as_str(),
+            "ggml_cpu" | "ggml_vulkan" | "libtorch_xpu"
+        )
         || raw.contract_scope != "overlapping_windowed_230_feature_frame_sequence"
         || raw.sample_rate != SAMPLE_RATE
         || raw.input_samples == 0

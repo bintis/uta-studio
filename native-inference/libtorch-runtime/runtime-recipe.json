@@ -1,0 +1,27 @@
+{
+  "component": "uta-libtorch-runtime",
+  "rust_binding": "libtorch-c-abi",
+  "libtorch": {
+    "release": "2.13.0+xpu",
+    "index": "https://download.pytorch.org/whl/xpu",
+    "wheel": "torch-2.13.0+xpu-cp311-cp311-manylinux_2_28_x86_64.whl",
+    "native_library": "lib/libuta_libtorch.so",
+    "native_source": "native-inference/libtorch-runtime/native",
+    "backend": "xpu",
+    "cpu_fallback": false,
+    "ggml_fallback": false,
+    "precision": {
+      "separators": "mixed_attention",
+      "other_models": "strict"
+    }
+  },
+  "model_execution": {
+    "owner": "native-inference/libtorch-runtime",
+    "language": "rust",
+    "host_frontends": "shared with native-inference/ggml-runtime",
+    "learned_graphs": "native ATen plans compiled into lib/libuta_libtorch.so",
+    "model_specific_executables": false
+  },
+  "installation": "native-inference/libtorch-runtime/install-libtorch-xpu-runtime.sh",
+  "downloads_on_launch": false
+}

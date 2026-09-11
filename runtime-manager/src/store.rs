@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::catalog::LIBTORCH_XPU_RUNTIME_ID;
 use crate::error::RuntimeManagerResult;
 use crate::resource::{ResourceKind, ResourceRef};
 
@@ -12,6 +13,10 @@ pub struct StorePaths {
     pub legacy_models_root: Option<PathBuf>,
     ggml_models_root: Option<PathBuf>,
     runtime_overrides: Vec<(String, PathBuf)>,
+    /// Installed native runtime directories keyed by runtime id. A runtime
+    /// that declares a `native_library` is ready only when that file exists
+    /// under its directory.
+    runtime_library_roots: Vec<(String, PathBuf)>,
     tool_overrides: Vec<(String, PathBuf)>,
     tool_fallbacks: Vec<(String, PathBuf)>,
     fusion_adapter_fallbacks: Vec<(String, PathBuf)>,
@@ -30,6 +35,13 @@ impl StorePaths {
             std::env::var_os("UTA_STUDIO_GGML_MODELS_DIR").map(PathBuf::from),
             store_root.as_deref(),
         );
+        let libtorch_runtime_root = std::env::var_os("UTA_STUDIO_LIBTORCH_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .or_else(|| {
+                store_root
+                    .as_ref()
+                    .map(|root| root.join(LIBTORCH_XPU_RUNTIME_DIRECTORY))
+            });
         let mut paths = Self {
             store_root,
             legacy_models_root: std::env::var_os("UTA_STUDIO_MODELS_DIR")
@@ -37,10 +49,14 @@ impl StorePaths {
                 .map(PathBuf::from),
             ggml_models_root,
             runtime_overrides: Vec::new(),
+            runtime_library_roots: Vec::new(),
             tool_overrides: Vec::new(),
             tool_fallbacks: Vec::new(),
             fusion_adapter_fallbacks: Vec::new(),
         };
+        if let Some(root) = libtorch_runtime_root {
+            paths = paths.with_runtime_library_root(LIBTORCH_XPU_RUNTIME_ID, root);
+        }
         let executable_directory = std::env::current_exe()
             .ok()
             .and_then(|executable| executable.parent().map(Path::to_path_buf));
@@ -49,7 +65,12 @@ impl StorePaths {
             .as_deref()
             .and_then(|directory| sibling_executable(directory, "uta-ggml-worker"));
         if let Some(path) = configured.or(packaged) {
-            paths = paths.with_runtime_override("ggml_vulkan", path);
+            // The one packaged worker executes both native runtimes; register
+            // it under its component id so every runtime that names that
+            // component resolves the same executable.
+            paths = paths
+                .with_runtime_override("ggml_vulkan", path.clone())
+                .with_runtime_override("uta-ggml-worker", path);
         }
         if let Some(path) = std::env::var_os("UTA_STUDIO_FFMPEG_PATH").map(PathBuf::from) {
             paths = paths.with_tool_override("ffmpeg", path);
@@ -147,6 +168,33 @@ impl StorePaths {
         self.runtime_overrides
             .push((runtime_id.into(), path.into()));
         self
+    }
+
+    pub fn with_runtime_library_root(
+        mut self,
+        runtime_id: impl Into<String>,
+        root: impl Into<PathBuf>,
+    ) -> Self {
+        self.runtime_library_roots
+            .push((runtime_id.into(), root.into()));
+        self
+    }
+
+    /// Installed directory of a native runtime's shared libraries. The
+    /// directory may not exist yet; readiness checks the declared library.
+    pub fn runtime_library_root(&self, runtime_id: &str) -> Option<PathBuf> {
+        self.runtime_library_roots
+            .iter()
+            .rev()
+            .find(|(id, _)| id == runtime_id)
+            .map(|(_, root)| root.clone())
+    }
+
+    /// The declared native library of a runtime, when it is installed.
+    pub fn runtime_native_library(&self, runtime_id: &str, relative: &str) -> Option<PathBuf> {
+        self.runtime_library_root(runtime_id)
+            .map(|root| root.join(relative))
+            .filter(|path| path.is_file())
     }
 
     pub fn with_tool_override(
@@ -279,9 +327,18 @@ impl StorePaths {
                 .filter(|(_, path)| executable_file(path))
                 .map(|(id, path)| (id.clone(), path.clone()))
                 .collect(),
+            runtime_library_roots: self
+                .runtime_library_roots
+                .iter()
+                .map(|(id, root)| (id.clone(), root.clone()))
+                .collect(),
         }
     }
 }
+
+/// Directory under the managed runtime store that holds the installed native
+/// LibTorch XPU runtime, beside `ggml-vulkan` and `ggml-models`.
+pub const LIBTORCH_XPU_RUNTIME_DIRECTORY: &str = "libtorch-xpu";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PathsSummary {
@@ -307,6 +364,8 @@ pub struct PathsSummary {
     pub ffmpeg_path: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub runtime_executables: BTreeMap<String, PathBuf>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub runtime_library_roots: BTreeMap<String, PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

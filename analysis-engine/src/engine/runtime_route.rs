@@ -253,41 +253,67 @@ pub(super) fn fingerprint_request(request: &AnalyzeRequest) -> EngineResult<serd
     Ok(value)
 }
 
+#[derive(Debug)]
 pub(super) struct RoformerRoute {
     backend: &'static str,
     device_class: Option<&'static str>,
+}
+
+/// Maps a resolved backend and the caller's device-class preference to the
+/// worker backend and device class. The resolved backend decides which native
+/// runtime the shared worker loads; the device class only narrows the
+/// physical device inside that runtime and never authorizes a fallback.
+fn worker_route(
+    model_id: &str,
+    backend: uta_runtime_manager::NativeBackend,
+    requested_device: Option<uta_runtime_manager::NativeDeviceClass>,
+) -> EngineResult<RoformerRoute> {
+    use uta_runtime_manager::{NativeBackend, NativeDeviceClass};
+    let (backend, device_class) = match (backend, requested_device) {
+        (NativeBackend::Ggml, Some(NativeDeviceClass::Gpu)) => ("ggml_vulkan", Some("gpu")),
+        (NativeBackend::Ggml, Some(NativeDeviceClass::IntegratedGpu)) => {
+            ("ggml_vulkan", Some("integrated_gpu"))
+        }
+        (NativeBackend::Ggml, Some(NativeDeviceClass::Cpu)) => ("ggml_cpu", Some("cpu")),
+        (NativeBackend::Ggml, None) => ("ggml_vulkan", None),
+        (NativeBackend::LibtorchXpu, None | Some(NativeDeviceClass::Gpu)) => {
+            ("libtorch_xpu", Some("gpu"))
+        }
+        (NativeBackend::LibtorchXpu, Some(other)) => {
+            return Err(EngineError::new(
+                EngineErrorCode::RuntimeResolutionFailed,
+                format!(
+                    "model {model_id} selected the LibTorch XPU runtime, which executes only on the discrete Intel GPU; device class {other:?} has no LibTorch route and CPU is not a fallback"
+                ),
+            ));
+        }
+    };
+    Ok(RoformerRoute {
+        backend,
+        device_class,
+    })
 }
 
 pub(super) fn resolve_roformer_route(
     model: &uta_runtime_manager::ResolvedModel,
     request: &AnalyzeRequest,
 ) -> EngineResult<RoformerRoute> {
-    if model.backend != uta_runtime_manager::NativeBackend::Ggml
-        || model.runtime_id != "ggml_vulkan"
-    {
+    if model.runtime_id != model.backend.runtime_id() {
         return Err(EngineError::new(
             EngineErrorCode::RuntimeResolutionFailed,
             format!(
-                "model {} did not resolve to the GGML runtime",
-                model.model_id
+                "model {} resolved backend {:?} but runtime {}",
+                model.model_id, model.backend, model.runtime_id
             ),
         ));
     }
-    let (backend, device_class) = match request
-        .execution_policy
-        .requested_device_for(&model.model_id)
-    {
-        Some(uta_runtime_manager::NativeDeviceClass::Gpu) => ("ggml_vulkan", Some("gpu")),
-        Some(uta_runtime_manager::NativeDeviceClass::IntegratedGpu) => {
-            ("ggml_vulkan", Some("integrated_gpu"))
-        }
-        Some(uta_runtime_manager::NativeDeviceClass::Cpu) => ("ggml_cpu", Some("cpu")),
-        None => ("ggml_vulkan", None),
-    };
-    Ok(RoformerRoute {
-        backend,
-        device_class,
-    })
+    worker_route(
+        &model.model_id,
+        model.backend,
+        request
+            .execution_policy
+            .requested_device_for(&model.model_id),
+    )
 }
 
 pub(super) fn roformer_dispatch_config(
@@ -332,8 +358,18 @@ pub(super) fn pitch_dispatch(
     model_dispatch(model, request, "pitch")
 }
 
-pub(super) fn execution_device(_backend: uta_runtime_manager::NativeBackend) -> &'static str {
-    "ggml"
+pub(super) fn execution_device(backend: uta_runtime_manager::NativeBackend) -> &'static str {
+    match backend {
+        uta_runtime_manager::NativeBackend::Ggml => "ggml",
+        uta_runtime_manager::NativeBackend::LibtorchXpu => "xpu",
+    }
+}
+
+pub(super) fn backend_name(backend: uta_runtime_manager::NativeBackend) -> &'static str {
+    match backend {
+        uta_runtime_manager::NativeBackend::Ggml => "ggml",
+        uta_runtime_manager::NativeBackend::LibtorchXpu => "libtorch_xpu",
+    }
 }
 
 pub(super) fn resource_provenance(
@@ -346,10 +382,7 @@ pub(super) fn resource_provenance(
         runtime: resource.runtime_id.clone(),
         runtime_generation: resource.runtime_generation.clone(),
         runtime_recipe_digest: resource.runtime_recipe_digest.clone(),
-        backend: match resource.backend {
-            uta_runtime_manager::NativeBackend::Ggml => "ggml",
-        }
-        .to_string(),
+        backend: backend_name(resource.backend).to_string(),
         device: execution_device(resource.backend).to_string(),
     }
 }
@@ -462,6 +495,43 @@ mod tests {
     #[test]
     fn caller_transcript_text_is_empty_for_no_tokens() {
         assert_eq!(caller_transcript_text(&[]), "");
+    }
+
+    #[test]
+    fn worker_routes_follow_the_resolved_backend_without_fallback() {
+        use uta_runtime_manager::{NativeBackend, NativeDeviceClass};
+        let ggml = worker_route("rmvpe", NativeBackend::Ggml, None).unwrap();
+        assert_eq!((ggml.backend, ggml.device_class), ("ggml_vulkan", None));
+        let cpu = worker_route("rmvpe", NativeBackend::Ggml, Some(NativeDeviceClass::Cpu)).unwrap();
+        assert_eq!((cpu.backend, cpu.device_class), ("ggml_cpu", Some("cpu")));
+        let libtorch = worker_route("rmvpe", NativeBackend::LibtorchXpu, None).unwrap();
+        assert_eq!(
+            (libtorch.backend, libtorch.device_class),
+            ("libtorch_xpu", Some("gpu"))
+        );
+        let explicit = worker_route(
+            "rmvpe",
+            NativeBackend::LibtorchXpu,
+            Some(NativeDeviceClass::Gpu),
+        )
+        .unwrap();
+        assert_eq!(explicit.backend, "libtorch_xpu");
+        for device in [NativeDeviceClass::Cpu, NativeDeviceClass::IntegratedGpu] {
+            let error =
+                worker_route("rmvpe", NativeBackend::LibtorchXpu, Some(device)).unwrap_err();
+            assert_eq!(error.code, EngineErrorCode::RuntimeResolutionFailed);
+        }
+        let (component, config) = roformer_dispatch_config(
+            &libtorch,
+            std::path::Path::new("/models/rmvpe.gguf"),
+            "pitch",
+        )
+        .unwrap();
+        assert_eq!(component, "uta-ggml-worker");
+        assert_eq!(config["backend"], "libtorch_xpu");
+        assert_eq!(config["device_class"], "gpu");
+        assert_eq!(backend_name(NativeBackend::LibtorchXpu), "libtorch_xpu");
+        assert_eq!(execution_device(NativeBackend::LibtorchXpu), "xpu");
     }
 
     #[test]

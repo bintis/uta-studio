@@ -69,7 +69,10 @@ pub fn parse_basic_pitch_evidence(
     if raw.schema_version != 1
         || raw.model_id != "basic_pitch"
         || raw.model_gguf_size_bytes != 144_512
-        || !matches!(raw.backend.as_str(), "ggml_cpu" | "ggml_vulkan")
+        || !matches!(
+            raw.backend.as_str(),
+            "ggml_cpu" | "ggml_vulkan" | "libtorch_xpu"
+        )
         || raw.sample_rate != 22_050
         || raw.window_samples != 43_844
         || raw.window_hop_samples != 36_164

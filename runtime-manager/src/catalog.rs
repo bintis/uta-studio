@@ -6,18 +6,34 @@ use sha2::{Digest, Sha256};
 
 use crate::error::{RuntimeManagerError, RuntimeManagerResult};
 use crate::resource::{ModelId, ResourceKind, ResourceRef};
-use crate::runtime_lock::{FCPE_GGUF_SHA256, FCPE_GGUF_SIZE_BYTES, GGML_RUNTIME_RECIPE_SHA256};
+use crate::runtime_lock::{
+    FCPE_GGUF_SHA256, FCPE_GGUF_SIZE_BYTES, GGML_RUNTIME_RECIPE_SHA256,
+    LIBTORCH_XPU_RUNTIME_RECIPE_SHA256,
+};
 use crate::state::ValidationState;
 
 pub const RUNTIME_CATALOG_VERSION: &str = "ggml";
 const GGML_COMMIT: &str = "8c63e70982c95ceb862e3a1073a2c1beef75d60a";
 
-/// Model execution is uniformly owned by GGML. Hardware selection is carried
-/// separately by [`NativeDeviceClass`]; it is not a second model runtime.
+/// Every catalog model has two explicit execution routes: the pinned default
+/// GGML Vulkan runtime and the native LibTorch XPU runtime. Hardware class
+/// selection is carried separately by [`NativeDeviceClass`]; a backend is an
+/// explicit selection, never a fallback for the other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NativeBackend {
     Ggml,
+    LibtorchXpu,
+}
+
+impl NativeBackend {
+    /// The runtime resource id that executes this backend.
+    pub fn runtime_id(self) -> &'static str {
+        match self {
+            Self::Ggml => GGML_RUNTIME_ID,
+            Self::LibtorchXpu => LIBTORCH_XPU_RUNTIME_ID,
+        }
+    }
 }
 
 impl FromStr for NativeBackend {
@@ -26,6 +42,7 @@ impl FromStr for NativeBackend {
     fn from_str(value: &str) -> RuntimeManagerResult<Self> {
         match value {
             "ggml" | "ggml_vulkan" | "vulkan" => Ok(Self::Ggml),
+            "libtorch_xpu" | "libtorch" | "xpu" => Ok(Self::LibtorchXpu),
             other => Err(RuntimeManagerError::new(
                 "invalid_backend",
                 format!("unknown execution backend: {other}"),
@@ -33,6 +50,35 @@ impl FromStr for NativeBackend {
         }
     }
 }
+
+pub const GGML_RUNTIME_ID: &str = "ggml_vulkan";
+pub const LIBTORCH_XPU_RUNTIME_ID: &str = "libtorch_xpu";
+/// Relative path of the native LibTorch library inside its installed runtime
+/// directory. The worker loads exactly this file; Runtime Manager reports the
+/// runtime as missing while it is absent.
+pub const LIBTORCH_XPU_NATIVE_LIBRARY: &str = "lib/libuta_libtorch.so";
+
+/// Every model resource both runtimes execute, in catalog order.
+const CATALOG_MODEL_IDS: [&str; 18] = [
+    "bs_roformer_leap_xe90_vocals",
+    "bs_roformer_leap_xe90_instrumental",
+    "bs_polarformer_public_instrumental",
+    "melband_roformer_harmony",
+    "melband_roformer_denoise_aufr33",
+    "melband_roformer_dereverb_anvuew",
+    "rmvpe",
+    "fcpe",
+    "basic_pitch",
+    "game_1_0_3_small",
+    "game_1_0_3_medium",
+    "game_1_0_3_large",
+    "jbm555_cectc_80",
+    "stars",
+    "rosvot",
+    "firered_asr2_aed",
+    "qwen3_asr_1_7b",
+    "qwen3_forced_aligner_0_6b",
+];
 
 /// Device-class preference for a GGML execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,6 +239,11 @@ pub struct RuntimeCatalogEntry {
     pub supported_models: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recipe_digest: Option<String>,
+    /// Native shared library the worker loads for this runtime, relative to
+    /// the runtime's installed directory. Absent for runtimes the worker
+    /// validates entirely by itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_library: Option<String>,
 }
 
 impl RuntimeCatalogEntry {
@@ -316,31 +367,13 @@ impl ResourceCatalog {
 
     fn add_runtimes(&mut self) -> RuntimeManagerResult<()> {
         self.insert_runtime(ggml_runtime(
-            "ggml_vulkan",
+            GGML_RUNTIME_ID,
             "GGML model runtime",
             "uta-ggml-worker",
-            &[
-                "bs_roformer_leap_xe90_vocals",
-                "bs_roformer_leap_xe90_instrumental",
-                "bs_polarformer_public_instrumental",
-                "melband_roformer_harmony",
-                "melband_roformer_denoise_aufr33",
-                "melband_roformer_dereverb_anvuew",
-                "rmvpe",
-                "fcpe",
-                "basic_pitch",
-                "game_1_0_3_small",
-                "game_1_0_3_medium",
-                "game_1_0_3_large",
-                "jbm555_cectc_80",
-                "stars",
-                "rosvot",
-                "firered_asr2_aed",
-                "qwen3_asr_1_7b",
-                "qwen3_forced_aligner_0_6b",
-            ],
+            &CATALOG_MODEL_IDS,
             GGML_RUNTIME_RECIPE_SHA256,
         ))?;
+        self.insert_runtime(libtorch_xpu_runtime(&CATALOG_MODEL_IDS))?;
         Ok(())
     }
 
@@ -497,6 +530,17 @@ fn backend() -> BackendCapability {
     }
 }
 
+/// Native LibTorch XPU route. Production pinning was authorized on 2026-09-11
+/// after all eighteen resources completed the real full-song XPU execution
+/// recorded in `docs/LIBTORCH_XPU_FULLSONG_RESULTS.md`.
+fn libtorch_backend() -> BackendCapability {
+    BackendCapability {
+        backend: NativeBackend::LibtorchXpu,
+        validation: ValidationState::ProductionPinned,
+        evidence_id: Some("validation:libtorch-xpu-fullsong-real-2026-09-11".to_string()),
+    }
+}
+
 fn ggml_runtime(
     id: &str,
     name: &str,
@@ -516,6 +560,27 @@ fn ggml_runtime(
         executable_component_id: component.to_string(),
         supported_models: models.iter().map(|model| (*model).to_string()).collect(),
         recipe_digest: Some(recipe.to_string()),
+        native_library: None,
+    }
+}
+
+/// The native LibTorch XPU runtime shares the packaged worker executable with
+/// GGML; the worker loads the installed native library instead of the GGML
+/// shared libraries when a task selects this runtime.
+fn libtorch_xpu_runtime(models: &[&str]) -> RuntimeCatalogEntry {
+    RuntimeCatalogEntry {
+        id: LIBTORCH_XPU_RUNTIME_ID.to_string(),
+        display_name: "LibTorch XPU native runtime".to_string(),
+        purpose: "Rust-hosted native ATen execution on the selected Intel XPU device".to_string(),
+        backends: vec![libtorch_backend()],
+        acquisition: vec![acquisition(
+            AcquisitionMethod::LocalImport,
+            "installed native LibTorch XPU runtime directory",
+        )],
+        executable_component_id: "uta-ggml-worker".to_string(),
+        supported_models: models.iter().map(|model| (*model).to_string()).collect(),
+        recipe_digest: Some(LIBTORCH_XPU_RUNTIME_RECIPE_SHA256.to_string()),
+        native_library: Some(LIBTORCH_XPU_NATIVE_LIBRARY.to_string()),
     }
 }
 
@@ -567,8 +632,11 @@ fn ggml_model(
             },
             "GGUF model for the pinned GGML runtime",
         )],
-        dependencies: vec![ResourceRef::runtime(runtime)?],
-        backends: vec![backend()],
+        dependencies: vec![
+            ResourceRef::runtime(runtime)?,
+            ResourceRef::runtime(LIBTORCH_XPU_RUNTIME_ID)?,
+        ],
+        backends: vec![backend(), libtorch_backend()],
         pinned_backend: Some(NativeBackend::Ggml),
         estimated_download_bytes: download_bytes,
         estimated_installed_bytes: installed_bytes,
@@ -1210,24 +1278,41 @@ mod tests {
     fn catalog_contains_every_implemented_ggml_model() {
         let catalog = ResourceCatalog::default_catalog().unwrap();
         assert_eq!(catalog.models.len(), 18);
-        assert_eq!(catalog.runtimes.len(), 1);
+        assert_eq!(catalog.runtimes.len(), 2);
         for model in catalog.models.values() {
-            assert_eq!(model.backends, vec![backend()]);
+            assert_eq!(model.backends, vec![backend(), libtorch_backend()]);
             assert_eq!(model.pinned_backend, Some(NativeBackend::Ggml));
-            assert!(
-                model
-                    .dependencies
-                    .iter()
-                    .any(|dependency| dependency == &ResourceRef::runtime("ggml_vulkan").unwrap())
+            for runtime in [GGML_RUNTIME_ID, LIBTORCH_XPU_RUNTIME_ID] {
+                assert!(
+                    model
+                        .dependencies
+                        .iter()
+                        .any(|dependency| dependency == &ResourceRef::runtime(runtime).unwrap()),
+                    "{} lacks {runtime}",
+                    model.id.as_str()
+                );
+            }
+        }
+        for runtime in [GGML_RUNTIME_ID, LIBTORCH_XPU_RUNTIME_ID] {
+            assert_eq!(
+                catalog.runtime(runtime).unwrap().supported_models.len(),
+                catalog.models.len()
             );
         }
+        let libtorch = catalog.runtime(LIBTORCH_XPU_RUNTIME_ID).unwrap();
         assert_eq!(
-            catalog
-                .runtime("ggml_vulkan")
-                .unwrap()
-                .supported_models
-                .len(),
-            catalog.models.len()
+            libtorch.native_library.as_deref(),
+            Some(LIBTORCH_XPU_NATIVE_LIBRARY)
+        );
+        assert_eq!(libtorch.executable_component_id, "uta-ggml-worker");
+        assert_eq!(NativeBackend::LibtorchXpu.runtime_id(), libtorch.id);
+        assert_eq!(
+            "libtorch_xpu".parse::<NativeBackend>().unwrap(),
+            NativeBackend::LibtorchXpu
+        );
+        assert_eq!(
+            serde_json::to_value(NativeBackend::LibtorchXpu).unwrap(),
+            serde_json::json!("libtorch_xpu")
         );
         for id in [
             "basic_pitch",

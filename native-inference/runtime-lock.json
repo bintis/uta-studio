@@ -2,7 +2,11 @@
   "policy": {
     "execution_backend": "ggml",
     "fallback": "none",
-    "model_format": "gguf"
+    "model_format": "gguf",
+    "selectable_backends": [
+      "ggml_vulkan",
+      "libtorch_xpu"
+    ]
   },
   "components": {
     "ggml_vulkan": {
@@ -13,8 +17,19 @@
       "model_format": "gguf",
       "model_runtime_language": "rust",
       "shared_libraries_only": true
+    },
+    "libtorch_xpu": {
+      "runtime_repository": "pytorch/pytorch",
+      "runtime_release": "2.13.0+xpu",
+      "runtime_index": "https://download.pytorch.org/whl/xpu",
+      "build_recipe": "native-inference/libtorch-runtime/runtime-recipe.json",
+      "backend": "xpu_explicit_no_fallback",
+      "model_format": "gguf",
+      "model_runtime_language": "rust",
+      "native_library": "lib/libuta_libtorch.so",
+      "shared_libraries_only": true
     }
   },
-  "status": "GGML_SHARED_LIBRARY_ONLY",
+  "status": "GGML_DEFAULT_WITH_EXPLICIT_LIBTORCH_XPU",
   "repository": "bintis/uta-studio"
 }

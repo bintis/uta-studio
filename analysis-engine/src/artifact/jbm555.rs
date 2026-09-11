@@ -90,7 +90,10 @@ impl Jbm555Evidence {
             || self.source_duration == 0
             || identities.iter().any(|identity| !valid_identity(identity))
             || !valid_dependency_text(&self.vocal_preparation_generation)
-            || !matches!(self.backend.as_str(), "ggml_cpu" | "ggml_vulkan")
+            || !matches!(
+                self.backend.as_str(),
+                "ggml_cpu" | "ggml_vulkan" | "libtorch_xpu"
+            )
             || self.frontend_profile != JBM555_FRONTEND_PROFILE
             || self.decode_profile != JBM555_DECODE_PROFILE
             || (self.onset_threshold - JBM555_ONSET_THRESHOLD).abs() > f32::EPSILON
