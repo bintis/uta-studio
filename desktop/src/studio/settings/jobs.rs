@@ -35,6 +35,8 @@ pub(crate) fn poll_cache_stats(
 ) {
     if cache_stats.log_refresh && cache_stats.log_receiver.is_none() {
         cache_stats.log_refresh = false;
+        cache_stats.log_error = None;
+        invalidated.invalidate(UiDirtyRegion::Settings);
         let (sender, receiver) = mpsc::channel();
         cache_stats.log_receiver = Some(Mutex::new(receiver));
         std::thread::spawn(move || {
