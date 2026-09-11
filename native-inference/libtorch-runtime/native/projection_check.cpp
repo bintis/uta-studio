@@ -2,8 +2,10 @@
 #include <ATen/Context.h>
 #include <ATen/Parallel.h>
 #include <c10/core/InferenceMode.h>
+#include <chrono>
 #include <iomanip>
 #include <iostream>
+#include <thread>
 
 namespace {
 void synchronize_tile() {
@@ -11,6 +13,7 @@ void synchronize_tile() {
     const auto status = hipDeviceSynchronize();
     if (status != hipSuccess)
         throw std::runtime_error(std::string("ROCm projection tile synchronization failed: ") + hipGetErrorString(status));
+    std::this_thread::sleep_for(std::chrono::microseconds(100));
 #endif
 }
 at::Tensor fixture(at::IntArrayRef shape, double phase) {
