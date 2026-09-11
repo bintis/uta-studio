@@ -550,7 +550,8 @@ The axis-view normalization probe also found no material gain; no model axis
 copy was removed. Evidence: `selected-fullsong-comparison.json` and
 `norm-axis-full-check/`.
 
-**Final active source:** `71c0ad0`; fresh private build `selected-build`.
+**Prior handoff source:** `71c0ad0`; fresh private build `selected-build`.
+The later CPU optimization below supersedes its no-further-execution plan.
 The active model operations match retained `gating-build`; no GELU/residual
 post-op, TF32 trial or paired value-copy routing remains. Current CPU primitives,
 ABI and **55 Rust tests** pass (`20260910T221000-8f26c62c9a55`). A 68.10%
@@ -580,6 +581,26 @@ exists. First expose existing native upload/compute/readback timings and host
 frontend phases; GPU migration benefit is **not measured**. Preserve numerical
 ordering and all safety/precision scope. See the CPU/XMX review section of the
 comparison document and `cpu-accounting-review.json` / `dispatch-frontend-review.json`.
+
+The subsequent optimization authorization implements frontend profiling (`02cf2e5`),
+exact-bit tiled packing (`6ac6ae3`/`84c9588`) and native process-CPU attribution
+(`bd00534`). The 38-chunk baseline spends 68.628 of 73.457 seconds inside native
+compute. CPU-only ABBA packing improves roughly 12.5 → 9.1 ms; regressed mask
+strips are withdrawn (`7ca004b`). 59 LibTorch tests, four GGML frame tests and
+CPU ABI/primitive checks pass. Existing per-operator fences are unchanged.
+
+**Current model source `0b76748`, private `event-build`:** bounded measurements
+locate 1.968515 CPU seconds inside the original 1.97310-second final wait of a
+steady chunk. A tested non-profiling XPU completion event now permits short
+CPU sleeps before the still-required full-device synchronization. Only
+RoFormer is routed; query errors propagate, with no retry, fallback, concurrent
+execution or changed arithmetic/cancellation checks. The bounded candidate uses
+0.045115 CPU seconds in 1.93321 s forward wall; full-output SNR is 143.13503 dB
+against the matched packed frontend, max 2.384185791e-7 over 1,058,400 finite
+samples. Full-song CPU/waveform comparison remains pending. This is not a new
+sub-60-second, listening, family-wide or host-stability qualification. See the
+CPU optimization section of `docs/ROFORMER_B580_LIBTORCH_XPU.md`, including the
+CPU-build outer-timeout provenance and `event-bounded-comparison.json`.
 
 Kernel journal review is unavailable due to permissions
 (`20260910T205622-b1bff200266f`); do not claim absence of GPU reset from boot IDs.

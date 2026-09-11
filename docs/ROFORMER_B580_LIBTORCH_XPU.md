@@ -535,7 +535,8 @@ assets are untouched, and this is not production or release acceptance.
 
 ### CPU accounting and XMX evidence review (2026-09-11)
 
-This is a **read-only review**, not another inference or hardware-counter run.
+This initial **read-only review** preceded the subsequently authorized CPU
+optimization below; it was not an inference or hardware-counter run.
 `cpu-accounting-review.json` reprocesses the saved observer records. In the
 retained `fullsong-gating` case, PID 1648245 consumed 58.59 user + 7.29 system CPU
 seconds over 66.64134 sampled wall seconds: **98.86% of one logical CPU**, or
@@ -607,3 +608,62 @@ Evidence: `dispatch-frontend-review.json`; review operations
 `20260911T041717-2c7b8615987f`, `20260911T041948-6739ceccd05d`, and
 `20260911T042300-df63963162b0`. The initial empty inspection did not forward stdin;
 `20260911T041537-f53bfb18c28a` explicitly corrected the command without a GPU retry.
+
+### CPU frontend and completion optimization (2026-09-11)
+
+The subsequent request authorized implementation and bounded execution.
+`02cf2e5` exposes opt-in `UTA_STUDIO_STAGE_PROFILE=1` frontend stages plus
+existing upload/compute/readback timing, with no extra per-operator fences.
+`ffi_other` is the native-call remainder, **not exclusively copying**. The
+38-chunk `frontend-full-control` measured 73.457 s wall: 68.628 s native compute
+(93.4%), 0.730 s STFT, 0.856 s packing, 0.417 s mask reconstruction, 0.912 s iSTFT,
+0.493 s OLA, 0.189 s upload and 0.379 s readback. Native compute still includes
+submission and synchronized waiting, not just GPU kernel execution. These
+measurements do not support recovering the entire process CPU time by moving
+DSP onto the GPU, nor do they establish a sub-60-second GPU frontend solution.
+
+`6ac6ae3`/`84c9588` retain 32-frame-strip feature packing with exact storage-bit
+fixtures (tails, repeated/reordered frequencies, signed zero and NaN payloads).
+A CPU full-shape ABBA diagnostic (`311400f`, 1,722 frames / 1,025 frequencies /
+7,060,200 values) measured approximately **12.5 → 9.1 ms** packing. Mask strips
+regressed **20.6 → 30.5 ms** despite exact ordered sums; `7ca004b` restores the
+original mask traversal. The rejected mask path remains diagnostic-only;
+`tiled-frontend-profile` is not the selected implementation. Current Rust checks
+pass **59 LibTorch tests** (one explicitly ignored CPU diagnostic) plus four
+shared GGML frame tests; CPU ABI/primitive checks pass.
+
+`bd00534` adds OFF-by-default `UTA_STUDIO_LIBTORCH_PROFILE_SUBMISSION=1`, measuring
+process CPU/wall time around `Plan.forward` and the **existing** final synchronize.
+In `submission-profile`, the second chunk submitted in **0.023884 s wall /
+0.023804 s CPU**, then consumed **1.968515 CPU seconds in 1.97310 s of final
+completion waiting**. This directly locates almost a core of CPU consumption
+in that wait boundary; it does not identify the precise driver stack frame.
+No `perf`/stack profiler is available; driver settings were not changed.
+
+`488d5fc` tests a C10 non-profiling completion event on the current XPU stream,
+querying already-submitted work and sleeping one millisecond between unfinished
+queries. This is not host-idleness polling, a launch gate, work resubmission or
+a hardware-counter experiment. `0b76748` routes it only at RoFormer mask/spectrum
+returns. **The original API full-device synchronization remains afterwards**, so
+other streams and asynchronous errors retain their completion boundary. Other
+model plans, CPU/ROCm paths, cancellation checks, precision, shapes, context and
+ordered audio processing are unchanged. Query errors propagate without retry.
+The wait is now included in `forward_wall`; that field is not pure submission.
+
+CPU fake-query/error sequencing and three tiny XPU output checks pass. The
+bounded real XE90 candidate's second chunk consumes **0.045115 CPU seconds in
+1.93321 s forward wall**, followed by 0.000094 CPU seconds in the final sync.
+First-use compilation still costs CPU; this is not zero-CPU inference.
+`event-bounded-comparison.json` compares all **1,058,400 finite samples** against
+the same packed-frontend submission control: max **2.384185791e-7**, SNR
+**143.13503 dB**; not bitwise or listening qualification. Full-song CPU/waveform
+comparison is pending; the historical selected 64.52598 s result remains the
+best qualified throughput evidence, not a new event-wait speed measurement.
+
+Operation `20260911T053717-1f58fd1f332b` exceeded the outer tool deadline while
+Nix restored missing pinned cache paths. Its already-started CPU build continued;
+no retry or termination was issued. The outer result/exit code remains unknown.
+`20260911T054059-028781ff4109` observed the child absent and retained CPU primitive
+success text; this does not recreate the missing result. Fresh model build/CPU
+ABI completion is recorded in `20260911T054238-36d5cf6fe7ff`. No installation,
+power/clock/security changes, reset-absence or post-exit stability claim.
