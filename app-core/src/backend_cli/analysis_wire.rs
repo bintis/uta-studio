@@ -673,6 +673,8 @@ pub struct AnalysisDiagnosticsWire {
     #[serde(default)]
     pub audio_quality: Option<AudioQualityReportWire>,
     #[serde(default)]
+    pub separation_quality: Vec<super::SeparationQualityEvidenceWire>,
+    #[serde(default)]
     pub evidence: serde_json::Value,
 }
 

@@ -354,6 +354,13 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
     ),
     capability!(
         "analysis",
+        "inspect_separation_quality",
+        "read",
+        true,
+        "Inspect exact run/node separation measurements without decoding audio or inventing reference scores"
+    ),
+    capability!(
+        "analysis",
         "load_analysis_node_attempts",
         "read",
         true,

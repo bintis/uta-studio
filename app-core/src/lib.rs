@@ -31,6 +31,7 @@ mod lyrics;
 mod lyrics_sources;
 mod runtime_presentation;
 mod scanner;
+mod separation_inspection;
 mod song;
 mod source;
 mod ultrastar_export;
@@ -82,6 +83,8 @@ pub use analyzer::{
     remove_analysis_queue_item, remove_song_from_library, resolve_song_authoring_state,
     start_queued_analysis, stop_analysis_run,
 };
+pub use separation_inspection::{SeparationInspection, inspect_separation_quality};
+pub use backend_cli::{SeparatedStemMeasurementWire, SeparationQualityEvidenceWire};
 pub use api::{API_CAPABILITIES, ApiCapability, api_capabilities};
 pub use applog::{LogLine, get_log_path, get_recent_logs, log_lines_in_window, record_log_text};
 pub use artifact_workbench::{
