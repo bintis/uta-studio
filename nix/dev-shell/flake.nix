@@ -101,11 +101,8 @@
             export UTA_STUDIO_PYTORCH_RELEASE="${pytorchRelease}"
             export UTA_STUDIO_ROCM_ARCHITECTURE="${rocmArchitecture}"
             export UTA_STUDIO_ROCM_WHEEL_INDEX="${rocmWheelIndex}"
-            # On gfx1103, one-sided/asynchronous kernel submission repeatedly
-            # reset the device during real RoFormer work. ROCm's bidirectional
-            # kernel fence completed the same full workload without changing
-            # its GPU-only graph or arithmetic.
-            export AMD_SERIALIZE_KERNEL=3
+            # On gfx1103, real RoFormer work uses code-owned synchronized,
+            # paced HIP submissions without changing its GPU-only arithmetic.
             export UTA_STUDIO_LIBTORCH_STAGE_SYNC=1
             export UTA_STUDIO_LIBTORCH_STAGE_PACING=1
             export UTA_STUDIO_ROCM_ENVIRONMENT="''${UTA_STUDIO_ROCM_ENVIRONMENT:-$PWD/test-artifacts/libtorch-rocm/runtime}"

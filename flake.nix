@@ -54,6 +54,9 @@
             };
             nativeBuildInputs = with pkgs; [ cmake ninja unzip ];
             dontUnpack = true;
+            # The CMake hook must not configure the source before the archives
+            # are unpacked; the build phase configures explicitly.
+            dontConfigure = true;
             # The archives' libraries keep their own load layout; stripping or
             # rewriting them is neither needed nor safe.
             dontStrip = true;
