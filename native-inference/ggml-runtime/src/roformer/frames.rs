@@ -178,6 +178,10 @@ pub(super) fn reflect_pad_track(input: &[f32], amount: usize) -> Vec<f32> {
 }
 
 #[cfg(test)]
+#[path = "frontend_bench.rs"]
+mod frontend_bench;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
