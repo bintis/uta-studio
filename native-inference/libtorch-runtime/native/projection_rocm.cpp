@@ -154,7 +154,7 @@ void launch_projection(
         0, static_cast<hipStream_t>(stream_pointer), arguments, nullptr),
         "ROCm projection kernel launch failed");
     check_hip(hipDeviceSynchronize(), "ROCm projection kernel synchronization failed");
-    std::this_thread::sleep_for(std::chrono::microseconds(100));
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
 }
 } // namespace
 

@@ -53,8 +53,8 @@ inline int64_t bounded_projection_row_tile(const at::Tensor& weight) {
     // Real gfx1103 execution requires small, synchronized dispatches even
     // when total contraction work would permit a larger GEMM. Every row and
     // every reduction channel remains present in the resulting tiles.
-    constexpr int64_t maximum_rows = 64;
-    constexpr int64_t maximum_multiply_accumulates = 64LL * 384 * 1536;
+    constexpr int64_t maximum_rows = 256;
+    constexpr int64_t maximum_multiply_accumulates = 256LL * 384 * 1536;
     if (weight.size(0) > maximum_multiply_accumulates / weight.size(1)) return 1;
     const auto work_per_row = weight.size(0) * weight.size(1);
     return std::max<int64_t>(1, std::min<int64_t>(maximum_rows, maximum_multiply_accumulates / work_per_row));
