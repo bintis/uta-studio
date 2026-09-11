@@ -61,9 +61,7 @@ impl StorePaths {
             .ok()
             .and_then(|executable| executable.parent().map(Path::to_path_buf));
         let configured = std::env::var_os("UTA_STUDIO_GGML_RUNTIME_PATH").map(PathBuf::from);
-        let packaged = executable_directory
-            .as_deref()
-            .and_then(|directory| sibling_executable(directory, "uta-ggml-worker"));
+        let packaged = discover_packaged_worker(executable_directory.as_deref());
         if let Some(path) = configured.or(packaged) {
             // The one packaged worker executes both native runtimes; register
             // it under its component id so every runtime that names that
@@ -390,6 +388,39 @@ fn sibling_executable(directory: &Path, executable_name: &str) -> Option<PathBuf
     };
     let path = directory.join(filename);
     executable_file(&path).then_some(path)
+}
+
+fn discover_packaged_worker(executable_directory: Option<&Path>) -> Option<PathBuf> {
+    if let Some(directory) = executable_directory {
+        if let Some(path) = sibling_executable(directory, "uta-ggml-worker") {
+            return Some(path);
+        }
+        if let Some(parent) = directory.parent() {
+            for candidate_directory in [
+                parent.join("release"),
+                parent.join("debug"),
+                parent.join("bin"),
+            ] {
+                if let Some(path) = sibling_executable(&candidate_directory, "uta-ggml-worker") {
+                    return Some(path);
+                }
+            }
+        }
+    }
+    if let Some(paths) = std::env::var_os("PATH") {
+        let filename = if cfg!(windows) {
+            "uta-ggml-worker.exe"
+        } else {
+            "uta-ggml-worker"
+        };
+        for dir in std::env::split_paths(&paths) {
+            let candidate = dir.join(filename);
+            if executable_file(&candidate) {
+                return Some(candidate);
+            }
+        }
+    }
+    None
 }
 
 fn discover_fusion_adapter_on_path() -> Option<PathBuf> {

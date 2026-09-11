@@ -21,13 +21,25 @@ pub fn discover_executable(variable: &str, name: &str) -> Result<PathBuf, Backen
     } else {
         name.to_string()
     };
-    if let Some(path) = std::env::current_exe()
-        .ok()
-        .and_then(|executable| executable.parent().map(Path::to_path_buf))
-        .map(|directory| directory.join(&executable_name))
-        .filter(|path| executable_file(path))
-    {
-        return Ok(path);
+    if let Some(executable) = std::env::current_exe().ok() {
+        if let Some(directory) = executable.parent() {
+            let candidate = directory.join(&executable_name);
+            if executable_file(&candidate) {
+                return Ok(candidate);
+            }
+            if let Some(parent) = directory.parent() {
+                for candidate_directory in [
+                    parent.join("release"),
+                    parent.join("debug"),
+                    parent.join("bin"),
+                ] {
+                    let candidate = candidate_directory.join(&executable_name);
+                    if executable_file(&candidate) {
+                        return candidate.canonicalize().map_err(BackendCliError::from);
+                    }
+                }
+            }
+        }
     }
     if let Some(path) = std::env::var_os("PATH")
         .into_iter()
@@ -38,8 +50,14 @@ pub fn discover_executable(variable: &str, name: &str) -> Result<PathBuf, Backen
         return Ok(path);
     }
     for candidate in [
+        PathBuf::from("target/release").join(&executable_name),
+        PathBuf::from("../target/release").join(&executable_name),
         PathBuf::from("target/debug").join(&executable_name),
         PathBuf::from("../target/debug").join(&executable_name),
+        PathBuf::from("target/bin").join(&executable_name),
+        PathBuf::from("../target/bin").join(&executable_name),
+        PathBuf::from("result/bin").join(&executable_name),
+        PathBuf::from("../result/bin").join(&executable_name),
     ] {
         if executable_file(&candidate) {
             return candidate.canonicalize().map_err(BackendCliError::from);

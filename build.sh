@@ -62,4 +62,15 @@ done
 rm -f "$repo_root/result"
 ln -s target "$repo_root/result"
 
+# If target/debug exists, keep its executable symlinks aligned with the
+# fresh, patched binaries so running target/debug/uta-studio directly
+# succeeds with all workers, tools, and RPATH available.
+if [ -d "$repo_root/target/debug" ]; then
+    for binary in "$repo_root/target/release"/uta-*; do
+        if [ -f "$binary" ] && [ -x "$binary" ]; then
+            ln -sf "$binary" "$repo_root/target/debug/$(basename "$binary")"
+        fi
+    done
+fi
+
 printf '\nBuilt Studio and packaged protocols in: %s\n' "$repo_root/target/release"
