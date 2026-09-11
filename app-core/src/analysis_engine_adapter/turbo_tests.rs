@@ -19,10 +19,13 @@ fn super_acceleration_is_captured_in_the_exact_request() {
         lyrics: StudioLyricsContext::default(),
         target_override: Some(AnalysisDefaultTarget::PitchEvidence),
         requested_outputs: None,
-        compute_backend: None,
-        model_backend_overrides: BTreeMap::new(),
+        compute_backend: Some("libtorch_xpu".to_string()),
+        model_backend_overrides: BTreeMap::from([("rmvpe".to_string(), "ggml".to_string())]),
         default_device_class: Some("gpu".to_string()),
-        model_device_overrides: BTreeMap::new(),
+        model_device_overrides: BTreeMap::from([(
+            "rmvpe".to_string(),
+            "integrated_gpu".to_string(),
+        )]),
     };
     let accelerated = compile_analyze_request(intent.clone(), &settings).unwrap();
     let mut ordinary_intent = intent;
@@ -35,9 +38,35 @@ fn super_acceleration_is_captured_in_the_exact_request() {
         ordinary.requested_artifacts
     );
     assert_eq!(accelerated.analysis, ordinary.analysis);
+    assert_eq!(accelerated.execution_policy.requested_backend, None);
+    assert!(
+        accelerated
+            .execution_policy
+            .model_backend_overrides
+            .is_empty()
+    );
+    assert_eq!(accelerated.execution_policy.requested_device, None);
+    assert!(
+        accelerated
+            .execution_policy
+            .model_device_overrides
+            .is_empty()
+    );
     assert_eq!(
-        accelerated.execution_policy.requested_device,
+        ordinary.execution_policy.requested_backend,
+        Some(NativeBackendWire::LibtorchXpu)
+    );
+    assert_eq!(
+        ordinary.execution_policy.requested_device,
         Some(DeviceClassWire::Gpu)
+    );
+    assert_eq!(
+        ordinary.execution_policy.model_backend_overrides["rmvpe"],
+        NativeBackendWire::Ggml
+    );
+    assert_eq!(
+        ordinary.execution_policy.model_device_overrides["rmvpe"],
+        DeviceClassWire::IntegratedGpu
     );
     let exact = serde_json::to_value(&accelerated).unwrap();
     assert_eq!(exact["execution_policy"]["turbo_acceleration"], true);

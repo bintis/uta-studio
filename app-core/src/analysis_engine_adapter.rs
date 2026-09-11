@@ -690,56 +690,75 @@ pub fn compile_analyze_request(
         execution_policy: ExecutionPolicyWire {
             turbo_acceleration: intent.turbo_acceleration,
             runtime_policy: RuntimePolicyWire::Production,
-            requested_backend: match intent.compute_backend.as_deref() {
-                None | Some("auto") => None,
-                Some(configured) => {
-                    Some(NativeBackendWire::parse_setting(configured).ok_or_else(|| {
-                        format!("unsupported analysis compute backend: {configured}")
-                    })?)
+            // Super mode owns placement. Manual choices remain persisted in
+            // AppConfig and become active again when the mode is disabled,
+            // but they are deliberately absent from this exact request.
+            requested_backend: if intent.turbo_acceleration {
+                None
+            } else {
+                match intent.compute_backend.as_deref() {
+                    None | Some("auto") => None,
+                    Some(configured) => {
+                        Some(NativeBackendWire::parse_setting(configured).ok_or_else(|| {
+                            format!("unsupported analysis compute backend: {configured}")
+                        })?)
+                    }
                 }
             },
-            model_backend_overrides: intent
-                .model_backend_overrides
-                .into_iter()
-                .map(|(model_id, backend)| {
-                    if !valid_identifier(&model_id) {
-                        return Err(format!("invalid model backend override id: {model_id}"));
-                    }
-                    let backend = NativeBackendWire::parse_setting(&backend).ok_or_else(|| {
-                        format!("unsupported backend {backend} for model {model_id}")
-                    })?;
-                    Ok((model_id, backend))
-                })
-                .collect::<Result<_, String>>()?,
-            requested_device: match intent.default_device_class.as_deref() {
-                None => None,
-                Some("cpu") => Some(DeviceClassWire::Cpu),
-                Some("gpu") => Some(DeviceClassWire::Gpu),
-                Some("integrated_gpu") => Some(DeviceClassWire::IntegratedGpu),
-                Some(other) => {
-                    return Err(format!("unsupported analysis device class: {other}"));
-                }
-            },
-            model_device_overrides: intent
-                .model_device_overrides
-                .into_iter()
-                .map(|(model_id, device)| {
-                    if !valid_identifier(&model_id) {
-                        return Err(format!("invalid model device override id: {model_id}"));
-                    }
-                    let device = match device.as_str() {
-                        "cpu" => DeviceClassWire::Cpu,
-                        "gpu" => DeviceClassWire::Gpu,
-                        "integrated_gpu" => DeviceClassWire::IntegratedGpu,
-                        other => {
-                            return Err(format!(
-                                "unsupported device class {other} for model {model_id}"
-                            ));
+            model_backend_overrides: if intent.turbo_acceleration {
+                BTreeMap::new()
+            } else {
+                intent
+                    .model_backend_overrides
+                    .into_iter()
+                    .map(|(model_id, backend)| {
+                        if !valid_identifier(&model_id) {
+                            return Err(format!("invalid model backend override id: {model_id}"));
                         }
-                    };
-                    Ok((model_id, device))
-                })
-                .collect::<Result<_, String>>()?,
+                        let backend = NativeBackendWire::parse_setting(&backend).ok_or_else(|| {
+                            format!("unsupported backend {backend} for model {model_id}")
+                        })?;
+                        Ok((model_id, backend))
+                    })
+                    .collect::<Result<_, String>>()?
+            },
+            requested_device: if intent.turbo_acceleration {
+                None
+            } else {
+                match intent.default_device_class.as_deref() {
+                    None => None,
+                    Some("cpu") => Some(DeviceClassWire::Cpu),
+                    Some("gpu") => Some(DeviceClassWire::Gpu),
+                    Some("integrated_gpu") => Some(DeviceClassWire::IntegratedGpu),
+                    Some(other) => {
+                        return Err(format!("unsupported analysis device class: {other}"));
+                    }
+                }
+            },
+            model_device_overrides: if intent.turbo_acceleration {
+                BTreeMap::new()
+            } else {
+                intent
+                    .model_device_overrides
+                    .into_iter()
+                    .map(|(model_id, device)| {
+                        if !valid_identifier(&model_id) {
+                            return Err(format!("invalid model device override id: {model_id}"));
+                        }
+                        let device = match device.as_str() {
+                            "cpu" => DeviceClassWire::Cpu,
+                            "gpu" => DeviceClassWire::Gpu,
+                            "integrated_gpu" => DeviceClassWire::IntegratedGpu,
+                            other => {
+                                return Err(format!(
+                                    "unsupported device class {other} for model {model_id}"
+                                ));
+                            }
+                        };
+                        Ok((model_id, device))
+                    })
+                    .collect::<Result<_, String>>()?
+            },
         },
         satisfied_capabilities,
         extensions,

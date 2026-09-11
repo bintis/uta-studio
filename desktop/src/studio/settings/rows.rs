@@ -15,10 +15,38 @@ pub(crate) fn spawn_select_setting_row(
     kind: SettingsSelectKind,
     session: &StudioSessionView<'_>,
 ) {
+    spawn_select_setting_row_enabled(
+        parent,
+        font,
+        icons,
+        theme,
+        label,
+        description,
+        kind,
+        session,
+        true,
+    );
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the enabled row variant keeps the common select appearance in one implementation"
+)]
+pub(crate) fn spawn_select_setting_row_enabled(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    icons: Handle<Image>,
+    theme: &StudioTheme,
+    label: impl Into<String>,
+    description: impl Into<String>,
+    kind: SettingsSelectKind,
+    session: &StudioSessionView<'_>,
+    enabled: bool,
+) {
     let label = label.into();
     let description = description.into();
     let current = settings_select_value(kind, session.config);
-    let open = session.open_settings_select == Some(kind);
+    let open = enabled && session.open_settings_select == Some(kind);
     let options = settings_select_options(kind);
     parent
         .spawn((
@@ -67,35 +95,52 @@ pub(crate) fn spawn_select_setting_row(
                 ..default()
             })
             .with_children(|control| {
-                control
-                    .spawn((
+                let mut select = control.spawn((
+                    Node {
+                        width: percent(100),
+                        height: px(36),
+                        align_items: AlignItems::Center,
+                        padding: UiRect::horizontal(px(12)),
+                        column_gap: px(8),
+                        border: UiRect::all(px(1)),
+                        border_radius: BorderRadius::all(px(6)),
+                        overflow: Overflow::clip(),
+                        ..default()
+                    },
+                    BackgroundColor(theme.background.with_alpha(if enabled {
+                        if open { 0.76 } else { 0.5 }
+                    } else {
+                        0.24
+                    })),
+                    BorderColor::all(if open {
+                        theme.primary.with_alpha(0.72)
+                    } else if enabled {
+                        theme.border.with_alpha(0.66)
+                    } else {
+                        theme.border.with_alpha(0.28)
+                    }),
+                ));
+                if enabled {
+                    select.insert((
                         Button,
                         UiAction::from(SettingsCommand::OpenSettingsSelect(kind)),
-                        Node {
-                            width: percent(100),
-                            height: px(36),
-                            align_items: AlignItems::Center,
-                            padding: UiRect::horizontal(px(12)),
-                            column_gap: px(8),
-                            border: UiRect::all(px(1)),
-                            border_radius: BorderRadius::all(px(6)),
-                            overflow: Overflow::clip(),
-                            ..default()
-                        },
-                        BackgroundColor(theme.background.with_alpha(if open { 0.76 } else { 0.5 })),
-                        BorderColor::all(if open {
-                            theme.primary.with_alpha(0.72)
-                        } else {
-                            theme.border.with_alpha(0.66)
-                        }),
-                    ))
-                    .with_children(|button| {
+                    ));
+                }
+                select.with_children(|button| {
                         spawn_text(
                             button,
                             font.clone(),
-                            settings_select_label(kind, current),
+                            if enabled {
+                                settings_select_label(kind, current)
+                            } else {
+                                "Automatic scheduler"
+                            },
                             10.0,
-                            theme.foreground,
+                            if enabled {
+                                theme.foreground
+                            } else {
+                                theme.muted_foreground.with_alpha(0.66)
+                            },
                         );
                         button.spawn(Node {
                             flex_grow: 1.0,
@@ -106,7 +151,11 @@ pub(crate) fn spawn_select_setting_row(
                             icons.clone(),
                             UiIcon::ChevronDown,
                             14.0,
-                            theme.muted_foreground,
+                            if enabled {
+                                theme.muted_foreground
+                            } else {
+                                theme.muted_foreground.with_alpha(0.36)
+                            },
                         );
                     });
                 if open {
@@ -371,15 +420,28 @@ pub(crate) fn spawn_source_file_row(
         });
 }
 
+pub(crate) fn save_config_change(
+    config: &mut AppConfig,
+    change: impl FnOnce(&mut AppConfig),
+    save: impl FnOnce(&AppConfig) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut proposed = config.clone();
+    change(&mut proposed);
+    save(&proposed)?;
+    *config = proposed;
+    Ok(())
+}
+
 pub(crate) fn toggle_turbo_acceleration(
     config: &mut AppConfig,
     save: impl FnOnce(&AppConfig) -> Result<(), String>,
 ) -> Result<(), String> {
-    let mut proposed = config.clone();
-    proposed.turbo_acceleration = Some(!config.turbo_acceleration.unwrap_or(false));
-    save(&proposed)?;
-    *config = proposed;
-    Ok(())
+    let enabled = !config.turbo_acceleration.unwrap_or(false);
+    save_config_change(
+        config,
+        |proposed| proposed.turbo_acceleration = Some(enabled),
+        save,
+    )
 }
 
 pub(crate) fn save_config_error(config: &AppConfig) -> Option<String> {

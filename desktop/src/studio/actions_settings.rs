@@ -137,65 +137,103 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
             invalidated.invalidate(UiDirtyRegion::Dialog);
         }
         UiCommand::Settings(SettingsCommand::OpenSettingsSelect(kind)) => {
-            studio.dialogs.open_model_runtime_select = None;
-            studio.dialogs.open_settings_select =
-                if studio.dialogs.open_settings_select == Some(*kind) {
-                    None
-                } else {
-                    Some(*kind)
-                };
+            if *kind == SettingsSelectKind::ComputeBackend
+                && studio.shell.config.turbo_acceleration.unwrap_or(false)
+            {
+                studio.dialogs.open_settings_select = None;
+                studio.dialogs.open_model_runtime_select = None;
+                studio.shell.notice = Some(
+                    "Super acceleration owns runtime routing. Turn it off to edit saved manual choices."
+                        .to_string(),
+                );
+            } else {
+                studio.dialogs.open_model_runtime_select = None;
+                studio.dialogs.open_settings_select =
+                    if studio.dialogs.open_settings_select == Some(*kind) {
+                        None
+                    } else {
+                        Some(*kind)
+                    };
+            }
             invalidated.invalidate(UiDirtyRegion::Settings);
         }
         UiCommand::Settings(SettingsCommand::ToggleModelRuntimeSelect(model_id)) => {
-            studio.dialogs.open_settings_select = None;
-            studio.dialogs.open_model_runtime_select =
-                if studio.dialogs.open_model_runtime_select.as_deref() == Some(model_id) {
-                    None
-                } else {
-                    Some(model_id.clone())
-                };
+            if studio.shell.config.turbo_acceleration.unwrap_or(false) {
+                studio.dialogs.open_model_runtime_select = None;
+                studio.shell.notice = Some(
+                    "Super acceleration owns per-model routing. Turn it off to edit saved manual choices."
+                        .to_string(),
+                );
+            } else {
+                studio.dialogs.open_settings_select = None;
+                studio.dialogs.open_model_runtime_select =
+                    if studio.dialogs.open_model_runtime_select.as_deref() == Some(model_id) {
+                        None
+                    } else {
+                        Some(model_id.clone())
+                    };
+            }
             invalidated.invalidate(UiDirtyRegion::Settings);
         }
         UiCommand::Settings(SettingsCommand::SelectSettingsValue(kind, value)) => {
-            match kind {
-                SettingsSelectKind::UiLanguage => {
-                    studio.shell.config.ui_language = (value != "system").then(|| value.clone());
-                }
-                SettingsSelectKind::AnalysisTarget => {
-                    studio.shell.config.analysis_experience.default_target = match value.as_str() {
-                        "transcript" => app_core::AnalysisDefaultTarget::Transcript,
-                        "alignment" => app_core::AnalysisDefaultTarget::Alignment,
-                        "pitch_evidence" => app_core::AnalysisDefaultTarget::PitchEvidence,
-                        "instrumental" => app_core::AnalysisDefaultTarget::Instrumental,
-                        _ => app_core::AnalysisDefaultTarget::FullCandidate,
-                    };
-                }
-                SettingsSelectKind::ComputeBackend => {
-                    // "auto" keeps each model's Runtime Manager-pinned route;
-                    // an explicit backend applies to every model without a
-                    // per-model override and never falls back.
-                    studio.shell.config.compute_backend = Some(match value.as_str() {
-                        "ggml" | "ggml_vulkan" | "vulkan" => "ggml".to_string(),
-                        "libtorch_xpu" => "libtorch_xpu".to_string(),
-                        _ => "auto".to_string(),
-                    });
-                }
+            if *kind == SettingsSelectKind::ComputeBackend
+                && studio.shell.config.turbo_acceleration.unwrap_or(false)
+            {
+                studio.dialogs.open_settings_select = None;
+                studio.shell.notice = Some(
+                    "Super acceleration owns runtime routing. The saved manual backend was not changed."
+                        .to_string(),
+                );
+            } else {
+                let result = save_config_change(
+                    &mut studio.shell.config,
+                    |proposed| match kind {
+                        SettingsSelectKind::UiLanguage => {
+                            proposed.ui_language = (value != "system").then(|| value.clone());
+                        }
+                        SettingsSelectKind::AnalysisTarget => {
+                            proposed.analysis_experience.default_target = match value.as_str() {
+                                "transcript" => app_core::AnalysisDefaultTarget::Transcript,
+                                "alignment" => app_core::AnalysisDefaultTarget::Alignment,
+                                "pitch_evidence" => app_core::AnalysisDefaultTarget::PitchEvidence,
+                                "instrumental" => app_core::AnalysisDefaultTarget::Instrumental,
+                                _ => app_core::AnalysisDefaultTarget::FullCandidate,
+                            };
+                        }
+                        SettingsSelectKind::ComputeBackend => {
+                            // "auto" keeps each model's Runtime Manager-pinned route;
+                            // an explicit backend applies to every model without a
+                            // per-model override and never falls back.
+                            proposed.compute_backend = Some(match value.as_str() {
+                                "ggml" | "ggml_vulkan" | "vulkan" => "ggml".to_string(),
+                                "libtorch_xpu" => "libtorch_xpu".to_string(),
+                                _ => "auto".to_string(),
+                            });
+                        }
+                    },
+                    AppConfig::save,
+                );
+                studio.dialogs.open_settings_select = None;
+                studio.shell.notice = match result {
+                    Err(error) => Some(format!(
+                        "Could not save settings: {error}. The visible selection was not changed."
+                    )),
+                    Ok(()) => Some(match kind {
+                        SettingsSelectKind::UiLanguage => {
+                            "Interface language updated.".to_string()
+                        }
+                        SettingsSelectKind::ComputeBackend => format!(
+                            "Compute backend set to {}. It applies to future analysis requests; per-model runtime choices below take precedence, and an unavailable backend fails in Plan Preview without fallback.",
+                            settings_select_label(*kind, value)
+                        ),
+                        _ => localized_message(
+                            &studio.shell.config,
+                            UiMessage::AnalysisEngineSelected,
+                            &[("{engine}", settings_select_label(*kind, value))],
+                        ),
+                    }),
+                };
             }
-            studio.dialogs.open_settings_select = None;
-            studio.shell.notice = save_config_error(&studio.shell.config).or_else(|| {
-                Some(match kind {
-                    SettingsSelectKind::UiLanguage => "Interface language updated.".to_string(),
-                    SettingsSelectKind::ComputeBackend => format!(
-                        "Compute backend set to {}. It applies to future analysis requests; per-model runtime choices below take precedence, and an unavailable backend fails in Plan Preview without fallback.",
-                        settings_select_label(*kind, value)
-                    ),
-                    _ => localized_message(
-                        &studio.shell.config,
-                        UiMessage::AnalysisEngineSelected,
-                        &[("{engine}", settings_select_label(*kind, value))],
-                    ),
-                })
-            });
             invalidated.invalidate(UiDirtyRegion::Settings);
         }
         UiCommand::Settings(SettingsCommand::SelectFusionProvider(provider)) => {
@@ -278,25 +316,35 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
             let valid = backend
                 .as_deref()
                 .is_none_or(|backend| matches!(backend, "ggml" | "libtorch_xpu"));
-            if !valid {
+            if studio.shell.config.turbo_acceleration.unwrap_or(false) {
+                studio.shell.notice = Some(
+                    "Super acceleration owns per-model routing. The saved manual backend was not changed."
+                        .to_string(),
+                );
+            } else if !valid {
                 studio.shell.notice = Some("Unsupported model backend selection.".to_string());
             } else {
-                match backend {
-                    Some(backend) => {
-                        studio
-                            .shell
-                            .config
-                            .model_backend_overrides
-                            .insert(model_id.clone(), backend.clone());
-                    }
-                    None => {
-                        studio.shell.config.model_backend_overrides.remove(model_id);
-                    }
-                }
-                studio.shell.notice = save_config_error(&studio.shell.config).or_else(|| {
-                    Some(format!(
+                let result = save_config_change(
+                    &mut studio.shell.config,
+                    |proposed| match backend {
+                        Some(backend) => {
+                            proposed
+                                .model_backend_overrides
+                                .insert(model_id.clone(), backend.clone());
+                        }
+                        None => {
+                            proposed.model_backend_overrides.remove(model_id);
+                        }
+                    },
+                    AppConfig::save,
+                );
+                studio.shell.notice = Some(match result {
+                    Ok(()) => format!(
                         "Backend preference updated for {model_id}. Existing artifacts are unchanged; the next Plan Preview validates this route."
-                    ))
+                    ),
+                    Err(error) => format!(
+                        "Could not save model backend: {error}. The visible selection was not changed."
+                    ),
                 });
             }
             invalidated.invalidate(UiDirtyRegion::Settings);
@@ -305,25 +353,35 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
             let valid = device
                 .as_deref()
                 .is_none_or(|device| matches!(device, "cpu" | "gpu" | "integrated_gpu"));
-            if !valid {
+            if studio.shell.config.turbo_acceleration.unwrap_or(false) {
+                studio.shell.notice = Some(
+                    "Super acceleration owns per-model routing. The saved manual device was not changed."
+                        .to_string(),
+                );
+            } else if !valid {
                 studio.shell.notice = Some("Unsupported model device selection.".to_string());
             } else {
-                match device {
-                    Some(device) => {
-                        studio
-                            .shell
-                            .config
-                            .model_device_overrides
-                            .insert(model_id.clone(), device.clone());
-                    }
-                    None => {
-                        studio.shell.config.model_device_overrides.remove(model_id);
-                    }
-                }
-                studio.shell.notice = save_config_error(&studio.shell.config).or_else(|| {
-                    Some(format!(
+                let result = save_config_change(
+                    &mut studio.shell.config,
+                    |proposed| match device {
+                        Some(device) => {
+                            proposed
+                                .model_device_overrides
+                                .insert(model_id.clone(), device.clone());
+                        }
+                        None => {
+                            proposed.model_device_overrides.remove(model_id);
+                        }
+                    },
+                    AppConfig::save,
+                );
+                studio.shell.notice = Some(match result {
+                    Ok(()) => format!(
                         "Device preference recorded for {model_id}. The next Engine request sends this exact CPU, GPU, or integrated-GPU class to the GGML worker; unavailable selections fail without CPU fallback."
-                    ))
+                    ),
+                    Err(error) => format!(
+                        "Could not save model device: {error}. The visible selection was not changed."
+                    ),
                 });
             }
             invalidated.invalidate(UiDirtyRegion::Settings);
@@ -333,7 +391,16 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
                 &mut studio.shell.config,
                 AppConfig::save,
             ) {
-                Ok(()) => "Super acceleration preference saved for future analysis requests. Queued/running jobs and existing charts are unchanged.".to_string(),
+                Ok(()) => {
+                    studio.dialogs.open_settings_select = None;
+                    studio.dialogs.open_model_runtime_select = None;
+                    if studio.shell.config.turbo_acceleration.unwrap_or(false) {
+                        "Super acceleration saved. Automatic complete-model scheduling applies to future requests; manual route choices are preserved and temporarily disabled."
+                    } else {
+                        "Super acceleration disabled. Saved manual backend and device choices are active again for future requests."
+                    }
+                    .to_string()
+                }
                 Err(error) => format!("Could not save super acceleration: {error}. The setting was not changed."),
             });
             invalidated.invalidate(UiDirtyRegion::Settings);

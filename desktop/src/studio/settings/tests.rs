@@ -19,6 +19,43 @@ fn super_acceleration_switch_saves_before_updating_visible_state() {
 }
 
 #[test]
+fn routing_changes_save_before_updating_visible_state() {
+    let mut config = app_core::AppConfig::default();
+    let result = super::rows::save_config_change(
+        &mut config,
+        |proposed| proposed.compute_backend = Some("libtorch_xpu".to_string()),
+        |_| Err("isolated save failure".to_string()),
+    );
+    assert!(result.is_err());
+    assert_eq!(config.compute_backend, None);
+
+    super::rows::save_config_change(
+        &mut config,
+        |proposed| {
+            proposed
+                .model_device_overrides
+                .insert("rmvpe".to_string(), "integrated_gpu".to_string());
+        },
+        |_| Ok(()),
+    )
+    .unwrap();
+    assert_eq!(
+        config.model_device_overrides.get("rmvpe").map(String::as_str),
+        Some("integrated_gpu")
+    );
+}
+
+#[test]
+fn super_acceleration_visibly_disables_manual_route_controls() {
+    let models = include_str!("models.rs");
+    let actions = include_str!("../actions_settings.rs");
+    assert!(models.contains("Automatic scheduler"));
+    assert!(models.contains("if !automatic_routing"));
+    assert!(actions.contains("Super acceleration owns runtime routing"));
+    assert!(actions.contains("Super acceleration owns per-model routing"));
+}
+
+#[test]
 fn primary_settings_pages_use_shared_contained_groups() {
     let general = include_str!("general.rs");
     let storage = include_str!("storage.rs");

@@ -18,30 +18,40 @@ pub(crate) fn spawn_model_settings(
         "Inspect installed tools and tune runtime parameters for each model. Lifecycle actions remain explicit; these controls never choose analysis outputs or change workflow topology.",
     );
 
+    let automatic_routing = session.config.turbo_acceleration.unwrap_or(false);
     spawn_settings_group(
         parent,
         font.clone(),
         theme,
         "MODEL RUNTIME ROUTING",
-        "Choose a device and Runtime Manager route per installed model. These controls do not select workflow outputs.",
+        if automatic_routing {
+            "Super acceleration owns backend and device placement for future requests. Saved manual choices remain unchanged and return when Super acceleration is turned off."
+        } else {
+            "Choose a device and Runtime Manager route per installed model. These controls do not select workflow outputs."
+        },
         |group| {
-            spawn_select_setting_row(
+            spawn_select_setting_row_enabled(
                 group,
                 font.clone(),
                 icons.clone(),
                 theme,
                 "Compute backend",
-                "Native runtime for every model that has no per-model runtime choice below. GGML Vulkan is the pinned default; LibTorch XPU runs the same models natively on the Intel Arc GPU and needs the installed LibTorch XPU runtime. A selected backend never falls back to the other.",
+                if automatic_routing {
+                    "Automatic scheduling is active. The Engine assigns each complete model to one GPU from measured model/device costs and dependency readiness; it never splits a model across GPUs or falls back to CPU."
+                } else {
+                    "Native runtime for every model that has no per-model runtime choice below. GGML Vulkan is the pinned default; LibTorch XPU runs the same models natively on the Intel Arc GPU and needs the installed LibTorch XPU runtime. A selected backend never falls back to the other."
+                },
                 SettingsSelectKind::ComputeBackend,
                 session,
+                !automatic_routing,
             );
             spawn_switch_setting_row(
                 group,
                 font.clone(),
                 theme,
                 "Super acceleration",
-                "Preload upcoming model weights when memory permits and reuse decoded audio, separation results and useful intermediates. Applies to future requests only; existing charts and running jobs are unchanged. Extra residency uses more memory. Whole-model scheduling across GPUs is still in development.",
-                session.config.turbo_acceleration.unwrap_or(false),
+                "Assign complete ready model tasks to the predicted fastest available GPU, overlap independent Intel B580 and AMD integrated-GPU queues, preload upcoming weights when memory permits, and reuse decoded audio and intermediates. One model invocation always stays on one device. Applies to future requests only; existing charts and running jobs are unchanged.",
+                automatic_routing,
                 UiAction::from(SettingsCommand::ToggleTurboAcceleration),
             );
             if let Some(snapshot) = session.model_settings_job.current.as_ref() {
@@ -53,6 +63,7 @@ pub(crate) fn spawn_model_settings(
                     session.config,
                     &snapshot.runtime_models,
                     session.open_model_runtime_select.as_deref(),
+                    automatic_routing,
                 );
             } else {
                 let (title, description) = if session.model_settings_job.receiver.is_some() {
@@ -369,6 +380,7 @@ fn spawn_model_backend_settings(
     config: &AppConfig,
     registry: &[app_core::RuntimeModelPresentation],
     open_runtime_select: Option<&str>,
+    automatic_routing: bool,
 ) {
     if registry.is_empty() {
         spawn_setting_row(
@@ -389,7 +401,8 @@ fn spawn_model_backend_settings(
             theme,
             config,
             model,
-            open_runtime_select == Some(model.model_id.as_str()),
+            !automatic_routing && open_runtime_select == Some(model.model_id.as_str()),
+            automatic_routing,
         );
     }
 }
@@ -448,6 +461,7 @@ fn spawn_model_runtime_row(
     config: &AppConfig,
     model: &app_core::RuntimeModelPresentation,
     runtime_open: bool,
+    automatic_routing: bool,
 ) {
     let selected_backend = config
         .model_backend_overrides
@@ -556,9 +570,13 @@ fn spawn_model_runtime_row(
                 spawn_wrapped_text(
                     copy,
                     font.clone(),
-                    device_preference_caption(model.selected_backend),
+                    if automatic_routing {
+                        "Automatic scheduler owns this complete model's route while Super acceleration is active. Saved manual choices are preserved."
+                    } else {
+                        device_preference_caption(model.selected_backend)
+                    },
                     8.0,
-                    theme.muted_foreground.with_alpha(0.78),
+                    theme.muted_foreground.with_alpha(if automatic_routing { 0.62 } else { 0.78 }),
                 );
             });
 
@@ -593,9 +611,17 @@ fn spawn_model_runtime_row(
                         spawn_text(
                             label_row,
                             font.clone(),
-                            selected_device_label(selected_device),
+                            if automatic_routing {
+                                "AUTOMATIC"
+                            } else {
+                                selected_device_label(selected_device)
+                            },
                             8.0,
-                            theme.primary,
+                            if automatic_routing {
+                                theme.muted_foreground.with_alpha(0.66)
+                            } else {
+                                theme.primary
+                            },
                         );
                     });
                 controls
@@ -608,35 +634,42 @@ fn spawn_model_runtime_row(
                     .with_children(|devices| {
                         for (value, label) in DEVICE_CLASS_OPTIONS {
                             let active = selected_device == Some(value);
-                            devices
-                                .spawn((
+                            let mut device = devices.spawn((
+                                Node {
+                                    min_width: px(0),
+                                    height: percent(100),
+                                    flex_grow: 1.0,
+                                    align_items: AlignItems::Center,
+                                    justify_content: JustifyContent::Center,
+                                    border: UiRect::all(px(1)),
+                                    border_radius: BorderRadius::all(px(5)),
+                                    ..default()
+                                },
+                                BackgroundColor(if automatic_routing {
+                                    theme.background.with_alpha(0.2)
+                                } else if active {
+                                    theme.primary.with_alpha(0.14)
+                                } else {
+                                    theme.background.with_alpha(0.38)
+                                }),
+                                BorderColor::all(if automatic_routing {
+                                    theme.border.with_alpha(0.24)
+                                } else if active {
+                                    theme.primary.with_alpha(0.68)
+                                } else {
+                                    theme.border.with_alpha(0.48)
+                                }),
+                            ));
+                            if !automatic_routing {
+                                device.insert((
                                     Button,
                                     UiAction::from(SettingsCommand::SetModelDevice(
                                         model.model_id.clone(),
                                         (!active).then(|| value.to_string()),
                                     )),
-                                    Node {
-                                        min_width: px(0),
-                                        height: percent(100),
-                                        flex_grow: 1.0,
-                                        align_items: AlignItems::Center,
-                                        justify_content: JustifyContent::Center,
-                                        border: UiRect::all(px(1)),
-                                        border_radius: BorderRadius::all(px(5)),
-                                        ..default()
-                                    },
-                                    BackgroundColor(if active {
-                                        theme.primary.with_alpha(0.14)
-                                    } else {
-                                        theme.background.with_alpha(0.38)
-                                    }),
-                                    BorderColor::all(if active {
-                                        theme.primary.with_alpha(0.68)
-                                    } else {
-                                        theme.border.with_alpha(0.48)
-                                    }),
-                                ))
-                                .with_children(|button| {
+                                ));
+                            }
+                            device.with_children(|button| {
                                     spawn_text(
                                         button,
                                         font.clone(),
@@ -646,7 +679,9 @@ fn spawn_model_runtime_row(
                                             label
                                         },
                                         9.0,
-                                        if active {
+                                        if automatic_routing {
+                                            theme.muted_foreground.with_alpha(0.46)
+                                        } else if active {
                                             theme.primary
                                         } else {
                                             theme.foreground
@@ -665,34 +700,41 @@ fn spawn_model_runtime_row(
                         ..default()
                     })
                     .with_children(|runtime| {
-                        runtime
-                            .spawn((
+                        let mut runtime_select = runtime.spawn((
+                            Node {
+                                width: percent(100),
+                                height: px(36),
+                                align_items: AlignItems::Center,
+                                padding: UiRect::horizontal(px(11)),
+                                column_gap: px(8),
+                                border: UiRect::all(px(1)),
+                                border_radius: BorderRadius::all(px(6)),
+                                ..default()
+                            },
+                            BackgroundColor(theme.background.with_alpha(if automatic_routing {
+                                0.2
+                            } else if runtime_open {
+                                0.74
+                            } else {
+                                0.42
+                            })),
+                            BorderColor::all(if automatic_routing {
+                                theme.border.with_alpha(0.24)
+                            } else if runtime_open {
+                                theme.primary.with_alpha(0.68)
+                            } else {
+                                theme.border.with_alpha(0.54)
+                            }),
+                        ));
+                        if !automatic_routing {
+                            runtime_select.insert((
                                 Button,
                                 UiAction::from(SettingsCommand::ToggleModelRuntimeSelect(
                                     model.model_id.clone(),
                                 )),
-                                Node {
-                                    width: percent(100),
-                                    height: px(36),
-                                    align_items: AlignItems::Center,
-                                    padding: UiRect::horizontal(px(11)),
-                                    column_gap: px(8),
-                                    border: UiRect::all(px(1)),
-                                    border_radius: BorderRadius::all(px(6)),
-                                    ..default()
-                                },
-                                BackgroundColor(theme.background.with_alpha(if runtime_open {
-                                    0.74
-                                } else {
-                                    0.42
-                                })),
-                                BorderColor::all(if runtime_open {
-                                    theme.primary.with_alpha(0.68)
-                                } else {
-                                    theme.border.with_alpha(0.54)
-                                }),
-                            ))
-                            .with_children(|button| {
+                            ));
+                        }
+                        runtime_select.with_children(|button| {
                                 spawn_text(
                                     button,
                                     font.clone(),
@@ -707,16 +749,28 @@ fn spawn_model_runtime_row(
                                 spawn_text(
                                     button,
                                     font.clone(),
-                                    selected_runtime_label(model, selected_backend),
+                                    if automatic_routing {
+                                        "Automatic scheduler".to_string()
+                                    } else {
+                                        selected_runtime_label(model, selected_backend)
+                                    },
                                     9.0,
-                                    theme.foreground,
+                                    if automatic_routing {
+                                        theme.muted_foreground.with_alpha(0.66)
+                                    } else {
+                                        theme.foreground
+                                    },
                                 );
                                 spawn_icon(
                                     button,
                                     icons.clone(),
                                     UiIcon::ChevronDown,
                                     13.0,
-                                    theme.muted_foreground,
+                                    if automatic_routing {
+                                        theme.muted_foreground.with_alpha(0.36)
+                                    } else {
+                                        theme.muted_foreground
+                                    },
                                 );
                             });
                         if runtime_open {
