@@ -70,7 +70,7 @@ fn run(arguments: Vec<String>, output: OutputMode) -> CliResult<i32> {
         .map(str::parse)
         .transpose()
         .map_err(CliError::from)?;
-    let mut paths = option(&arguments, "--store")
+    let paths = option(&arguments, "--store")
         .map(PathBuf::from)
         .map_or_else(StorePaths::from_env, |root| {
             StorePaths::from_env().with_store_root(root)
