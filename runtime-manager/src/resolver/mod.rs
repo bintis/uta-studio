@@ -443,7 +443,9 @@ impl RuntimeManager {
     ) -> RuntimeManagerResult<ResolvedModel> {
         let resource = ResourceRef::model(model_id)?;
         let mut status = self.status_with_backend(&resource, policy, requested_backend)?;
-        if status.origin == ResourceOrigin::Managed {
+        if self.paths.ggml_model_path(model_id).is_none()
+            && status.origin == ResourceOrigin::Managed
+        {
             let Some(generation) = status.generation.as_deref() else {
                 return Err(RuntimeManagerError::resource_corrupt(&resource));
             };
@@ -480,10 +482,6 @@ impl RuntimeManager {
         let selected_backend = status
             .selected_backend
             .ok_or_else(|| RuntimeManagerError::no_validated_backend(&resource))?;
-        let external_ggml = selected_backend == NativeBackend::Ggml
-            && uses_legacy_ggml_layout(model_id)
-            && status.origin == ResourceOrigin::Legacy
-            && self.paths.ggml_model_path(model_id).is_some();
         let (
             model_root,
             model_path,
@@ -491,11 +489,7 @@ impl RuntimeManager {
             generation,
             model_content_digest,
             model_recipe_digest,
-        ) = if external_ggml {
-            let path = self
-                .paths
-                .ggml_model_path(model_id)
-                .ok_or_else(|| RuntimeManagerError::resource_missing(&resource))?;
+        ) = if let Some(path) = self.paths.ggml_model_path(model_id) {
             let root = path
                 .parent()
                 .ok_or_else(|| RuntimeManagerError::resource_corrupt(&resource))?;
@@ -524,7 +518,9 @@ impl RuntimeManager {
                 .get("model")
                 .cloned()
                 .ok_or_else(|| RuntimeManagerError::resource_corrupt(&resource))?;
-            let generation = status.generation.unwrap_or_else(|| "legacy".to_string());
+            let generation = status
+                .generation
+                .ok_or_else(|| RuntimeManagerError::resource_missing(&resource))?;
             let recipe = if is_generation_id(&generation) {
                 read_install_manifest(&root)
                     .and_then(|manifest| manifest.model_recipe_digest)
@@ -615,6 +611,7 @@ impl RuntimeManager {
             .map(|capability| capability.backend)
             .or(model.pinned_backend)
             .and_then(|backend| self.runtime_for_backend(model, backend));
+        let gguf_file = self.paths.ggml_model_path(&resource.id);
         let managed_install = self.model_install_state(&resource.id);
         let managed_current = managed_install.state == InstallState::Installed
             && managed_install
@@ -623,30 +620,19 @@ impl RuntimeManager {
                 .is_some_and(|generation| {
                     self.managed_model_identity(model, generation) == ManagedModelIdentity::Current
                 });
-        let external_ggml = selected.as_ref().is_some_and(|capability| {
-            capability.backend == NativeBackend::Ggml
-                && uses_legacy_ggml_layout(resource.id.as_str())
-                && self.paths.ggml_model_path(&resource.id).is_some()
-                && !managed_current
-        });
-        let install = if external_ggml {
-            self.ggml_model_install_state(&resource.id)
-        } else {
+        let install = if gguf_file.is_some() {
+            InstallProbe {
+                state: InstallState::Installed,
+                generation: ggml_model_identity(resource.id.as_str())
+                    .map(|(identity, _)| identity.to_string()),
+                integrity_verified: true,
+            }
+        } else if managed_current {
             managed_install
-        };
-        let managed_identity = if install.state == InstallState::Installed {
-            install
-                .generation
-                .as_deref()
-                .map(|generation| self.managed_model_identity(model, generation))
-                .unwrap_or(ManagedModelIdentity::Corrupt)
         } else {
-            ManagedModelIdentity::Current
+            InstallProbe::absent()
         };
-        let install_state = match managed_identity {
-            ManagedModelIdentity::Current => install.state,
-            ManagedModelIdentity::Corrupt => InstallState::Corrupt,
-        };
+        let install_state = install.state;
         let mut reasons = Vec::new();
         if selected.is_none() {
             reasons.push(ReadinessReason::BackendUnvalidated);
@@ -692,11 +678,7 @@ impl RuntimeManager {
         if !worker_supported {
             reasons.push(ReadinessReason::WorkerCapabilityMissing);
         }
-        if install_state == InstallState::Legacy {
-            reasons.push(ReadinessReason::Legacy);
-        }
-        let integrity_verified =
-            install.integrity_verified && managed_identity == ManagedModelIdentity::Current;
+        let integrity_verified = install.integrity_verified;
         let backend_route_permitted = policy == RuntimePolicy::Experimental
             || model
                 .backends
@@ -704,11 +686,7 @@ impl RuntimeManager {
                 .any(|capability| capability.validation != ValidationState::Unsupported);
         let testing_policy = policy == RuntimePolicy::Experimental;
         let locally_present = install_state.locally_present();
-        // Exact external GGUF files are intentionally unmanaged user data.
-        // Fast status checks use the expected byte size and semantic route;
-        // content digests remain provenance metadata rather than hash gates.
-        let integrity_permitted = integrity_verified
-            || (install_state == InstallState::Legacy && (testing_policy || external_ggml));
+        let integrity_permitted = integrity_verified;
         let runnable = locally_present
             && integrity_permitted
             && backend_route_permitted
@@ -725,7 +703,9 @@ impl RuntimeManager {
         Ok(ResourceStatus {
             resource: resource.clone(),
             install_state,
-            origin: if install.state == InstallState::Installed {
+            origin: if gguf_file.is_some() {
+                ResourceOrigin::ExternalConfiguration
+            } else if install.state == InstallState::Installed {
                 ResourceOrigin::Managed
             } else {
                 origin_for_install_state(install_state)
@@ -1048,46 +1028,10 @@ impl RuntimeManager {
         })
     }
 
-    fn ggml_model_install_state(&self, model_id: &str) -> InstallProbe {
-        let Some(_path) = self.paths.ggml_model_path(model_id) else {
-            return InstallProbe::absent();
-        };
-        InstallProbe {
-            state: InstallState::Legacy,
-            generation: Some("legacy".to_string()),
-            integrity_verified: false,
-        }
-    }
-
     fn model_install_state(&self, model_id: &str) -> InstallProbe {
         let resource = ResourceRef::model(model_id).expect("catalog ids are valid");
-        if let Some(probe) = self.probe_current_pointer(&resource) {
-            return probe;
-        }
-        if self.legacy_model_present(model_id) {
-            return InstallProbe {
-                state: InstallState::Legacy,
-                generation: Some("legacy".to_string()),
-                integrity_verified: false,
-            };
-        }
-        InstallProbe::absent()
-    }
-
-    fn legacy_model_present(&self, model_id: &str) -> bool {
-        let Some(root) = self.paths.legacy_models_root.as_ref() else {
-            return false;
-        };
-        match model_id {
-            "melband_roformer_harmony"
-            | "melband_roformer_denoise_aufr33"
-            | "melband_roformer_dereverb_anvuew" => root
-                .join("audio-processing")
-                .join(model_id)
-                .join("install-manifest.json")
-                .is_file(),
-            _ => false,
-        }
+        self.probe_current_pointer(&resource)
+            .unwrap_or_else(InstallProbe::absent)
     }
 
     fn generic_install_state(&self, resource: &ResourceRef) -> InstallProbe {
@@ -1171,13 +1115,10 @@ impl RuntimeManager {
     }
 
     fn model_generation_path(&self, model_id: &str, generation: Option<&str>) -> Option<PathBuf> {
-        if let Some(generation) = generation.filter(|generation| *generation != "legacy") {
-            return self.generation_path(
-                &ResourceRef::model(model_id).expect("catalog ids are valid"),
-                generation,
-            );
-        }
-        legacy_model_path(self.paths.legacy_models_root.as_deref()?, model_id)
+        self.generation_path(
+            &ResourceRef::model(model_id).expect("catalog ids are valid"),
+            generation?,
+        )
     }
 }
 
@@ -1377,29 +1318,6 @@ fn runtime_artifact_alias(model_id: &str, expected: &str) -> Option<&'static str
     }
 }
 
-fn uses_legacy_ggml_layout(model_id: &str) -> bool {
-    matches!(
-        model_id,
-        "melband_roformer_harmony"
-            | "melband_roformer_denoise_aufr33"
-            | "melband_roformer_dereverb_anvuew"
-            | "bs_polarformer_public_instrumental"
-            | "bs_roformer_leap_xe90_instrumental"
-            | "rmvpe"
-            | "fcpe"
-            | "basic_pitch"
-            | "game_1_0_3_small"
-            | "game_1_0_3_medium"
-            | "game_1_0_3_large"
-            | "jbm555_cectc_80"
-            | "stars"
-            | "rosvot"
-            | "firered_asr2_aed"
-            | "qwen3_asr_1_7b"
-            | "qwen3_forced_aligner_0_6b"
-    )
-}
-
 fn ggml_model_identity(model_id: &str) -> Option<(&'static str, u64)> {
     match model_id {
         "melband_roformer_denoise_aufr33" => Some((
@@ -1418,6 +1336,7 @@ fn ggml_model_identity(model_id: &str) -> Option<(&'static str, u64)> {
             "f5e40ac0dc7487a0c2ccb247e5b948cd6f2c7aaf46a2994023606e1e800ed2c1",
             204_237_408,
         )),
+        "bs_roformer_leap_xe90_vocals" => Some(("leap-xe90-vocals-gguf-f32", 267_433_600)),
         "bs_roformer_leap_xe90_instrumental" => Some((
             "b35c2d88b87c7aa863d79f80df1d15899fbdebbaebbf0be4bf8e4602493763c0",
             267_433_600,
@@ -1457,16 +1376,6 @@ fn ggml_model_identity(model_id: &str) -> Option<(&'static str, u64)> {
         )),
         _ => None,
     }
-}
-
-fn legacy_model_path(root: &std::path::Path, model_id: &str) -> Option<PathBuf> {
-    let relative = match model_id {
-        "melband_roformer_harmony"
-        | "melband_roformer_denoise_aufr33"
-        | "melband_roformer_dereverb_anvuew" => PathBuf::from("audio-processing").join(model_id),
-        _ => return None,
-    };
-    Some(root.join(relative))
 }
 
 #[cfg(test)]
@@ -1759,5 +1668,106 @@ mod libtorch_route_tests {
             status.runtime_resource,
             Some(ResourceRef::runtime(LIBTORCH_XPU_RUNTIME_ID).unwrap())
         );
+    }
+
+    fn install_shared_gguf(root: &Path, directory: &str, filename: &str) {
+        let model_dir = root.join(directory);
+        std::fs::create_dir_all(&model_dir).unwrap();
+        std::fs::write(model_dir.join(filename), b"model").unwrap();
+    }
+
+    fn install_stale_ir(store: &Path, model_id: &str) {
+        let resource = ResourceRef::model(model_id).unwrap();
+        let manifest = InstallManifest {
+            schema: INSTALL_MANIFEST_SCHEMA.to_string(),
+            schema_version: Some(INSTALL_MANIFEST_SCHEMA_VERSION),
+            resource: resource.clone(),
+            catalog_version: None,
+            source: None,
+            source_sha256: None,
+            model_recipe_digest: Some("stale".to_string()),
+            conversion_recipe_digest: None,
+            runtime_recipe_digest: None,
+            files: vec![InstalledFile {
+                path: PathBuf::from("model.xml"),
+                sha256: "stale".to_string(),
+                size: 4,
+            }],
+            created_timestamp: "1".to_string(),
+        };
+        let bytes = serde_json::to_vec(&manifest).unwrap();
+        let generation = generation_id(&bytes);
+        let resource_root = store.join("models").join(model_id);
+        let generation_root = resource_root.join("generations").join(&generation);
+        std::fs::create_dir_all(&generation_root).unwrap();
+        std::fs::write(generation_root.join("model.xml"), b"xml").unwrap();
+        std::fs::write(generation_root.join("install-manifest.json"), bytes).unwrap();
+        std::fs::write(
+            resource_root.join("current.json"),
+            serde_json::to_vec(&CurrentPointer { generation }).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn manager_with_libtorch(scratch: &Path, store: &Path, gguf_root: &Path) -> RuntimeManager {
+        let worker = worker_executable(scratch);
+        let library_root = scratch.join("libtorch-xpu");
+        std::fs::create_dir_all(library_root.join("lib")).unwrap();
+        std::fs::write(library_root.join(LIBTORCH_XPU_NATIVE_LIBRARY), b"elf").unwrap();
+        std::fs::write(
+            library_root.join("runtime-manifest.json"),
+            br#"{"backend":"libtorch_xpu","native_library":"lib/libuta_libtorch.so","environment":{"LD_LIBRARY_PATH":"/run/opengl-driver/lib","ONEAPI_DEVICE_SELECTOR":"level_zero:gpu"}}"#,
+        )
+        .unwrap();
+        RuntimeManager::with_default_catalog(
+            StorePaths::new(store)
+                .with_ggml_models_root(gguf_root)
+                .with_runtime_override("uta-ggml-worker", worker)
+                .with_runtime_library_root(LIBTORCH_XPU_RUNTIME_ID, library_root),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn both_backends_use_the_shared_gguf_files() {
+        let scratch = scratch("shared-gguf");
+        let store = scratch.0.join("store");
+        let gguf_root = scratch.0.join("gguf");
+        install_stale_ir(&store, "basic_pitch");
+        install_shared_gguf(&gguf_root, "basic_pitch", "basic-pitch-f32.gguf");
+        install_shared_gguf(&gguf_root, "game", "game-large-f32.gguf");
+        let manager = manager_with_libtorch(&scratch.0, &store, &gguf_root);
+        for model_id in ["basic_pitch", "game_1_0_3_large"] {
+            let ggml = manager
+                .resolve_model(model_id, RuntimePolicy::Production)
+                .unwrap();
+            let libtorch = manager
+                .resolve_model_with_backend(
+                    model_id,
+                    RuntimePolicy::Production,
+                    Some(NativeBackend::LibtorchXpu),
+                )
+                .unwrap();
+            assert_eq!(ggml.backend, NativeBackend::Ggml);
+            assert_eq!(libtorch.backend, NativeBackend::LibtorchXpu);
+            assert_eq!(ggml.model_path, libtorch.model_path);
+            assert!(ggml.model_path.ends_with(if model_id == "basic_pitch" {
+                "basic-pitch-f32.gguf"
+            } else {
+                "game-large-f32.gguf"
+            }));
+            let status = manager
+                .status_with_backend(
+                    &ResourceRef::model(model_id).unwrap(),
+                    RuntimePolicy::Production,
+                    Some(NativeBackend::LibtorchXpu),
+                )
+                .unwrap();
+            assert_eq!(status.install_state, InstallState::Installed);
+            assert!(status.usable);
+            assert!(!status.reasons.contains(&ReadinessReason::Corrupt));
+            assert!(!status.reasons.contains(&ReadinessReason::Absent));
+            assert!(!status.reasons.contains(&ReadinessReason::Legacy));
+        }
     }
 }

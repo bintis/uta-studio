@@ -75,9 +75,6 @@ fn run(arguments: Vec<String>, output: OutputMode) -> CliResult<i32> {
         .map_or_else(StorePaths::from_env, |root| {
             StorePaths::from_env().with_store_root(root)
         });
-    if let Some(root) = option(&arguments, "--legacy-models") {
-        paths = paths.with_legacy_models_root(root);
-    }
     let manager = RuntimeManager::with_default_catalog(paths).map_err(CliError::from)?;
 
     let data = match command {
@@ -407,7 +404,6 @@ fn option_takes_value(argument: &str) -> bool {
         argument,
         "--output"
             | "--store"
-            | "--legacy-models"
             | "--policy"
             | "--backend"
             | "--requirements"

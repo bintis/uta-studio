@@ -10,7 +10,6 @@ use crate::resource::{ResourceKind, ResourceRef};
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StorePaths {
     pub store_root: Option<PathBuf>,
-    pub legacy_models_root: Option<PathBuf>,
     ggml_models_root: Option<PathBuf>,
     runtime_overrides: Vec<(String, PathBuf)>,
     /// Installed native runtime directories keyed by runtime id. A runtime
@@ -44,9 +43,6 @@ impl StorePaths {
             });
         let mut paths = Self {
             store_root,
-            legacy_models_root: std::env::var_os("UTA_STUDIO_MODELS_DIR")
-                .or_else(|| std::env::var_os("UTA_STUDIO_MODELS_PATH"))
-                .map(PathBuf::from),
             ggml_models_root,
             runtime_overrides: Vec::new(),
             runtime_library_roots: Vec::new(),
@@ -121,11 +117,6 @@ impl StorePaths {
         self
     }
 
-    pub fn with_legacy_models_root(mut self, root: impl Into<PathBuf>) -> Self {
-        self.legacy_models_root = Some(root.into());
-        self
-    }
-
     pub fn with_ggml_models_root(mut self, root: impl Into<PathBuf>) -> Self {
         self.ggml_models_root = Some(root.into());
         self
@@ -136,6 +127,7 @@ impl StorePaths {
             "melband_roformer_harmony" => {
                 ("melband_roformer_karaoke_aufr33_viperx", "model-fp16.gguf")
             }
+            "bs_roformer_leap_xe90_vocals" => (model_id, "bs_leap_xe_voc-F32.gguf"),
             "bs_roformer_leap_xe90_instrumental" => (model_id, "bs_leap_xe_inst-F32.gguf"),
             "melband_roformer_denoise_aufr33"
             | "melband_roformer_dereverb_anvuew"
@@ -222,16 +214,6 @@ impl StorePaths {
             ResourceKind::Bundle => return None,
         };
         Some(root.join(kind_dir).join(&resource.id).join("current.json"))
-    }
-
-    pub fn legacy_audio_model_manifest(&self, model_id: &str) -> Option<PathBuf> {
-        Some(
-            self.legacy_models_root
-                .as_ref()?
-                .join("audio-processing")
-                .join(model_id)
-                .join("install-manifest.json"),
-        )
     }
 
     pub fn runtime_executable(&self, runtime_id: &str) -> Option<PathBuf> {
@@ -325,7 +307,6 @@ impl StorePaths {
             staging_root: store_root.as_ref().map(|root| root.join("staging")),
             leases_root: store_root.as_ref().map(|root| root.join("leases")),
             locks_root: store_root.as_ref().map(|root| root.join("locks")),
-            legacy_models_root: self.legacy_models_root.clone(),
             ggml_models_root: self.ggml_models_root.clone(),
             ffmpeg_path: self.tool_executable("ffmpeg"),
             runtime_executables: self
@@ -363,8 +344,6 @@ pub struct PathsSummary {
     pub leases_root: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub locks_root: Option<PathBuf>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub legacy_models_root: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ggml_models_root: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
