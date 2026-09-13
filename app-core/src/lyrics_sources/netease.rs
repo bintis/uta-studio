@@ -10,7 +10,7 @@ use std::{
 
 use aes::Aes128;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-use cipher::{BlockDecrypt, BlockEncrypt, KeyInit};
+use cipher::{BlockCipherDecrypt, BlockCipherEncrypt, KeyInit};
 use md5::{Digest, Md5};
 use reqwest::blocking::Client;
 use serde_json::{Map, Value, json};
@@ -299,7 +299,7 @@ fn aes_ecb_encrypt(data: &[u8], key: &[u8; 16]) -> Result<Vec<u8>, LyricsProvide
     let mut padded = data.to_vec();
     padded.extend(std::iter::repeat_n(pad as u8, pad));
     for chunk in padded.as_chunks_mut::<16>().0 {
-        let block = cipher::Block::<Aes128>::from_mut_slice(chunk);
+        let block = cipher::Block::<Aes128>::cast_from_core_mut(chunk);
         cipher.encrypt_block(block);
     }
     Ok(padded)
@@ -315,7 +315,7 @@ fn aes_ecb_decrypt(data: &[u8], key: &[u8; 16]) -> Result<Vec<u8>, LyricsProvide
         .map_err(|_| LyricsProviderError::Decode("invalid AES key".into()))?;
     let mut output = data.to_vec();
     for chunk in output.as_chunks_mut::<16>().0 {
-        let block = cipher::Block::<Aes128>::from_mut_slice(chunk);
+        let block = cipher::Block::<Aes128>::cast_from_core_mut(chunk);
         cipher.decrypt_block(block);
     }
     let pad = *output.last().unwrap_or(&0) as usize;
@@ -361,7 +361,7 @@ fn anonymous_username(device_id: &str) -> String {
 
 fn md5_hex(data: &[u8]) -> String {
     let digest = Md5::digest(data);
-    format!("{digest:x}")
+    hex::encode(digest)
 }
 
 fn now_millis() -> u128 {
@@ -377,4 +377,98 @@ fn value_string(value: &Value) -> Option<String> {
         .map(str::to_owned)
         .or_else(|| value.as_i64().map(|value| value.to_string()))
         .or_else(|| value.as_u64().map(|value| value.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aes_ecb_matches_padding_fixtures() {
+        // Independent OpenSSL AES-128-ECB fixtures with PKCS#7 padding and EAPI_KEY.
+        // Cover empty, short, block-boundary and multiblock UTF-8 plaintexts.
+        for (plaintext, encoded) in [
+            ("", "6AA3B102FBE7296AB0DB9EA5C46AD12B"),
+            ("a", "BC2BCB0C4A7E53B249894EBF962CD6E6"),
+            ("0123456789abcde", "1987A9716FFE6D73A29DD457CCBC822A"),
+            (
+                "0123456789abcdef",
+                "12AD99C476F307B9AFA42686D88FA74F6AA3B102FBE7296AB0DB9EA5C46AD12B",
+            ),
+            (
+                "0123456789abcdefg",
+                "12AD99C476F307B9AFA42686D88FA74FD3DBAEAB13DBDC3DF9429959046908BF",
+            ),
+            (
+                "春の歌 / offline fixture",
+                "4870DC85C919A512C67B67F4AD801D6EF32688573CF9F6055BBF39A1A984F9FF",
+            ),
+        ] {
+            let ciphertext = hex::decode(encoded).unwrap();
+            assert_eq!(
+                aes_ecb_encrypt(plaintext.as_bytes(), EAPI_KEY).unwrap(),
+                ciphertext,
+                "encrypt {plaintext:?}"
+            );
+            assert_eq!(
+                aes_ecb_decrypt(&ciphertext, EAPI_KEY).unwrap(),
+                plaintext.as_bytes(),
+                "decrypt {plaintext:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn eapi_encrypt_matches_request_fixture() {
+        // Python hashlib/JSON plus OpenSSL, not this implementation's encrypt/decrypt pair.
+        let params = json!({"id": 123, "keyword": "春の歌"});
+        assert_eq!(
+            eapi_encrypt(b"/api/song/lyric/v1", &params).unwrap(),
+            concat!(
+                "params=",
+                "04AE33D34A93FE3EC22DA8FA305D290AB337D0FE5F36D211DE0D338CC6AA89D05",
+                "2417DFDE872F7BB2E3476F6905BF8B9F71841D87688C96C6B9704EB6EA7C8414",
+                "D59DC215D22E3BB37823887F272048B1CBB2778368E1DAFBF7AB35707366FBC1",
+                "1090350CB0E96CEE85E436C8170116E",
+            )
+        );
+    }
+
+    #[test]
+    fn anonymous_username_matches_fixture() {
+        // Python hashlib/base64 fixture exercises XOR-key wrapping and nested base64.
+        assert_eq!(
+            anonymous_username("fixture-device-for-offline-test"),
+            "Zml4dHVyZS1kZXZpY2UtZm9yLW9mZmxpbmUtdGVzdCB6UjFORDlaeURGUmJMWDVnd3I1bzRBPT0="
+        );
+    }
+
+    #[test]
+    fn digest_hex_matches_fixture() {
+        assert_eq!(md5_hex(b""), "d41d8cd98f00b204e9800998ecf8427e");
+        assert_eq!(md5_hex(b"a"), "0cc175b9c0f1b6a831c399e269772661");
+    }
+
+    #[test]
+    fn aes_ecb_decrypt_rejects_invalid_length_and_padding() {
+        for ciphertext in [Vec::new(), vec![0; 15], vec![0; 17]] {
+            assert!(matches!(
+                aes_ecb_decrypt(&ciphertext, EAPI_KEY),
+                Err(LyricsProviderError::Decode(message))
+                    if message == "NetEase AES response has invalid length"
+            ));
+        }
+        // OpenSSL without padding: decrypted blocks end in zero or seventeen.
+        for encoded in [
+            "0A4C437B6CBA18B5FAAB7B54541DCC5A",
+            "04AFAEFDEA3AB9B712289B274FA996E4",
+        ] {
+            let ciphertext = hex::decode(encoded).unwrap();
+            assert!(matches!(
+                aes_ecb_decrypt(&ciphertext, EAPI_KEY),
+                Err(LyricsProviderError::Decode(message))
+                    if message == "NetEase AES response has invalid padding"
+            ));
+        }
+    }
 }
