@@ -43,10 +43,10 @@ bevy = { version = "0.19.1", default-features = false, features = [
 bevy_render = { version = "0.19.1", features = ["gles"] }
 # ICU otherwise writes debug-build fallback diagnostics directly to stderr,
 # bypassing Bevy's target filter. Route them through the normal logger.
-icu_provider = { version = "=2.2.0", features = ["logging"] }
-open = "=5.3.3"
+icu_provider = { version = "=2.3.1", features = ["logging"] }
+open = "=5.4.4"
 # Use the Wayland XDG portal directly; no GTK or X11 file picker backend.
-rfd = { version = "=0.15.4", default-features = false, features = ["async-std", "common-controls-v6", "xdg-portal"] }
+rfd = { version = "=0.17.2", default-features = false, features = ["common-controls-v6", "wayland", "xdg-portal"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Real app-log capture (Node Context Menu "View logs"): a custom

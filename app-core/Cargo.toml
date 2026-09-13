@@ -11,25 +11,25 @@ name = "app_core"
 uta-model-settings = { path = "../model-settings" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-dirs = "6"
+dirs = "7"
 ts-rs = { version = "12", features = ["no-serde-warnings"] }
 walkdir = "2"
 blake3 = "1"
-sha2 = "0.10"
+sha2 = "0.11"
 lofty = "0.25"
 ureq = { version = "3", features = ["json"] }
 urlencoding = "2"
 tracing = "0.1"
 thiserror = "2"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
-aes = "0.8"
-base64 = "0.22"
-cipher = "0.4"
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "query", "rustls"] }
+aes = "0.9"
+base64 = "0.23"
+cipher = "0.5"
 flate2 = "1"
 hex = "0.4"
-md-5 = "0.10"
+md-5 = "0.11"
 regex = "1"
-rusqlite = { version = "0.39.0", features = ["bundled"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 utz = { path = "../vendor/utz" }
 
 [target.'cfg(unix)'.dependencies]

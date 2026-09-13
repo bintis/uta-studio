@@ -7,7 +7,7 @@ publish = false
 
 [dependencies]
 hound = "3.5"
-libloading = "0.8"
+libloading = "0.9"
 regex = "1"
 rustfft = "6"
 
