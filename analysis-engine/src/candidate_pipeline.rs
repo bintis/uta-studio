@@ -359,6 +359,15 @@ pub fn fuse_transcript_stage(
         }
     }
     if canonical.authority == LyricsAuthority::Generated {
+        if let Some(reference) = reference_lyrics.map(str::trim)
+            && reference.contains(['\r', '\n'])
+            && normalized(reference) == normalized(&artifact.text)
+        {
+            // Identical text may still supply useful line breaks. Non-whitespace
+            // offsets are unchanged, so the existing ASR audio scopes remain valid.
+            artifact.text = reference.to_string();
+            canonical.text = reference.to_string();
+        }
         // ASR audio scopes are search windows, not lyric sentences. Derive
         // textual lines from the selected text, including reference corrections,
         // without inventing line timing or calibrated confidence.

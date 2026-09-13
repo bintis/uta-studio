@@ -31,15 +31,16 @@ pub fn finalize_candidate_vocal_chart(
         return Err(invalid("Candidate quantization report is invalid"));
     }
 
+    let projection_notes = notes_at_lyric_sentence_boundaries(track);
     let mut notes_by_word = BTreeMap::<&str, Vec<&CanonicalNote>>::new();
-    for note in &track.notes {
+    for note in &projection_notes {
         if let Some(word_id) = note.word_id.as_deref() {
             notes_by_word.entry(word_id).or_default().push(note);
         }
     }
 
-    // Finalization is a projection, not another note decoder. Preserve every
-    // selected duration state, including same-pitch reattacks and hard cuts.
+    // Preserve the selected melody, including same-pitch reattacks and hard
+    // cuts. A measured sentence start may divide a held note for UTZ phrases.
     // Place lyric placeholders around those ranges; a real note may cross a word.
     let word_order = track
         .words
@@ -47,8 +48,7 @@ pub fn finalize_candidate_vocal_chart(
         .enumerate()
         .map(|(index, word)| (word.word_id.as_str(), index))
         .collect::<BTreeMap<_, _>>();
-    let mut emitted_notes = track
-        .notes
+    let mut emitted_notes = projection_notes
         .iter()
         .map(|note| {
             let order = note
@@ -69,8 +69,7 @@ pub fn finalize_candidate_vocal_chart(
         .iter()
         .map(|word| word.word_id.clone())
         .collect::<std::collections::BTreeSet<_>>();
-    let mut notes = track
-        .notes
+    let mut notes = projection_notes
         .iter()
         .filter(|note| {
             note.word_id
@@ -180,6 +179,84 @@ pub fn finalize_candidate_vocal_chart(
         .validate()
         .map_err(|error| invalid(error.to_string()))?;
     Ok(chart)
+}
+
+/// A UTZ note belongs to one phrase. Divide a held note at a measured next-line
+/// onset so attaching that line's words cannot swallow its sentence boundary.
+/// Ordinary word boundaries do not split notes; no timing is inferred from text.
+fn notes_at_lyric_sentence_boundaries(track: &CanonicalSingingTrack) -> Vec<CanonicalNote> {
+    let line_order = track
+        .transcript
+        .tokens
+        .iter()
+        .enumerate()
+        .filter_map(|(order, token)| Some((token.id.as_deref()?, order)))
+        .collect::<BTreeMap<_, _>>();
+    let mut current = None;
+    let mut boundaries = Vec::new();
+    for word in &track.words {
+        let Some(order) = word
+            .line_id
+            .as_deref()
+            .and_then(|id| line_order.get(id))
+            .copied()
+        else {
+            continue;
+        };
+        if current.is_some_and(|previous| order > previous) {
+            boundaries.push(word.range.start);
+        }
+        current = Some(current.map_or(order, |previous| order.max(previous)));
+    }
+    let mut ids = track
+        .notes
+        .iter()
+        .map(|note| note.id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut output = Vec::new();
+    for (index, note) in track.notes.iter().enumerate() {
+        let cuts = boundaries
+            .iter()
+            .copied()
+            .filter(|boundary| note.range.start < *boundary && *boundary < note.range.end)
+            .collect::<Vec<_>>();
+        if cuts.is_empty() {
+            output.push(note.clone());
+            continue;
+        }
+        let mut start = note.range.start;
+        for (part, end) in cuts
+            .into_iter()
+            .chain(std::iter::once(note.range.end))
+            .enumerate()
+        {
+            let mut fragment = note.clone();
+            fragment.range = TimeRange { start, end };
+            if part > 0 {
+                fragment.id = format!("sentence-note-{index}-{part}");
+                while !ids.insert(fragment.id.clone()) {
+                    fragment.id.push('-');
+                }
+            }
+            let overlaps =
+                |word: &&CanonicalWordBoundary| range_overlap(word.range, fragment.range) > 0;
+            fragment.word_id = track
+                .words
+                .iter()
+                .find(|word| Some(&word.word_id) == note.word_id.as_ref() && overlaps(word))
+                .or_else(|| {
+                    track
+                        .words
+                        .iter()
+                        .filter(overlaps)
+                        .max_by_key(|word| range_overlap(word.range, fragment.range))
+                })
+                .map(|word| word.word_id.clone());
+            output.push(fragment);
+            start = end;
+        }
+    }
+    output
 }
 
 /// Groups the finalized notes into one UTZ phrase per canonical lyric line.
@@ -757,5 +834,40 @@ mod tests {
         let long = phrase_id(41, &"line".repeat(40));
         assert!(long.len() <= utz::MAX_ID_BYTES);
         assert!(long.starts_with("phrase-42-line"));
+    }
+
+    #[test]
+    fn held_note_crossing_sentences_keeps_both_phrases_and_its_full_melody() {
+        for owner in ["word-1", "word-2"] {
+            let mut track = lined_track();
+            track.notes.truncate(1);
+            track.notes[0].range = TimeRange::new(500_000, 1_800_000).unwrap();
+            track.notes[0].word_id = Some(owner.to_string());
+            let original = track.notes[0].clone();
+            let chart = finalize_candidate_vocal_chart(&track, "sentence-held-note", None).unwrap();
+            chart.validate().unwrap();
+            let phrases = &chart.tracks[0].phrases;
+            assert_eq!(phrases.len(), 2);
+            assert_eq!(phrases[0].notes[0].start, 500_000);
+            assert_eq!(phrases[1].notes[0].start, track.words[1].range.start);
+            let notes = phrases
+                .iter()
+                .flat_map(|phrase| &phrase.notes)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                notes.iter().map(|note| note.duration).sum::<u64>(),
+                original.range.end - original.range.start
+            );
+            assert!(
+                notes
+                    .iter()
+                    .all(|note| note.pitch.unwrap().midi == original.midi_note)
+            );
+            assert_eq!(
+                notes.last().unwrap().start + notes.last().unwrap().duration,
+                original.range.end
+            );
+            assert_eq!(track.notes[0], original);
+        }
     }
 }

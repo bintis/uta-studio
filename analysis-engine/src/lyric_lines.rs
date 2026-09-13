@@ -20,9 +20,15 @@ pub(crate) fn generated_lyric_lines(text: &str) -> Vec<TranscriptToken> {
             sentence_end = false;
         } else if matches!(character, '。' | '！' | '？' | '!' | '?')
             || (character == '.'
-                && characters
-                    .peek()
-                    .is_none_or(|(_, next)| next.is_whitespace() || sentence_suffix(*next)))
+                && characters.peek().is_none_or(|(_, next)| {
+                    next.is_whitespace()
+                        || sentence_suffix(*next)
+                        || !next.is_ascii()
+                        || text[..offset]
+                            .chars()
+                            .next_back()
+                            .is_some_and(|previous| !previous.is_ascii())
+                }))
         {
             sentence_end = true;
         }
@@ -109,5 +115,12 @@ mod tests {
         );
         assert_eq!(generated_lyric_lines("sing now").len(), 1);
         assert!(generated_lyric_lines(" \r\n ").is_empty());
+        assert_eq!(
+            generated_lyric_lines("光る.歌う.またね.")
+                .iter()
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>(),
+            ["光る.", "歌う.", "またね."]
+        );
     }
 }

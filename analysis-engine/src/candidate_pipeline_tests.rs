@@ -556,6 +556,24 @@ fn reference_sequence_reconciliation_corrects_identity_without_claiming_caller_a
 }
 
 #[test]
+fn reference_line_breaks_survive_when_the_words_are_unchanged() {
+    let mut generated = transcript(TranscriptAuthority::Generated);
+    generated.text = "Sing now come home".to_string();
+    let (artifact, canonical) =
+        fuse_transcript_stage(&[generated], Some("Sing now\ncome home")).unwrap();
+    assert_eq!(artifact.text, "Sing now\ncome home");
+    assert_eq!(canonical.authority, LyricsAuthority::Generated);
+    assert_eq!(
+        artifact
+            .tokens
+            .iter()
+            .map(|token| token.text.as_str())
+            .collect::<Vec<_>>(),
+        ["Sing now", "come home"]
+    );
+}
+
+#[test]
 fn transcript_disagreement_regions_are_typed_and_source_bounded() {
     let mut generated = transcript(TranscriptAuthority::Generated);
     generated.language = Some("en-US".to_string());
