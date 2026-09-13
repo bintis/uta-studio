@@ -184,6 +184,9 @@ pub fn finalize_candidate_vocal_chart(
 /// A UTZ note belongs to one phrase. Divide a held note at a measured next-line
 /// onset so attaching that line's words cannot swallow its sentence boundary.
 /// Ordinary word boundaries do not split notes; no timing is inferred from text.
+/// Recheck ownership even without a cut: quantization may have moved the whole
+/// note out of its original word. Retain that owner only while it still overlaps.
+/// An unsplit note with no owner remains unassigned.
 fn notes_at_lyric_sentence_boundaries(track: &CanonicalSingingTrack) -> Vec<CanonicalNote> {
     let line_order = track
         .transcript
@@ -220,7 +223,7 @@ fn notes_at_lyric_sentence_boundaries(track: &CanonicalSingingTrack) -> Vec<Cano
             .copied()
             .filter(|boundary| note.range.start < *boundary && *boundary < note.range.end)
             .collect::<Vec<_>>();
-        if cuts.is_empty() {
+        if cuts.is_empty() && note.word_id.is_none() {
             output.push(note.clone());
             continue;
         }
@@ -869,5 +872,177 @@ mod tests {
             );
             assert_eq!(track.notes[0], original);
         }
+    }
+
+    #[test]
+    fn quantized_sentence_start_reassigns_stale_ownership_without_merging_lines() {
+        let mut track = lined_track();
+        track.words[0].range = TimeRange::new(950_000, 1_000_000).unwrap();
+        track.words[1].range = TimeRange::new(1_000_000, 1_010_000).unwrap();
+        track.notes.truncate(1);
+        track.notes[0].range = TimeRange::new(980_000, 1_060_000).unwrap();
+        let original = track.clone();
+        let assert_lines = |chart: &VocalChart| {
+            chart.validate().unwrap();
+            let phrases = &chart.tracks[0].phrases;
+            assert_eq!(phrases.len(), 2);
+            assert_eq!(phrases[0].id, "phrase-1-lrc-0");
+            assert_eq!(phrases[1].id, "phrase-2-lrc-1");
+            for (phrase, expected) in phrases.iter().zip([("word-1", "sing"), ("word-2", "now")]) {
+                let lyrics = phrase
+                    .notes
+                    .iter()
+                    .flat_map(|note| &note.lyrics)
+                    .filter_map(|token| match token {
+                        LyricToken::Text(token) => Some((token.id.as_str(), token.text.as_str())),
+                        LyricToken::Continuation { .. } => None,
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(lyrics, [expected]);
+            }
+        };
+        let raw = finalize_candidate_vocal_chart(&track, "raw-sentence-owner", None).unwrap();
+        assert_lines(&raw);
+        assert_eq!(track, original);
+
+        let context = crate::contract::MusicalContext {
+            bpm: Some(120.0),
+            key: None,
+            time_signature: None,
+            quantization_grid: Some(crate::contract::QuantizationGrid::Sixteenth),
+            authority: crate::contract::ContextAuthority::Hint,
+        };
+        let report = crate::quantization::quantize_singing_track(
+            &mut track,
+            &context,
+            TimeRange::new(0, 2_000_000).unwrap(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            track.notes[0].range,
+            TimeRange::new(1_000_000, 1_125_000).unwrap()
+        );
+        assert_eq!(track.notes[0].word_id.as_deref(), Some("word-1"));
+        let quantized = track.clone();
+        let mut expected_note = track.notes[0].clone();
+        expected_note.word_id = Some("word-2".to_string());
+        assert_eq!(notes_at_lyric_sentence_boundaries(&track), [expected_note]);
+
+        let chart =
+            finalize_candidate_vocal_chart(&track, "quantized-sentence-owner", Some(&report))
+                .unwrap();
+        assert_lines(&chart);
+        let phrases = &chart.tracks[0].phrases;
+        assert_eq!(phrases[0].notes[0].id, "unpitched-0");
+        assert!(phrases[0].notes[0].pitch.is_none());
+        assert_eq!(phrases[0].notes[0].start, track.words[0].range.start);
+        assert_eq!(phrases[0].notes[0].duration, 50_000);
+        let pitched = &phrases[1].notes[0];
+        assert_eq!(pitched.id, track.notes[0].id);
+        assert_eq!(pitched.start, track.notes[0].range.start);
+        assert_eq!(pitched.duration, 125_000);
+        assert_eq!(pitched.pitch, raw.tracks[0].phrases[0].notes[0].pitch);
+        assert_eq!(track, quantized);
+
+        // Analysis references must describe the final placeholder/pitched IDs,
+        // not the pre-quantization note or sentence-fragment list.
+        let boundaries = crate::fusion::BoundaryEvidenceSet {
+            source_expert: "game".to_string(),
+            kind: BoundaryEvidenceKind::Game,
+            model_hash: None,
+            runtime_identity: None,
+            segments: vec![crate::fusion::BoundarySegmentEvidence {
+                range: original.notes[0].range,
+                fractional_midi: Some(f32::from(original.notes[0].midi_note)),
+                boundary_decision_parameter: None,
+                presence_decision_parameter: None,
+            }],
+        };
+        let fusion = crate::fusion::fuse_singing_evidence(
+            &original.words,
+            &boundaries,
+            "rmvpe",
+            &[],
+            None,
+            &[],
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let selected = fusion
+            .candidates
+            .iter()
+            .find(|candidate| candidate.range == original.notes[0].range)
+            .unwrap();
+        let decision = crate::contract::FusionDecisionProvenance::Algorithm {
+            selector: crate::contract::HSMM_VITERBI_SELECTOR.to_string(),
+            selector_version: crate::fingerprint::HSMM_VERSION.to_string(),
+            candidate_set_digest: "sentence-owner-fixture".to_string(),
+            selected_candidate_ids: vec![selected.id.clone()],
+            reuse_policy: crate::contract::AnalysisReusePolicy::Deterministic,
+        };
+        let analysis = crate::artifact::SingingAnalysis::new(
+            &original,
+            &chart,
+            fusion.candidates,
+            fusion.hard_boundaries,
+            Vec::new(),
+            "quantized-sentence-owner",
+            &decision,
+        )
+        .unwrap();
+        assert_eq!(analysis.chart_references.track_id, chart.tracks[0].id);
+        assert_eq!(
+            analysis.chart_references.phrase_ids,
+            [phrases[0].id.clone(), phrases[1].id.clone()]
+        );
+        assert_eq!(
+            analysis.chart_references.note_ids,
+            ["note-1", "unpitched-0"]
+        );
+        assert_eq!(
+            analysis.chart_references.lyric_token_ids,
+            ["word-1", "word-2"]
+        );
+    }
+
+    #[test]
+    fn unsplit_note_keeps_its_overlapping_owner_even_when_another_word_overlaps_more() {
+        let mut track = cross_word_track(1_900_000);
+        track.notes[0].range.start = 900_000;
+        assert_eq!(notes_at_lyric_sentence_boundaries(&track), track.notes);
+    }
+
+    #[test]
+    fn unsplit_unassigned_note_stays_unassigned_despite_measured_word_overlap() {
+        let mut track = lined_track();
+        track.notes.truncate(1);
+        track.notes[0].range = TimeRange::new(1_000_000, 1_200_000).unwrap();
+        track.notes[0].word_id = None;
+        assert!(range_overlap(track.notes[0].range, track.words[1].range) > 0);
+        assert_eq!(notes_at_lyric_sentence_boundaries(&track), track.notes);
+    }
+
+    #[test]
+    fn unsplit_note_without_any_word_overlap_does_not_keep_a_stale_lyric_owner() {
+        let mut track = lined_track();
+        track.notes.truncate(1);
+        track.notes[0].range = TimeRange::new(2_100_000, 2_500_000).unwrap();
+        let mut expected = track.notes[0].clone();
+        expected.word_id = None;
+        assert_eq!(notes_at_lyric_sentence_boundaries(&track), [expected]);
+        let chart = finalize_candidate_vocal_chart(&track, "unowned-sentence-note", None).unwrap();
+        let note = chart.tracks[0]
+            .phrases
+            .iter()
+            .flat_map(|phrase| &phrase.notes)
+            .find(|note| note.id == track.notes[0].id)
+            .unwrap();
+        assert!(matches!(&note.lyrics[0], LyricToken::Text(token) if token.text.is_empty()));
+        assert_eq!(note.start, track.notes[0].range.start);
+        assert_eq!(note.duration, 400_000);
+        assert_eq!(note.pitch.unwrap().midi, track.notes[0].midi_note);
     }
 }
