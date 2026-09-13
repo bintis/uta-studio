@@ -9,6 +9,10 @@
 - `tasks/remaining-models/STATE.md` is the current model/task index.
 - Historical evidence remains scoped to the exact source, model bytes, backend, device, and command that produced it. It does not override current source.
 
+## Lyric sentences and Workflow quantization
+
+Generated sentence boundaries now reach UTZ phrases, while supplied plain/LRC line authority and untimed mixed-LRC text are preserved. Workflow exposes a per-song rhythm-quantization preference through the existing mutation and exact request path. The real Asphodelos rerun/export has 33 phrases instead of one, with prior melody coverage/pitch preserved; recognition/alignment omissions remain a separate quality issue. See [implementation, verification and limits](LYRIC_SENTENCE_REPAIR.md). This task does not promote runtime/model readiness.
+
 ## Runtime architecture
 
 - Studio communicates with packaged `uta-analyze` and `uta-runtime` machine protocols. `app-core/**` and `desktop/**` do not import backend implementation crates.
