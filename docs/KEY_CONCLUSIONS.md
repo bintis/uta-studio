@@ -1,6 +1,6 @@
 # Uta! Studio — Key Technical Conclusions
 
-**Updated:** 2026-09-11
+**Updated:** 2026-09-14
 
 ## Authority
 
@@ -12,6 +12,39 @@
 ## Lyric sentences and Workflow quantization
 
 Generated sentence boundaries now reach UTZ phrases, while supplied plain/LRC line authority and untimed mixed-LRC text are preserved. Workflow exposes a per-song rhythm-quantization preference through the existing mutation and exact request path. The real Asphodelos rerun/export has 33 phrases instead of one, with prior melody coverage/pitch preserved; recognition/alignment omissions remain a separate quality issue. See [implementation, verification and limits](LYRIC_SENTENCE_REPAIR.md). This task does not promote runtime/model readiness.
+
+## Cargo dependency upgrade (2026-09-14 JST)
+
+The main and standalone fuzz lockfiles now resolve current published stable dependencies.
+The final direct-dependency review reports 40 registry packages current; fuzz's own
+`libfuzzer-sys` and `serde_json` requirements are also current. Transitive versions remain
+subject to their upstream requirements. Selected upgrades include reqwest 0.13.5, AES 0.9.3,
+cipher 0.5.2, SHA-2/MD5 0.11.0, ZIP 8.6.0, SQLite bindings 0.40.2 and rfd 0.17.2.
+HTTP query support is explicit, digest bytes keep their hexadecimal representation, and
+NetEase encryption has independent offline fixtures. ICU logging remains enabled on the
+single resolved provider. The current rfd portal backend needs a dynamically loaded D-Bus
+library; both Nix shells and packaged wrappers now expose it without enabling GTK/X11.
+
+Verification at `e0a498a9`: desktop, analysis, worker and export all-target compilation passes;
+all three standalone fuzz targets compile. Core 490, UTZ 13, Runtime Manager 36 and audio
+state 11 library tests pass; the analysis suite passes 314 tests when run serially.
+Three explicit ignored/manual tests remain unexecuted. The initial parallel analysis suite
+had one fake-decoder duration mismatch in
+`super_shares_facts_pcm_and_acoustic_without_changing_source_or_roles`; the isolated test
+and subsequent serial suite pass, but the initial failure's cause remains unconfirmed.
+No production validation was weakened to accommodate it. No GPU/model execution, real
+file-picker interaction, sustained audition, Windows execution or full Nix packaging was
+performed; installed models/runtimes and product-readiness status are unchanged.
+
+Operation receipts under `test-artifacts/operations/`: final version review
+`20260913T162412-c15509723201`, all-target check `20260913T162632-348cc0e62190`,
+core/export/runtime/audio tests `20260913T162547-99f5ac7aaddd`, initial analysis failure
+`20260913T162402-6f4a1bd02944`, isolated analysis test `20260913T162647-55fea471c911`,
+serial analysis suite `20260913T162834-4559a6631423`, fuzz compilation
+`20260913T162835-a372a716b524`, D-Bus loading `20260913T162206-0a6d115e612c`, and
+packaged library-path evaluation `20260913T162325-72fb7bd7a76a`. The offline intermediate
+lock resolution selected some cached older crates; final online reconciliation restored
+the current versions before final compilation/tests.
 
 ## Runtime architecture
 
