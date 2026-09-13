@@ -2,7 +2,7 @@ use super::*;
 use crate::artifact::{
     AlignmentArtifact, AlignmentItem, TranscriptArtifact, finalize_candidate_vocal_chart,
 };
-use crate::candidate_pipeline::fuse_alignment_stage;
+use crate::candidate_pipeline::{fuse_alignment_stage, fuse_transcript_stage};
 use crate::contract::{BoundaryAuthority, BoundaryLevel};
 use crate::fusion::{
     BoundaryEvidenceKind, BoundaryEvidenceSet, BoundarySegmentEvidence, HarmonyMetadata,
