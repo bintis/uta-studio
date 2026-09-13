@@ -8,6 +8,72 @@ Status: **all eighteen resources completed real full-song XPU diagnostic executi
 
 The motivation is `docs/ROFORMER_B580_LIBTORCH_XPU.md`: native ATen/oneDNN outperformed GGML Vulkan for the tested projection and full-context attention operators. Those measurements are not whole-model speedups and do not establish audio parity. No multiplication of operator ratios is used to predict production throughput.
 
+## Latest-source trimming and reuse — CPU-verified, XPU source build incomplete (2026-09-11 UTC)
+
+The user corrected acquisition to **latest upstream source, one current build**, then authorized
+source downloads, compilation and CPU tests while explicitly prohibiting all GPU access/tests.
+This supersedes the wheel-based installer description below, not its historical measurements.
+`install-libtorch-xpu-runtime.sh` now clones the upstream default branch (or uses an explicit
+source checkout), builds native LibTorch with Python bindings/tests, CUDA/ROCm, distributed
+communication including XCCL, and profiling disabled. ATen CPU dispatch and XPU/oneDNN stay;
+CPU is not an inference fallback. Upstream Python code generation is build-only. Source commit,
+local status and submodules are provenance, not release/commit/hash acceptance gates.
+
+`build-ggml-runtime.sh` likewise defaults to latest source in its private work tree, without a
+fixed-commit/clean-tree gate or resetting the supplied checkout. Existing precision/attention
+patches remain; two context hunks were rebased and a missing SPIRV-Headers CMake target fixed.
+The old optional fixed-wheel Nix runtime derivation is removed rather than retained as a second
+implementation; desktop still ships both explicit builders. A sandboxed XPU source package is
+**not implemented/verified** and remains release work.
+
+Measured on an isolated copy of the installed dependency directory (no source-model execution):
+**2,913,764,174 → 1,991,436,583 bytes**, saving **922,327,591 bytes / 31.65%**.
+Compaction makes byte-identical ELF SONAME aliases relative symlinks and drops standalone `.a`/
+`.dbg` files, retaining distinct DSOs, JIT/device images and lazy-loaded providers. This is not the
+final source-built runtime size or a download reduction. Headers, downloads and build outputs live
+outside the new installed runtime; moving them to work/cache does not itself free total disk space.
+The present wheel's `libtorch_xpu.so` directly needs `libtorch_cpu.so`, oneCCL and MKL; they cannot
+be deleted from that binary. Source configuration removes unused components at build time instead.
+
+Borrowed optimizations, without changing precision/context/overlap or dispatch safety:
+- GGML GAME now owns one segmenter graph/allocator per inference window, uploads immutable
+  embeddings/language/positions once, then updates only noise/time per diffusion step. Real CPU
+  regression caught gallocr overwriting `INPUT` storage; retained `OUTPUT` flags now protect those
+  inputs without host readback. The owner drops before pitch-estimator allocation.
+- LibTorch GAME reuses rotary frequency/sine/cosine tensors across query/key and each layer stack;
+  region-dependent phases are rebuilt per estimator invocation. Shared rotary helpers compute
+  sine/cosine once, with the same FP32 arithmetic order. A native prepared-feature adapter keeps
+  the shared Rust diffusion loop connected to both backends.
+
+Verification (all GPU tests remain prohibited):
+- Latest fetched GGML `7840aab` CPU library builds; real medium GAME weights on the **CPU-only**
+  plugin directory compare reused/fresh graphs exactly for three differing noise/time steps and
+  complete bounded inference (`20260911T194426-3cc2576c4c33`). Earlier device-description and
+  input-lifetime failures remain recorded.
+- Latest GGML plus all eleven patches compiles including Vulkan shaders/backend; no Vulkan
+  library was loaded/executed. Final corrected target receipt `20260911T195819-78eaf5c1805b`.
+  Earlier outer build `20260911T194820-d5308e057b64` timed out and lacks completion; artifacts
+  subsequently appeared, but no historical result was invented. Independent no-op build receipt
+  `20260911T195430-3b72e69defc7` and the corrected target build establish later completion only.
+- Native app-owned XPU library builds **against existing installed headers/libraries**, not the
+  new upstream source. CPU-only rotary regression matches recomputation exactly; final rebuild
+  removes its initial GCC shape warning (`20260911T194458-4e0a0ed5812c`). It links only CPU ATen.
+- Latest PyTorch `8671f09` source/build definitions were inspected. Full XPU source compilation
+  is **not complete**: no `icx`/`icpx`/`dpclang++`, SYCL/MKL SDK roots, or PyYAML in the default
+  development environment. The sparse source inspection checkout is not a full build checkout.
+  SDK provisioning and upstream compilation remain, with no CPU build substituted as XPU success.
+- Final focused suites: GGML GAME **28 passed / 2 ignored**, LibTorch GAME **24 passed**, worker
+  runtime **6 passed**, runtime-lock **1 passed**, and targeted formatting pass
+  (`20260911T200151-c171543aae29`). The weighted ignored GGML graph test was separately invoked
+  on CPU as above; model-load-only ignored test remains unexecuted. Packaging ELF fixtures and
+  mock source-build layout/options pass (`20260911T200319-f837ccd089d7`); mocks do not establish
+  successful upstream compilation. Nix syntax parsing passes, not Nix packaging.
+
+Evidence root: `test-artifacts/native-source-trim/`. No GPU enumeration, inference, benchmark,
+installed runtime/model replacement, listening or production promotion. GPU speedup and final
+source-built size remain unmeasured. Do not substitute LibTorch FP16 SDPA for GGML F32-output
+attention or revive retired TF32/GELU/residual experiments based on operator speed ratios.
+
 ## Execution boundary
 
 - Rust continues to own request validation, audio preparation/decoding, model conditioning, typed evidence, progress and publication. Studio does not prepare tensors or import backend implementation crates.
@@ -428,12 +494,12 @@ The user authorized promoting the native LibTorch XPU implementation to a produc
   LibTorch XPU) persisted as `compute_backend` and sent as the exact `requested_backend`; per-model runtime
   menus list the advertised LibTorch capability and per-model overrides accept `libtorch_xpu`. An
   unavailable backend fails in Plan Preview.
-- **Installation** is Python-free: `native-inference/libtorch-runtime/install-libtorch-xpu-runtime.sh`
-  fetches the official `torch 2.13.0+xpu` wheel archive and its pinned native dependency wheels with
-  curl (bounded parallel byte ranges), unpacks only shared libraries and C++ headers with unzip, builds
-  `libuta_libtorch.so` with CMake inside `bash dev.sh`, and writes `runtime-manifest.json` with library
-  digests and the machine's driver environment. The runtime recipe is
-  `native-inference/libtorch-runtime/runtime-recipe.json`.
+- **Current installation source**: `native-inference/libtorch-runtime/install-libtorch-xpu-runtime.sh`
+  compiles the latest upstream native XPU source and `libuta_libtorch.so` inside `bash dev.sh`;
+  Python is build-time code generation only, never product inference. See **Latest-source trimming
+  and reuse** above for SDK prerequisites and incomplete upstream-build status. The following
+  historical production verification used the former official-wheel installer, not this source build.
+  Recipe: `native-inference/libtorch-runtime/runtime-recipe.json`.
 
 ### Production verification on the 12-second excerpt (2026-09-11)
 

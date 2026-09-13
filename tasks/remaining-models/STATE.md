@@ -5,6 +5,28 @@
 
 This file stores current effective state only. Historical execution evidence remains in its original records; current source and focused tests override stale historical conclusions. Durable cross-cutting conclusions live in `docs/KEY_CONCLUSIONS.md`.
 
+## Latest-source runtime trimming and reuse — CPU verified, GPU paused (2026-09-11 UTC)
+
+User direction: latest upstream library source and one current implementation; source acquisition,
+compilation and CPU tests allowed, **no GPU access/tests**. Current builders no longer select the
+historical GGML commit or LibTorch wheel release. Installed runtimes remain unchanged. Two GGML
+patch contexts were rebased and SPIRV header propagation fixed; latest GGML CPU and Vulkan libraries
+compile (Vulkan never loaded). Native LibTorch app code compiles against the existing runtime, and
+its CPU rotary-phase regression matches exactly. Full latest-source XPU LibTorch compilation is
+**incomplete**, blocked by missing SYCL compiler/SDK and build-time PyYAML; no fallback qualifies it.
+
+An isolated installed-dependency copy shrinks **2,913,764,174 → 1,991,436,583 bytes** via exact ELF
+alias deduplication/static-debug removal. This is not final source-built runtime size. GGML GAME
+reuses window-owned graph/immutable conditioning; weighted CPU checks found and fixed gallocr input
+reuse, then match fresh graphs exactly. LibTorch reuses rotary phases per layer stack and retains
+the shared diffusion adapter. Final focused checks: GGML GAME 28 pass/2 ignored, LibTorch GAME 24,
+worker runtime 6, runtime lock 1; weighted medium GAME CPU separately passes, as do CPU rotary and
+packaging fixtures. No measured GPU speedup, installation or readiness promotion. The old optional
+fixed-wheel Nix runtime derivation is removed; source-based XPU Nix packaging remains release work.
+Evidence, failed attempts, timeout provenance and remaining work:
+[latest-source trimming](../../docs/design/runtime/LIBTORCH_EXECUTION.md#latest-source-trimming-and-reuse--cpu-verified-xpu-source-build-incomplete-2026-09-11-utc).
+Historical pinned/wheel statements below describe prior execution evidence, not current acquisition.
+
 ## Current product model set
 
 Studio has one model execution boundary: Rust-owned graphs calling the shared libraries built from upstream `ggml-org/ggml` revision `8c63e70982c95ceb862e3a1073a2c1beef75d60a`. The package is upstream GGML plus exactly the backend patches `native-inference/ggml-worker/runtime-recipe.json` declares, and contains no app-owned C/C++ model graph, shim, model CLI, or model-inference subprocess. The repository contains no model conversion or model-rewrite script; container migration is `cargo xtask gguf`. Vulkan remains the default. CPU is an explicitly selected experimental reference mode; GPU and integrated-GPU requests never fall back to it.
