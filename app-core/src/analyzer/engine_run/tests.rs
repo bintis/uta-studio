@@ -16,7 +16,7 @@ fn artifact(path: &str, bytes: &[u8]) -> ArtifactRefWire {
     ArtifactRefWire {
         path: PathBuf::from(path),
         media_type: "application/json".to_string(),
-        sha256: format!("{:x}", Sha256::digest(bytes)),
+        sha256: hex::encode(Sha256::digest(bytes)),
         bytes: bytes.len() as u64,
     }
 }

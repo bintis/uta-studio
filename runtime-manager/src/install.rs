@@ -1177,7 +1177,7 @@ fn sha256_file(path: &Path) -> std::io::Result<String> {
         }
         digest.update(&buffer[..count]);
     }
-    Ok(format!("{:x}", digest.finalize()))
+    Ok(hex::encode(digest.finalize()))
 }
 
 fn unique_operation_id() -> String {

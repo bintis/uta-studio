@@ -47,7 +47,7 @@ pub fn deterministic_fingerprint<T: Serialize>(identity: &T) -> EngineResult<Str
             format!("could not serialize analysis identity: {error}"),
         )
     })?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
+    Ok(hex::encode(Sha256::digest(bytes)))
 }
 
 #[cfg(test)]

@@ -239,7 +239,7 @@ fn validate_runtime_libraries_at(root: &Path) -> Result<ValidatedRuntime, String
     }
     Ok(ValidatedRuntime {
         library_dir,
-        manifest_content_digest: format!("{:x}", Sha256::digest(&bytes)),
+        manifest_content_digest: hex::encode(Sha256::digest(&bytes)),
     })
 }
 

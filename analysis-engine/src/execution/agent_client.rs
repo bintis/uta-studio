@@ -318,7 +318,7 @@ pub(crate) fn candidate_set_digest<T: Serialize + ?Sized>(pool: &T) -> EngineRes
             "could not encode fusion candidate-set identity: {error}"
         ))
     })?;
-    Ok(format!("{:x}", writer.0.finalize()))
+    Ok(hex::encode(writer.0.finalize()))
 }
 
 fn encode_agent_request(request: &AgentFusionRequest<'_>) -> EngineResult<Vec<u8>> {
@@ -819,7 +819,7 @@ fn run_fusion_agent_for_pool_inner(
             "fusion agent response exceeded the bounded protocol limit",
         ));
     }
-    let response_digest = format!("{:x}", Sha256::digest(&stdout_bytes));
+    let response_digest = hex::encode(Sha256::digest(&stdout_bytes));
     let response: AgentFusionResponse = serde_json::from_slice(&stdout_bytes)
         .map_err(|_| protocol_mismatch("fusion agent response is not valid protocol JSON"))?;
     if response.contract != AGENT_RESPONSE_CONTRACT || response.version != AGENT_PROTOCOL_VERSION {

@@ -122,7 +122,7 @@ pub fn analyze_acoustic_evidence(
         sample_rate: SAMPLE_RATE,
         window_samples: WINDOW_SAMPLES as u32,
         semantic_audio_role: semantic_audio_role.to_string(),
-        decoded_audio_sha256: format!("{:x}", decoded_digest.finalize()),
+        decoded_audio_sha256: hex::encode(decoded_digest.finalize()),
         frames: processor.frames,
     };
     evidence.validate()?;

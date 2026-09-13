@@ -252,7 +252,7 @@ fn kugou_request(
 fn md5_hex(data: &[u8]) -> String {
     let mut hasher = Md5::new();
     hasher.update(data);
-    format!("{:x}", hasher.finalize())
+    hex::encode(hasher.finalize())
 }
 
 fn value_string(value: &Value) -> Option<String> {

@@ -100,7 +100,7 @@ impl Runtime {
             root: canonical_root,
             library,
             environment: manifest.environment,
-            manifest_content_digest: format!("{:x}", Sha256::digest(&bytes)),
+            manifest_content_digest: hex::encode(Sha256::digest(&bytes)),
         })
     }
 

@@ -1238,7 +1238,7 @@ fn acquisition(method: AcquisitionMethod, label: &str) -> AcquisitionSpec {
 }
 
 fn catalog_recipe_digest(id: &str) -> String {
-    format!("{:x}", Sha256::digest(format!("catalog:{id}").as_bytes()))
+    hex::encode(Sha256::digest(format!("catalog:{id}").as_bytes()))
 }
 
 #[cfg(test)]

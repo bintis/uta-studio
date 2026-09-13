@@ -445,7 +445,7 @@ fn install_fixture_generation(
 ) {
     let resource = ResourceRef::model(model_id).unwrap();
     let payload = b"fixture model";
-    let payload_sha = format!("{:x}", Sha256::digest(payload));
+    let payload_sha = hex::encode(Sha256::digest(payload));
     let model = ResourceCatalog::default_catalog()
         .unwrap()
         .model(model_id)
@@ -511,7 +511,7 @@ fn rmvpe_partial_pipeline_emits_hashed_result_and_stable_fingerprint() {
     fs::create_dir_all(&output_two).unwrap();
     let fixture_source = uta_runtime_manager::SourceIdentity {
         filename: Some("model.bin".to_string()),
-        sha256: Some(format!("{:x}", Sha256::digest(b"fixture model"))),
+        sha256: Some(hex::encode(Sha256::digest(b"fixture model"))),
         ..uta_runtime_manager::SourceIdentity::default()
     };
     install_fixture_generation(&store, "rmvpe", Some(fixture_source.clone()));

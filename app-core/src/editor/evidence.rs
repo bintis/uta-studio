@@ -1306,10 +1306,8 @@ mod tests {
             candidates: &candidates,
             hard_boundaries: &hard_boundaries,
         };
-        let candidate_set_digest = format!(
-            "{:x}",
-            Sha256::digest(serde_json::to_vec(&candidate_pool).unwrap())
-        );
+        let candidate_set_digest =
+            hex::encode(Sha256::digest(serde_json::to_vec(&candidate_pool).unwrap()));
         serde_json::to_vec(&serde_json::json!({
             "contract":"uta.analysis-engine.singing-analysis",
             "version":1,
@@ -1356,7 +1354,7 @@ mod tests {
             hard_boundaries: &hard_boundaries,
         };
         value["provenance"]["fusion_decision"]["candidate_set_digest"] = serde_json::json!(
-            format!("{:x}", Sha256::digest(serde_json::to_vec(&pool).unwrap()))
+            hex::encode(Sha256::digest(serde_json::to_vec(&pool).unwrap()))
         );
     }
 

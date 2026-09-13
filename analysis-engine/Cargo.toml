@@ -18,6 +18,7 @@ uta-audio-reuse = { path = "../native-inference/audio-reuse" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
+hex = "0.4"
 uta-runtime-manager = { path = "../runtime-manager" }
 utz = { path = "../vendor/utz" }
 

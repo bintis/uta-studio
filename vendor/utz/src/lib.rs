@@ -1030,7 +1030,7 @@ impl UtzPackage {
                     written
                 }
             };
-            metadata.insert(path, (bytes, format!("{:x}", hasher.finalize())));
+            metadata.insert(path, (bytes, hex::encode(hasher.finalize())));
         }
         manifest.update_asset_metadata_from(&metadata)?;
         manifest.validate()?;
@@ -1225,7 +1225,7 @@ fn invalid<T>(message: impl Into<String>) -> Result<T> {
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    hex::encode(Sha256::digest(bytes))
 }
 
 pub fn validate_package_path(path: &str) -> Result<()> {

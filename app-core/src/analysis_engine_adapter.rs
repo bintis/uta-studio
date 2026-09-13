@@ -1201,7 +1201,7 @@ pub(crate) fn validate_workflow_plan_identity(
 }
 
 pub(crate) fn digest_json(json: &str) -> String {
-    format!("{:x}", Sha256::digest(json.as_bytes()))
+    hex::encode(Sha256::digest(json.as_bytes()))
 }
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
