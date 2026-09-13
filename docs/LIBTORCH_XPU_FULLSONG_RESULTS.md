@@ -21,7 +21,7 @@
 | `bs_roformer_leap_xe90_instrumental` | 44.825 | 独立 checkpoint 的完整伴奏及残差人声 |
 | `bs_polarformer_public_instrumental` | 46.626 | 修复后完整伴奏及残差人声 |
 | `melband_roformer_harmony` | 51.225 | 完整 lead 及 residual |
-| `melband_roformer_denoise_aufr33` | 85.550 | 完整去噪人声 |
+| `melband_roformer_denoise_aufr33` | 85.550（受竞争影响） | 完整去噪人声；同配置复测 **48.405 秒**，见下节 |
 | `melband_roformer_dereverb_anvuew` | 27.041 | 完整去混响人声 |
 | `rmvpe` | 4.758 | 21,689 帧，保留真实 voiced 决策 |
 | `fcpe` | 0.705 | 21,689 帧 |
@@ -37,6 +37,28 @@
 | `stars` | 4.216 | 40,665 帧，177 音符、55 个 style 项及 348 个 technique 项 |
 
 通常结果目录为 `cases/<resource>/`；PolarFormer 通过目录为 `cases/polar-equal-width/`，STARS 为 `cases/stars-real-lexicon/`。原失败目录均保留。四个双输出分离器的完整浮点重构最大绝对误差均为 `5.960464477539063e-8`；这仅说明残差重构，不代表分离质量。
+
+## 去噪耗时复核：85.550 秒不是正常性能基准
+
+用户指出去噪计时异常后，先读取既有日志和 GGUF 元数据，再进行一组明确的整曲对照；本次复核未修改推理实现、权重、输入、重叠或精度，也没有停止其他用户进程。
+
+| 项目 | 去噪原记录 | 去噪复测 | Harmony 同期对照 |
+| --- | ---: | ---: | ---: |
+| `execution_seconds` | 85.550 | **48.405** | **46.162** |
+| 原生 forward 及同步（秒） | 75.588 | 39.396 | 37.152 |
+| 分块数 | 115 | 115 | 115 |
+| 目标 CCS 客户活动均值（%） | 39.06 | 68.85 | 73.80 |
+| Hyprland RCS 客户活动均值（%） | 29.53 | 8.49 | 4.55 |
+
+- 去噪、Harmony、去混响的声明网络参数均为 228,203,172 个，dim 384、depth 6、60 bands、8 heads、head dimension 64，首层与 buffer 形状相同。块长均为 352,800 samples（8 秒）。去噪/Harmony 默认重叠 4、步长 2 秒；去混响重叠 2、步长 4 秒，因此本曲分别执行 115/115/57 块。不能直接拿去混响的 27.041 秒作为同工作量对照。
+- 去噪原记录中，原生 profile 外只有 0.777 秒；不是 FLAC 发布、模型加载或文件写入造成那几十秒差异。`compute` 是含提交、等待和同步的原生 forward 墙钟，不是纯 GPU 核计时。
+- 原去噪的 83 个 during-target 主机区间持续观察到两个播放器的 RCS 客户活动，均值分别约 14.25% 和 8.49%；其原生 forward 比同样 115 块的原 Harmony 多 34.366 秒，其他阶段合计接近。复测期间外部图形负载较低，耗时降至与同期 Harmony 接近，**支持资源竞争显著污染原计时的判断，不是一次模型代码优化**。
+- 原去噪使用 `runtime/` 与 `diagnostic-build/`；复测两者统一使用已有的 `runtime-equal-width/` 与 `publication-build/`。Mel 模型的 Q/K/V 等宽，不进入 PolarFormer 的补零分支；发布封装已有前述 32 位 FLAC 修复。因此与首次运行不是逐二进制、逐环境隔离的因果实验，不能把全部下降量精确归给某一个变化。
+- 引擎数字是每个可用区间中对应 owner/engine 的最大客户占比，再取均值；缺失区间不补零，不将不同客户/引擎相加，不等同于整卡或 XMX 利用率。复测仍有桌面活动及约 5.6–5.9% 主机 iowait；单次串行对照不能精确分摊每个外部进程的影响，也不是隔离环境的吞吐保证。
+- 去噪及 Harmony 两个 stem 共 **57,386,448** 个浮点输出值与原记录完整比较：均有限，最大绝对差 **2.384185791015625e-7**；去噪 RMSE **1.0624977683274984e-8**，不是逐位一致。没有用减重叠、缩短上下文、降低精度或后台切换换取耗时下降。原始输出和当前 `publications/` 选择均保留。
+- 复测操作：去噪 `20260911T085338-756565e19f01`、Harmony `20260911T085516-05b86b080bf2`；完整对照 `20260911T085734-edc777d4d7df`。顶层观察错误均为空，采样读取错误分别为 1/0。前一准备调用 `20260911T085225-e34fd18beaa0` 因观察目录父目录缺失而失败，堆栈位于目标启动之前；修正目录准备后才执行模型，并非模型失败重试。
+
+证据：`test-artifacts/libtorch-xpu-fullsong-real/denoise-timing-review/{geometry,analysis,confirmation}.json` 及其 `cases/`、`observations/`。原始 `summary.json` 的 85.550 秒不改写；本次问题的最新实测为 **去噪 48.405 秒、Harmony 46.162 秒**，均为同一 216.88 秒完整输入。
 
 ## 实现与修复
 
