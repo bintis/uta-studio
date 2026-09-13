@@ -171,16 +171,15 @@ fn device_index(config: &Value) -> Result<u16, String> {
     }
 }
 
-fn precision(model_id: &str) -> Precision {
-    match model_id {
-        "bs_roformer_leap_xe90_vocals"
-        | "bs_roformer_leap_xe90_instrumental"
-        | "bs_polarformer_public_instrumental"
-        | "melband_roformer_harmony"
-        | "melband_roformer_denoise_aufr33"
-        | "melband_roformer_dereverb_anvuew" => Precision::MixedAttention,
-        _ => Precision::Strict,
-    }
+/// RoFormer's `layout_preserving_roformer_attention` casts Q/K/V to FP16 before
+/// SDPA with no overflow guard. `bs_polarformer_public_instrumental` OOM'd and
+/// `melband_roformer_harmony` emitted nonfinite masks under this path during the
+/// original 12-second qualification pass; `bs_roformer_leap_xe90_vocals` then
+/// emitted nonfinite masks twice in production on a real full song. All six
+/// models share the same unguarded cast, so none of them get MixedAttention
+/// until it accumulates in FP32 instead of FP16.
+fn precision(_model_id: &str) -> Precision {
+    Precision::Strict
 }
 
 /// Executes one task's model through the native runtime, writing the same raw
@@ -622,15 +621,13 @@ mod tests {
     }
 
     #[test]
-    fn precision_follows_the_qualified_full_song_policy() {
+    fn mixed_attention_is_disabled_pending_an_fp32_accumulating_fix() {
         assert_eq!(
             precision("melband_roformer_denoise_aufr33"),
-            Precision::MixedAttention
+            Precision::Strict
         );
-        assert_eq!(
-            precision("bs_roformer_leap_xe90_vocals"),
-            Precision::MixedAttention
-        );
+        assert_eq!(precision("bs_roformer_leap_xe90_vocals"), Precision::Strict);
+        assert_eq!(precision("melband_roformer_harmony"), Precision::Strict);
         assert_eq!(precision("rmvpe"), Precision::Strict);
         assert_eq!(precision("qwen3_asr_1_7b"), Precision::Strict);
     }
