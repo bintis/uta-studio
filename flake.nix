@@ -4,9 +4,11 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     crane.url = "github:ipetkov/crane";
+    rust-overlay.url = "github:oxalica/rust-overlay";
+    rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs = { self, nixpkgs, crane }:
+  outputs = { self, nixpkgs, crane, rust-overlay }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
@@ -18,7 +20,11 @@
           # A sandboxed XPU/oneAPI source derivation belongs to release packaging.
           pname = "uta-studio";
           version = (builtins.fromTOML (builtins.readFile ./desktop/Cargo.toml)).package.version;
-          craneLib = crane.mkLib pkgs;
+          # Follow stable through the locked overlay; update that input to
+          # upgrade Cargo and rustc without changing the development shell.
+          rustPackages = pkgs.extend rust-overlay.overlays.default;
+          rustToolchain = rustPackages.rust-bin.stable.latest.minimal;
+          craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
           src = pkgs.lib.cleanSourceWith {
             src = ./.;
             filter = path: type:

@@ -61,6 +61,11 @@ Build the product:
 bash build.sh
 ```
 
+Nix packaging (`nix build .#uta-studio`) uses the stable Cargo/Rust toolchain
+from the locked `rust-overlay` input. Upgrade it with `nix flake update rust-overlay`
+and commit `flake.lock`; no version number needs editing. `bash dev.sh` and
+`bash build.sh` continue to use the machine's rustup toolchain.
+
 Linux is Wayland-only; Uta! Studio does not enable X11 or XWayland fallback.
 
 ## Runtime Manager CLI
@@ -126,6 +131,10 @@ bash dev.sh
 bash build.sh
 ```
 
+Nix 打包（`nix build .#uta-studio`）使用 `flake.lock` 中 `rust-overlay` 提供的
+stable Cargo/Rust。升级时运行 `nix flake update rust-overlay` 并提交 `flake.lock`，
+无需修改版本号；`bash dev.sh` 和 `bash build.sh` 仍使用本机 rustup 工具链。
+
 Linux 仅支持 Wayland，不启用 X11 或 XWayland 回退。
 
 ## 文档
@@ -172,6 +181,11 @@ Uta! Studio は、カラオケ譜面の準備・確認・編集・試聴・書�
 bash dev.sh
 bash build.sh
 ```
+
+Nix パッケージ（`nix build .#uta-studio`）は、ロックされた `rust-overlay` の
+stable Cargo/Rust を使います。更新は `nix flake update rust-overlay` を実行して
+`flake.lock` をコミットするだけで、バージョン番号の編集は不要です。
+`bash dev.sh` と `bash build.sh` は引き続きマシンの rustup ツールチェーンを使います。
 
 Linux は Wayland 専用で、X11／XWayland フォールバックは有効にしません。
 
