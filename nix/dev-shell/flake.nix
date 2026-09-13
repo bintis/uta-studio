@@ -20,6 +20,7 @@
           runtimeLibraries = with pkgs; [
             stdenv.cc.cc
             zlib
+            dbus
           ];
           commonPackages = gstPlugins ++ (with pkgs; [
             cmake

@@ -52,6 +52,7 @@
           runtimeLibraries = with pkgs; [
             stdenv.cc.cc
             zlib
+            dbus
           ];
 
           cargoExtraArgs = "--locked -p uta-studio-desktop -p uta-runtime-manager -p uta-fusion-agent-adapter -p uta-analysis-engine -p uta-ggml-worker";
@@ -189,6 +190,7 @@
           runtimeLibraries = with pkgs; [
             stdenv.cc.cc
             zlib
+            dbus
           ];
         in {
           default = pkgs.mkShell {
