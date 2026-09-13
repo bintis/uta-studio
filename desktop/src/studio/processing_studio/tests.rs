@@ -486,3 +486,119 @@ fn selected_module_edits_in_the_contextual_inspector_not_inside_a_stage_lane() {
     assert!(inspector.contains("allow_drag_reorder: false"));
     assert!(inspector.contains("MODULE SETTINGS"));
 }
+
+#[test]
+fn workflow_quantization_control_renders_effective_value_and_toggles_workflow_parameter() {
+    use crate::studio::{AnalysisCommand, StudioTheme, UiAction, UiCommand};
+    use bevy::prelude::*;
+
+    for (global_enabled, song_enabled, workflow_enabled, expected) in [
+        (false, None, None, false),
+        (true, None, None, true),
+        (true, Some(false), None, false),
+        (false, Some(true), None, true),
+        (true, Some(true), Some(false), false),
+        (false, Some(false), Some(true), true),
+    ] {
+        let global = app_core::AnalysisExperienceSettings {
+            enable_quantization: global_enabled,
+            ..Default::default()
+        };
+        let song = song_enabled.map(|enabled| app_core::AnalysisExperienceOverride {
+            enable_quantization: Some(enabled),
+            ..Default::default()
+        });
+        let mut definition = app_core::default_workflow("isolated-quantization-control");
+        let canonical = definition
+            .nodes
+            .iter_mut()
+            .find(|node| node.capability_id.as_str() == "finalize.canonical_singing_track")
+            .unwrap();
+        canonical.instance_id = app_core::WorkflowNodeId::new("singing_output");
+        if let Some(enabled) = workflow_enabled {
+            canonical.parameters.insert(
+                "enable_quantization".to_string(),
+                serde_json::Value::Bool(enabled),
+            );
+        }
+
+        let mut world = World::new();
+        let mut queue = bevy::ecs::world::CommandQueue::default();
+        let mut commands = Commands::new(&mut queue, &world);
+        commands.spawn(Node::default()).with_children(|parent| {
+            super::workspace_sidebar::spawn_quantization_control(
+                parent,
+                Handle::default(),
+                &StudioTheme::new(true),
+                &definition,
+                &global,
+                song.as_ref(),
+            );
+        });
+        queue.apply(&mut world);
+
+        let labels = world
+            .query::<&Text>()
+            .iter(&world)
+            .map(|text| text.0.clone())
+            .collect::<Vec<_>>();
+        assert!(labels.iter().any(|label| label == "Rhythm quantization"));
+        assert!(
+            labels
+                .iter()
+                .any(|label| label == if expected { "ON" } else { "OFF" })
+        );
+        let actions = world
+            .query_filtered::<&UiAction, With<Button>>()
+            .iter(&world)
+            .map(|action| action.0.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            actions,
+            vec![UiCommand::Analysis(AnalysisCommand::SetWorkflowParameter(
+                "singing_output".to_string(),
+                "enable_quantization".to_string(),
+                serde_json::Value::Bool(!expected),
+            ))]
+        );
+    }
+}
+
+#[test]
+fn workflow_quantization_control_is_outside_selected_module_settings() {
+    let source = include_str!("workspace_sidebar.rs")
+        .split_once("pub(super) fn spawn_workflow_sidebar(")
+        .unwrap()
+        .1;
+    assert!(source.contains(".and_then(app_core::get_song_analysis_profile)"));
+    assert!(
+        source.find("spawn_quantization_control(").unwrap()
+            < source
+                .find("let selected = session.selected_workflow_node")
+                .unwrap()
+    );
+}
+
+#[test]
+fn workflow_quantization_copy_is_available_in_all_supported_languages() {
+    for source in [
+        include_str!("../../../assets/i18n/en.json"),
+        include_str!("../../../assets/i18n/ja.json"),
+        include_str!("../../../assets/i18n/zh-CN.json"),
+    ] {
+        let catalog: std::collections::BTreeMap<String, String> =
+            serde_json::from_str(source).unwrap();
+        for key in [
+            "Rhythm quantization",
+            "Snap candidate-note timing to a 1/16-beat grid; pitch and audio stay unchanged. Requires song BPM. Save with Workflow; applies on the next re-analysis.",
+            "ON",
+            "OFF",
+        ] {
+            assert!(
+                catalog
+                    .get(key)
+                    .is_some_and(|value| !value.trim().is_empty())
+            );
+        }
+    }
+}

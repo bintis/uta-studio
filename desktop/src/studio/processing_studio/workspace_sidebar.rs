@@ -7,6 +7,39 @@ use super::*;
 
 const WORKFLOW_SIDEBAR_WIDTH: f32 = 276.0;
 
+pub(super) fn spawn_quantization_control(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    theme: &StudioTheme,
+    definition: &app_core::WorkflowDefinition,
+    global: &app_core::AnalysisExperienceSettings,
+    song: Option<&app_core::AnalysisExperienceOverride>,
+) {
+    let enabled = definition
+        .resolve_analysis_experience(global, song, None)
+        .enable_quantization
+        .value;
+    let node_id = definition
+        .nodes
+        .iter()
+        .find(|node| node.capability_id.as_str() == "finalize.canonical_singing_track")
+        .map(|node| node.instance_id.as_str())
+        .unwrap_or("canonical_track");
+    stage_header::spawn_compact_toggle_row(
+        parent,
+        font,
+        theme,
+        "Rhythm quantization",
+        "Snap candidate-note timing to a 1/16-beat grid; pitch and audio stay unchanged. Requires song BPM. Save with Workflow; applies on the next re-analysis.",
+        enabled,
+        UiAction::from(AnalysisCommand::SetWorkflowParameter(
+            node_id.to_string(),
+            "enable_quantization".to_string(),
+            serde_json::Value::Bool(!enabled),
+        )),
+    );
+}
+
 fn spawn_panel(
     parent: &mut ChildSpawnerCommands,
     font: Handle<Font>,
@@ -415,6 +448,20 @@ pub(super) fn spawn_workflow_sidebar(
             BorderColor::all(theme.border.with_alpha(0.28)),
         ))
         .with_children(|sidebar| {
+            let song_profile = session
+                .selected_song
+                .as_deref()
+                .and_then(app_core::get_song_analysis_profile);
+            spawn_quantization_control(
+                sidebar,
+                font.clone(),
+                theme,
+                &stored.definition,
+                &session.config.analysis_experience,
+                song_profile
+                    .as_ref()
+                    .map(|profile| &profile.analysis_experience),
+            );
             let selected = session.selected_workflow_node.as_ref().and_then(|selected_id| {
                 stored
                     .definition

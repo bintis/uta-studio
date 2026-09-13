@@ -1853,6 +1853,8 @@
   "Enabled and conditional experts remain distinct evidence providers.": "已启用和条件执行的专家仍作为彼此独立的证据提供方。",
   "Re-run": "重新运行",
   "WORKFLOW SUMMARY": "工作流摘要",
+  "Rhythm quantization": "节奏量化",
+  "Snap candidate-note timing to a 1/16-beat grid; pitch and audio stay unchanged. Requires song BPM. Save with Workflow; applies on the next re-analysis.": "将候选音符的时间吸附到 1/16 拍网格，不改变音高或音频。需要歌曲 BPM。随 Workflow 保存，下次重分析时生效。",
   "Select a module card to edit its provider, routing and execution condition.": "选择模块卡片以编辑其提供方、路由和执行条件。",
   "ACTIVE MODULES": "活动模块",
   "QUALITY MODE": "质量模式",

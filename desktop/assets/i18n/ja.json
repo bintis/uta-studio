@@ -1853,6 +1853,8 @@
   "Enabled and conditional experts remain distinct evidence providers.": "有効および条件付きの専門家は独立したエビデンス提供者として保持されます。",
   "Re-run": "再実行",
   "WORKFLOW SUMMARY": "ワークフロー概要",
+  "Rhythm quantization": "リズムのクオンタイズ",
+  "Snap candidate-note timing to a 1/16-beat grid; pitch and audio stay unchanged. Requires song BPM. Save with Workflow; applies on the next re-analysis.": "候補ノートのタイミングを1/16拍のグリッドに揃えます。音高・音声は変更しません。曲のBPMが必要です。ワークフローと一緒に保存すると、次回の再解析から適用されます。",
   "Select a module card to edit its provider, routing and execution condition.": "モジュールカードを選択して、プロバイダー、ルーティング、実行条件を編集します。",
   "ACTIVE MODULES": "参加モジュール",
   "QUALITY MODE": "品質モード",
