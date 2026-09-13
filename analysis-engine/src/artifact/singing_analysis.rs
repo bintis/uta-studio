@@ -30,7 +30,7 @@ pub struct SingingAnalysisProvenance {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SingingAnalysisChartReferences {
     pub track_id: String,
-    pub phrase_id: String,
+    pub phrase_ids: Vec<String>,
     #[serde(default)]
     pub note_ids: Vec<String>,
     #[serde(default)]
@@ -38,36 +38,33 @@ pub struct SingingAnalysisChartReferences {
 }
 
 impl SingingAnalysisChartReferences {
-    fn from_track(track: &CanonicalSingingTrack) -> Self {
-        let linked = track
-            .notes
+    fn from_chart(chart: &utz::VocalChart) -> Self {
+        let Some(track) = chart.tracks.first() else {
+            return Self::default();
+        };
+        let notes = track
+            .phrases
             .iter()
-            .filter_map(|note| note.word_id.as_deref())
-            .collect::<BTreeSet<_>>();
-        let mut note_ids = track
-            .notes
-            .iter()
-            .filter(|note| note.word_id.is_some())
-            .map(|note| note.id.clone())
+            .flat_map(|phrase| &phrase.notes)
             .collect::<Vec<_>>();
-        note_ids.extend(
-            track
-                .words
-                .iter()
-                .enumerate()
-                .filter(|(_, word)| !linked.contains(word.word_id.as_str()))
-                .map(|(index, _)| format!("spoken-{index}")),
-        );
+        let mut note_ids = notes.iter().map(|note| note.id.clone()).collect::<Vec<_>>();
+        let mut lyric_token_ids = notes
+            .iter()
+            .flat_map(|note| &note.lyrics)
+            .filter_map(|token| match token {
+                utz::LyricToken::Text(token) => Some(token.id.clone()),
+                utz::LyricToken::Continuation { .. } => None,
+            })
+            .collect::<Vec<_>>();
         note_ids.sort();
-        let mut lyric_token_ids = track
-            .words
-            .iter()
-            .map(|word| word.word_id.clone())
-            .collect::<Vec<_>>();
         lyric_token_ids.sort();
         Self {
-            track_id: "lead".to_string(),
-            phrase_id: "phrase-1".to_string(),
+            track_id: track.id.clone(),
+            phrase_ids: track
+                .phrases
+                .iter()
+                .map(|phrase| phrase.id.clone())
+                .collect(),
             note_ids,
             lyric_token_ids,
         }
@@ -75,7 +72,8 @@ impl SingingAnalysisChartReferences {
 
     fn is_valid(&self) -> bool {
         !self.track_id.trim().is_empty()
-            && !self.phrase_id.trim().is_empty()
+            && !self.phrase_ids.is_empty()
+            && self.phrase_ids.iter().all(|id| !id.trim().is_empty())
             && !self.note_ids.is_empty()
             && self.note_ids.iter().all(|id| !id.trim().is_empty())
             && self.note_ids.iter().collect::<BTreeSet<_>>().len() == self.note_ids.len()
@@ -114,6 +112,7 @@ pub struct SingingAnalysis {
 impl SingingAnalysis {
     pub fn new(
         track: &CanonicalSingingTrack,
+        chart: &utz::VocalChart,
         candidate_evidence: Vec<SegmentCandidate>,
         candidate_hard_boundaries: HardBoundarySet,
         review_regions: Vec<SingingReviewRegion>,
@@ -126,7 +125,7 @@ impl SingingAnalysis {
             version: SINGING_ANALYSIS_VERSION,
             format_version: SINGING_ANALYSIS_FORMAT_VERSION.to_string(),
             timebase: CANONICAL_TIMEBASE,
-            chart_references: SingingAnalysisChartReferences::from_track(track),
+            chart_references: SingingAnalysisChartReferences::from_chart(chart),
             track: None,
             candidate_evidence,
             candidate_hard_boundaries,

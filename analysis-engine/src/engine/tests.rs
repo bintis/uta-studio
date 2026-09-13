@@ -78,7 +78,12 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
         text: "sing".to_string(),
         language: Some("en".to_string()),
         authority: LyricsAuthority::CallerCanonical,
-        tokens: Vec::new(),
+        tokens: vec![crate::fusion::TranscriptTokenEvidence {
+            id: Some("caller-line".to_string()),
+            text: "sing".to_string(),
+            range: None,
+            confidence: None,
+        }],
         confidence: None,
         source_experts: vec!["caller.canonical_lyrics".to_string()],
         alternatives: Vec::new(),
@@ -93,7 +98,7 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
             confidence: None,
             disagreement: None,
             source_experts: vec!["alignment-reference".to_string()],
-            line_id: None,
+            line_id: Some("caller-line".to_string()),
         }],
         notes: vec![CanonicalNote {
             id: "game-note-0".to_string(),
@@ -259,6 +264,14 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
     let chart: CandidateVocalChart =
         serde_json::from_slice(&fs::read(root.join(&chart_ref.path)).unwrap()).unwrap();
     chart.validate().unwrap();
+    assert_eq!(
+        analysis.chart_references.phrase_ids,
+        ["phrase-1-caller-line"]
+    );
+    assert_eq!(
+        analysis.chart_references.phrase_ids[0],
+        chart.tracks[0].phrases[0].id
+    );
     assert_eq!(chart.format, utz::VOCAL_CHART_FORMAT);
     assert_eq!(chart.tracks[0].phrases[0].notes[0].id, "game-note-0");
     assert_eq!(chart.tracks[0].phrases[0].notes[0].scoring.weight, 1.0);
@@ -315,6 +328,10 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
     )
     .unwrap();
     assert!(raw_analysis.track.is_none());
+    assert_eq!(
+        raw_analysis.chart_references.phrase_ids[0],
+        quantized_chart.tracks[0].phrases[0].id
+    );
     assert_eq!(raw_analysis.chart_references.note_ids, ["game-note-0"]);
     let quantized_note = &quantized_chart.tracks[0].phrases[0].notes[0];
     assert_eq!(quantized_note.id, "game-note-0");

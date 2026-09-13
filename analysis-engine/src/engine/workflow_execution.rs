@@ -120,6 +120,14 @@ pub(super) fn publish_candidate_artifacts(
             "requested Candidate outputs were not produced",
         )
     })?;
+    if request_vocal_chart && quantized_candidate_track.is_some() != quantization.is_some() {
+        return Err(EngineError::new(
+            EngineErrorCode::OutputValidationFailed,
+            "Candidate quantization track/report presence is inconsistent",
+        ));
+    }
+    let candidate_track = quantized_candidate_track.unwrap_or(&singing.track);
+    let chart = finalize_candidate_vocal_chart(candidate_track, fingerprint, quantization)?;
     if request_singing_analysis {
         let fusion_decision = fusion_decision.ok_or_else(|| {
             EngineError::new(
@@ -129,6 +137,7 @@ pub(super) fn publish_candidate_artifacts(
         })?;
         let analysis = SingingAnalysis::new(
             &singing.track,
+            &chart,
             singing.fusion.candidates.clone(),
             singing.fusion.hard_boundaries.clone(),
             singing.review_regions.clone(),
@@ -149,14 +158,6 @@ pub(super) fn publish_candidate_artifacts(
         ));
     }
     if request_vocal_chart {
-        if quantized_candidate_track.is_some() != quantization.is_some() {
-            return Err(EngineError::new(
-                EngineErrorCode::OutputValidationFailed,
-                "Candidate quantization track/report presence is inconsistent",
-            ));
-        }
-        let candidate_track = quantized_candidate_track.unwrap_or(&singing.track);
-        let chart = finalize_candidate_vocal_chart(candidate_track, fingerprint, quantization)?;
         artifacts.candidate_vocal_chart = Some(write_json_artifact(
             output_root,
             Path::new("candidate/vocal-chart.json"),
