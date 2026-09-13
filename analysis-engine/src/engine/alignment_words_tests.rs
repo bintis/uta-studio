@@ -1,5 +1,7 @@
 use super::*;
-use crate::artifact::{AlignmentArtifact, AlignmentItem, finalize_candidate_vocal_chart};
+use crate::artifact::{
+    AlignmentArtifact, AlignmentItem, TranscriptArtifact, finalize_candidate_vocal_chart,
+};
 use crate::candidate_pipeline::fuse_alignment_stage;
 use crate::contract::{BoundaryAuthority, BoundaryLevel};
 use crate::fusion::{
@@ -202,6 +204,160 @@ fn measured_character_alignment_reaches_individual_chart_notes_without_line_lyri
         };
         assert_eq!(lyric.text, text);
     }
+}
+
+#[test]
+fn generated_sentences_reach_chart_phrases_even_when_a_sentence_end_is_unresolved() {
+    let text = "光る。歌う！光る。";
+    let generated = TranscriptArtifact {
+        contract: "uta.analysis-engine.transcript".to_string(),
+        version: 1,
+        authority: crate::artifact::TranscriptAuthority::Generated,
+        language: Some("ja".to_string()),
+        text: text.to_string(),
+        tokens: Vec::new(),
+        audio_segments: vec![crate::artifact::TranscriptAudioSegment {
+            start: 0,
+            duration: 2_000_000,
+            text_start: 0,
+            text_end: text.chars().count(),
+        }],
+        confidence: None,
+        source_experts: vec!["qwen3_asr_1_7b".to_string()],
+        alternatives: Vec::new(),
+        model_sha256: Some("fixture".to_string()),
+        runtime_manifest_sha256: Some("fixture".to_string()),
+        backend: "ggml_cpu".to_string(),
+    };
+    let (artifact, transcript) = fuse_transcript_stage(&[generated], None).unwrap();
+    assert_eq!(artifact.text, text);
+    assert_eq!(transcript.authority, LyricsAuthority::Generated);
+    assert_eq!(transcript.tokens.len(), 3);
+    assert!(transcript.tokens.iter().all(|token| token.range.is_none()));
+    let requests = qwen_alignment_words(&transcript, &artifact.audio_segments).unwrap();
+    assert_eq!(requests.len(), 6);
+    assert!(
+        requests
+            .iter()
+            .all(|word| word["audio_range"] == serde_json::json!({"start": 0, "end": 2_000_000}))
+    );
+    let measured = [
+        (100_000, 250_000),
+        (260_000, 400_000),
+        (500_000, 600_000),
+        (610_000, 800_000),
+        (900_000, 1_050_000),
+        (1_060_000, 1_300_000),
+    ];
+    let alignment = AlignmentArtifact {
+        contract: "uta.analysis-engine.alignment".to_string(),
+        version: 1,
+        transcript: text.to_string(),
+        language: transcript.language.clone(),
+        items: requests
+            .iter()
+            .zip(measured)
+            .enumerate()
+            .map(|(index, (request, (start, end)))| AlignmentItem {
+                id: request["id"].as_str().unwrap().to_string(),
+                text: request["text"].as_str().unwrap().to_string(),
+                level: BoundaryLevel::Word,
+                start,
+                duration: end - start,
+                confidence: None,
+                authority: BoundaryAuthority::Soft,
+                timing_issue: (index == 1).then(|| "collapsed_timestamp".to_string()),
+            })
+            .collect(),
+        source_expert: "qwen3_forced_aligner_0_6b".to_string(),
+        model_sha256: "fixture".to_string(),
+        runtime_manifest_sha256: "fixture".to_string(),
+        backend: "ggml_cpu".to_string(),
+    };
+    alignment.validate(0, 2_000_000).unwrap();
+    let (_, words) = fuse_alignment_stage(&transcript, &[alignment], 0, 2_000_000).unwrap();
+    assert_eq!(
+        words
+            .iter()
+            .map(|word| word.line_id.as_deref())
+            .collect::<Vec<_>>(),
+        [
+            Some("lyric-line-0"),
+            Some("lyric-line-1"),
+            Some("lyric-line-1"),
+            Some("lyric-line-2"),
+            Some("lyric-line-2")
+        ]
+    );
+    let boundaries = BoundaryEvidenceSet {
+        source_expert: "game".to_string(),
+        kind: BoundaryEvidenceKind::Game,
+        model_hash: None,
+        runtime_identity: None,
+        segments: measured
+            .into_iter()
+            .map(|(start, end)| BoundarySegmentEvidence {
+                range: TimeRange::new(start, end).unwrap(),
+                fractional_midi: Some(69.0),
+                boundary_decision_parameter: None,
+                presence_decision_parameter: None,
+            })
+            .collect(),
+    };
+    let fusion = fuse_singing_evidence(
+        &words,
+        &boundaries,
+        "rmvpe",
+        &[],
+        None,
+        &[],
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    let selected = decode_candidate_graph(&fusion.candidates).unwrap();
+    let track = build_canonical_singing_track(
+        transcript,
+        words,
+        selected,
+        Vec::new(),
+        "rmvpe",
+        HarmonyMetadata::default(),
+        Vec::new(),
+    )
+    .unwrap();
+    let chart =
+        finalize_candidate_vocal_chart(&track, "generated-sentences-fixture", None).unwrap();
+    let phrases = &chart.tracks[0].phrases;
+    assert_eq!(phrases.len(), 3);
+    assert_eq!(
+        phrases
+            .iter()
+            .map(|phrase| phrase
+                .notes
+                .iter()
+                .flat_map(|note| &note.lyrics)
+                .filter_map(|token| match token {
+                    utz::LyricToken::Text(token) => Some(token.text.as_str()),
+                    _ => None,
+                })
+                .collect::<String>())
+            .collect::<Vec<_>>(),
+        ["光", "歌う！", "光る。"]
+    );
+    let notes = phrases
+        .iter()
+        .flat_map(|phrase| &phrase.notes)
+        .collect::<Vec<_>>();
+    assert_eq!(notes.len(), measured.len());
+    for (note, (start, end)) in notes.iter().zip(measured) {
+        assert_eq!((note.start, note.duration), (start, end - start));
+    }
+    let encoded = serde_json::to_vec(&chart).unwrap();
+    let decoded: utz::VocalChart = serde_json::from_slice(&encoded).unwrap();
+    decoded.validate().unwrap();
+    assert_eq!(decoded, chart);
 }
 
 #[test]

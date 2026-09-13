@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use crate::artifact::{
     AcousticEvidence, AdvancedNoteEvidence, AlignmentArtifact, AlignmentItem, BasicPitchEvidence,
@@ -358,8 +358,59 @@ pub fn fuse_transcript_stage(
             canonical.alternatives.push(reference.to_string());
         }
     }
+    if canonical.authority == LyricsAuthority::Generated {
+        // ASR audio scopes are search windows, not lyric sentences. Derive
+        // textual lines from the selected text, including reference corrections,
+        // without inventing line timing or calibrated confidence.
+        artifact.tokens = crate::lyric_lines::generated_lyric_lines(&artifact.text);
+        canonical.tokens = transcript_tokens(&artifact);
+    }
     artifact.validate()?;
     Ok((artifact, canonical))
+}
+
+/// Maps every alignment item to the lyric line it was cut from.
+///
+/// Canonical transcripts carry one token per authored or generated line. Alignment
+/// units are those lines cut into lexical units in order, and the stage has
+/// already verified that the units' concatenated text is the transcript text,
+/// so character offsets in the whitespace-free transcript identify the line
+/// of every unit -- including unresolved ones -- without relying on unit ids.
+/// Transcripts without line tokens yield no mapping.
+fn lyric_line_by_alignment_item(
+    transcript: &CanonicalLyrics,
+    items: &[AlignmentItem],
+) -> BTreeMap<String, String> {
+    if transcript.tokens.is_empty() {
+        return BTreeMap::new();
+    }
+    let mut line_ends = Vec::with_capacity(transcript.tokens.len());
+    let mut offset = 0usize;
+    for token in &transcript.tokens {
+        let Some(id) = token.id.as_deref() else {
+            return BTreeMap::new();
+        };
+        offset += compact_normalized(&token.text).chars().count();
+        line_ends.push((offset, id));
+    }
+    if offset != compact_normalized(&transcript.text).chars().count() {
+        return BTreeMap::new();
+    }
+    let mut lines = BTreeMap::new();
+    let mut cursor = 0usize;
+    for item in items {
+        let length = compact_normalized(&item.text).chars().count();
+        let line = line_ends
+            .iter()
+            .find(|(end, _)| cursor < *end)
+            .or_else(|| line_ends.last())
+            .map(|(_, id)| (*id).to_string());
+        if let Some(line) = line {
+            lines.insert(item.id.clone(), line);
+        }
+        cursor += length;
+    }
+    lines
 }
 
 pub fn fuse_alignment_stage(
@@ -395,6 +446,7 @@ pub fn fuse_alignment_stage(
                 "alignment units lost canonical transcript text",
             ));
         }
+        let line_by_item = lyric_line_by_alignment_item(transcript, &artifact.items);
         for item in &artifact.items {
             let end = item
                 .start
@@ -425,6 +477,7 @@ pub fn fuse_alignment_stage(
                 expert_id: artifact.source_expert.clone(),
                 correlation_group: None,
                 dependencies: Vec::new(),
+                line_id: line_by_item.get(item.id.as_str()).cloned(),
             });
         }
     }

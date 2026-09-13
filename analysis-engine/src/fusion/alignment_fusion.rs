@@ -16,6 +16,9 @@ pub struct WordBoundaryEvidence {
     pub correlation_group: Option<String>,
     #[serde(default)]
     pub dependencies: Vec<String>,
+    /// Authored or generated lyric line (transcript token) this unit was cut from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -28,6 +31,11 @@ pub struct CanonicalWordBoundary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disagreement: Option<u64>,
     pub source_experts: Vec<String>,
+    /// Canonical lyric line (transcript token id) that owns this word. Candidate
+    /// finalization groups notes into one phrase per line; `None` leaves the
+    /// word without line structure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_id: Option<String>,
 }
 
 fn boundary_estimates(
@@ -93,6 +101,13 @@ pub fn fuse_word_boundaries(
             .iter()
             .map(|item| item.expert_id.clone())
             .collect::<Vec<_>>();
+        let mut line_ids = items.iter().filter_map(|item| item.line_id.as_deref());
+        let line_id = line_ids.next();
+        if line_ids.any(|candidate| Some(candidate) != line_id) {
+            return Err(format!(
+                "alignment experts disagree on the lyric line for {word_id}"
+            ));
+        }
         let (range, confidence, disagreement) = if items.len() == 1 {
             (items[0].range, items[0].confidence, None)
         } else if items.iter().any(|item| item.confidence.is_none()) {
@@ -137,6 +152,7 @@ pub fn fuse_word_boundaries(
             confidence,
             disagreement,
             source_experts,
+            line_id: line_id.map(str::to_string),
         });
     }
     words.sort_by(|left, right| {

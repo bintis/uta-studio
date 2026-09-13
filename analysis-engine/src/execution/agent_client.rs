@@ -1067,6 +1067,7 @@ mod tests {
             confidence: Some(0.9),
             disagreement: None,
             source_experts: vec!["caller".to_string()],
+            line_id: None,
         }];
         let decision = run_fusion_agent_for_pool_with_lyrics(
             &script,

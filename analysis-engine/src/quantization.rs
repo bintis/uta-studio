@@ -453,6 +453,7 @@ mod tests {
                     confidence: Some(0.9),
                     disagreement: None,
                     source_experts: vec!["align".to_string()],
+                    line_id: None,
                 },
                 CanonicalWordBoundary {
                     word_id: "word-2".to_string(),
@@ -464,6 +465,7 @@ mod tests {
                     confidence: Some(0.9),
                     disagreement: None,
                     source_experts: vec!["align".to_string()],
+                    line_id: None,
                 },
             ],
             notes: vec![

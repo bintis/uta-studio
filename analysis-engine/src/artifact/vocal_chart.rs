@@ -173,16 +173,89 @@ pub fn finalize_candidate_vocal_chart(
         part: None,
         singer: None,
         scoring_enabled: true,
-        phrases: vec![VocalPhrase {
-            id: "phrase-1".to_string(),
-            notes,
-        }],
+        phrases: phrases_by_lyric_line(track, notes),
     }]);
     chart.language = track.transcript.language.clone();
     chart
         .validate()
         .map_err(|error| invalid(error.to_string()))?;
     Ok(chart)
+}
+
+/// Groups the finalized notes into one UTZ phrase per canonical lyric line.
+///
+/// A note follows the line of the word it carries (a continuation follows its
+/// word). Notes without line structure -- unassigned melody, or words from a
+/// transcript without line structure -- stay with the phrase in progress, and
+/// notes before the first line-owned note join that line. Lines are emitted
+/// in transcript order: a word measured earlier than the notes of a preceding
+/// line stays in the open phrase instead of reordering phrases, so the result
+/// always satisfies the UTZ phrase ordering rule. Without any line-owned word
+/// the track remains a single phrase.
+fn phrases_by_lyric_line(track: &CanonicalSingingTrack, notes: Vec<VocalNote>) -> Vec<VocalPhrase> {
+    let lines = track
+        .transcript
+        .tokens
+        .iter()
+        .filter_map(|token| token.id.as_deref())
+        .collect::<Vec<_>>();
+    let line_order = lines
+        .iter()
+        .enumerate()
+        .map(|(order, id)| (*id, order))
+        .collect::<BTreeMap<_, _>>();
+    let word_order = track
+        .words
+        .iter()
+        .filter_map(|word| {
+            let order = *line_order.get(word.line_id.as_deref()?)?;
+            Some((word.word_id.as_str(), order))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let note_order = |note: &VocalNote| {
+        note.lyrics.iter().find_map(|token| match token {
+            LyricToken::Text(token) => word_order.get(token.id.as_str()).copied(),
+            LyricToken::Continuation { continuation_of } => {
+                word_order.get(continuation_of.as_str()).copied()
+            }
+        })
+    };
+    let Some(first) = notes.iter().find_map(note_order) else {
+        return vec![VocalPhrase {
+            id: "phrase-1".to_string(),
+            notes,
+        }];
+    };
+    let mut current = first;
+    let mut phrases = Vec::<VocalPhrase>::new();
+    for note in notes {
+        let order = note_order(&note).unwrap_or(current);
+        if phrases.is_empty() || order > current {
+            current = order.max(current);
+            phrases.push(VocalPhrase {
+                id: phrase_id(current, lines[current]),
+                notes: Vec::new(),
+            });
+        }
+        phrases
+            .last_mut()
+            .expect("a phrase is open")
+            .notes
+            .push(note);
+    }
+    phrases
+}
+
+/// Phrase ids stay unique through the line order and readable through the
+/// caller's line id, trimmed to the UTZ id budget.
+fn phrase_id(order: usize, line_id: &str) -> String {
+    let prefix = format!("phrase-{}-", order + 1);
+    let budget = utz::MAX_ID_BYTES.saturating_sub(prefix.len());
+    let mut end = line_id.len().min(budget);
+    while !line_id.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{prefix}{}", &line_id[..end])
 }
 
 fn append_word_notes(
@@ -357,6 +430,7 @@ mod tests {
                 confidence: None,
                 disagreement: None,
                 source_experts: vec!["aligner".to_string()],
+                line_id: None,
             }],
             notes: vec![CanonicalNote {
                 id: "note-1".to_string(),
@@ -508,6 +582,7 @@ mod tests {
             confidence: None,
             disagreement: None,
             source_experts: vec!["aligner".to_string()],
+            line_id: None,
         });
         track.notes[0].range = TimeRange::new(500_000, note_end).unwrap();
         track
@@ -601,5 +676,86 @@ mod tests {
         decoded.validate().unwrap();
         assert_eq!(decoded, chart);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn lined_track() -> CanonicalSingingTrack {
+        let mut track = cross_word_track(1_000_000);
+        track.transcript.tokens = ["lrc-0", "lrc-1"]
+            .into_iter()
+            .zip(["sing", "now"])
+            .map(|(id, text)| crate::fusion::TranscriptTokenEvidence {
+                id: Some(id.to_string()),
+                text: text.to_string(),
+                range: None,
+                confidence: None,
+            })
+            .collect();
+        track.words[0].line_id = Some("lrc-0".to_string());
+        track.words[1].line_id = Some("lrc-1".to_string());
+        let mut second = track.notes[0].clone();
+        second.id = "note-2".to_string();
+        second.range = TimeRange::new(1_300_000, 1_800_000).unwrap();
+        second.word_id = Some("word-2".to_string());
+        track.notes.push(second);
+        track
+    }
+
+    #[test]
+    fn phrases_follow_caller_lyric_lines_and_keep_unowned_melody_in_the_open_phrase() {
+        let mut track = lined_track();
+        let mut stray = track.notes[0].clone();
+        stray.id = "stray".to_string();
+        stray.range = TimeRange::new(1_000_000, 1_200_000).unwrap();
+        stray.word_id = None;
+        track.notes.insert(1, stray);
+
+        let chart = finalize_candidate_vocal_chart(&track, &"j".repeat(64), None).unwrap();
+        chart.validate().unwrap();
+        let phrases = &chart.tracks[0].phrases;
+        assert_eq!(
+            phrases
+                .iter()
+                .map(|phrase| phrase.id.as_str())
+                .collect::<Vec<_>>(),
+            ["phrase-1-lrc-0", "phrase-2-lrc-1"]
+        );
+        let ids = |index: usize| {
+            phrases[index]
+                .notes
+                .iter()
+                .map(|note| note.id.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(0), ["note-1", "stray"]);
+        assert_eq!(ids(1), ["note-2"]);
+    }
+
+    #[test]
+    fn a_word_measured_before_an_earlier_line_never_reorders_phrases() {
+        // The aligner measured line 2's word before line 1's word: canonical
+        // words stay time-ordered, so the second line's word comes first.
+        let mut track = lined_track();
+        track.notes[1].range = TimeRange::new(100_000, 400_000).unwrap();
+        track.notes.swap(0, 1);
+        track.words[1].range = TimeRange::new(0, 450_000).unwrap();
+        track.words[0].range = TimeRange::new(450_000, 1_000_000).unwrap();
+        track.words.swap(0, 1);
+
+        let chart = finalize_candidate_vocal_chart(&track, &"k".repeat(64), None).unwrap();
+        chart.validate().unwrap();
+        let phrases = &chart.tracks[0].phrases;
+        assert_eq!(phrases.len(), 1);
+        assert_eq!(phrases[0].id, "phrase-2-lrc-1");
+        assert_eq!(phrases[0].notes.len(), 2);
+    }
+
+    #[test]
+    fn words_without_line_structure_stay_in_one_phrase_with_a_bounded_id() {
+        let chart = finalize_candidate_vocal_chart(&track(), &"l".repeat(64), None).unwrap();
+        assert_eq!(chart.tracks[0].phrases.len(), 1);
+        assert_eq!(chart.tracks[0].phrases[0].id, "phrase-1");
+        let long = phrase_id(41, &"line".repeat(40));
+        assert!(long.len() <= utz::MAX_ID_BYTES);
+        assert!(long.starts_with("phrase-42-line"));
     }
 }

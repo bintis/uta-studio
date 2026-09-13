@@ -253,6 +253,7 @@ mod tests {
             expert_id: "caller-align".to_string(),
             correlation_group: None,
             dependencies: Vec::new(),
+            line_id: None,
         }])
         .unwrap();
         assert_eq!(words[0].range, range(1.0, 1.5));
@@ -270,6 +271,7 @@ mod tests {
             expert_id: expert.to_string(),
             correlation_group: None,
             dependencies: Vec::new(),
+            line_id: None,
         };
         assert!(fuse_word_boundaries(&[item("a", 1.0), item("b", 1.1)]).is_err());
     }

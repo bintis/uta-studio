@@ -368,6 +368,7 @@ fn timed_lyric_line_owns_notes_outside_a_collapsed_alignment_span() {
         confidence: None,
         disagreement: None,
         source_experts: vec!["reference_alignment".to_string()],
+        line_id: None,
     }];
 
     assert_eq!(
@@ -430,6 +431,7 @@ fn unresolved_words_do_not_shift_later_measured_words_into_an_earlier_line() {
         confidence: None,
         disagreement: None,
         source_experts: vec!["qwen3_forced_aligner_0_6b".to_string()],
+        line_id: None,
     })
     .collect::<Vec<_>>();
     assert_eq!(
@@ -526,8 +528,10 @@ fn generated_unknown_confidence_and_reference_alternative_remain_truthful() {
     .unwrap();
     assert_eq!(canonical.text, "sing now");
     assert_eq!(canonical.confidence, None);
-    assert!(canonical.tokens.is_empty());
-    assert!(artifact.tokens.is_empty());
+    assert_eq!(canonical.tokens.len(), 1);
+    assert_eq!(artifact.tokens.len(), 1);
+    assert_eq!(artifact.tokens[0].text, "sing now");
+    assert_eq!(artifact.tokens[0].confidence, None);
     assert_eq!(canonical.alternatives, ["reference only"]);
     assert_eq!(artifact.model_sha256, Some("a".repeat(64)));
 }
@@ -633,6 +637,7 @@ fn f0_fallback_regions_respect_canonical_word_edges() {
             confidence: None,
             disagreement: None,
             source_experts: vec!["aligner".to_string()],
+            line_id: None,
         },
         CanonicalWordBoundary {
             word_id: "word-1".to_string(),
@@ -641,6 +646,7 @@ fn f0_fallback_regions_respect_canonical_word_edges() {
             confidence: None,
             disagreement: None,
             source_experts: vec!["aligner".to_string()],
+            line_id: None,
         },
     ];
     assert_eq!(
@@ -1301,4 +1307,53 @@ fn ai_adapter_failure_is_returned_without_algorithm_fallback() {
         "the configured adapter path must be exercised"
     );
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn caller_lyric_lines_own_their_aligned_units_including_unresolved_ones() {
+    let mut caller = transcript(TranscriptAuthority::CallerCanonical);
+    caller.text = "sing now\nagain".to_string();
+    caller.tokens = vec![
+        TranscriptToken {
+            id: "lrc-0".to_string(),
+            text: "sing now".to_string(),
+            confidence: None,
+        },
+        TranscriptToken {
+            id: "lrc-1".to_string(),
+            text: "again".to_string(),
+            confidence: None,
+        },
+    ];
+    let (_, lyrics) = fuse_transcript_stage(&[caller], None).unwrap();
+    let mut evidence = alignment();
+    evidence.transcript = "sing now again".to_string();
+    evidence.items.push(AlignmentItem {
+        id: "word-2".to_string(),
+        text: "again".to_string(),
+        level: BoundaryLevel::Word,
+        start: 900_000,
+        duration: 100_000,
+        confidence: None,
+        authority: BoundaryAuthority::Soft,
+        timing_issue: None,
+    });
+    evidence.items[1].timing_issue = Some("collapsed_timestamp".to_string());
+    let (_, words) = fuse_alignment_stage(&lyrics, &[evidence.clone()], 0, 1_000_000).unwrap();
+    assert_eq!(
+        words
+            .iter()
+            .map(|word| (word.word_id.as_str(), word.line_id.as_deref()))
+            .collect::<Vec<_>>(),
+        [("word-0", Some("lrc-0")), ("word-2", Some("lrc-1"))]
+    );
+
+    let (_, generated) =
+        fuse_transcript_stage(&[transcript(TranscriptAuthority::Generated)], None).unwrap();
+    let (_, words) = fuse_alignment_stage(&generated, &[alignment()], 0, 1_000_000).unwrap();
+    assert!(
+        words
+            .iter()
+            .all(|word| word.line_id.as_deref() == Some("lyric-line-0"))
+    );
 }

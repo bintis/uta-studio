@@ -15,6 +15,7 @@ pub mod events;
 pub mod execution;
 pub mod fingerprint;
 pub mod fusion;
+mod lyric_lines;
 pub mod planner;
 pub mod quantization;
 pub mod separation;

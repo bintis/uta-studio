@@ -93,6 +93,7 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
             confidence: None,
             disagreement: None,
             source_experts: vec!["alignment-reference".to_string()],
+            line_id: None,
         }],
         notes: vec![CanonicalNote {
             id: "game-note-0".to_string(),
