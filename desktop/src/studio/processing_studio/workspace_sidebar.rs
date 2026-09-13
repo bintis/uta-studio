@@ -30,7 +30,7 @@ pub(super) fn spawn_quantization_control(
         font,
         theme,
         "Rhythm quantization",
-        "Snap candidate-note timing to a 1/16-beat grid; pitch and audio stay unchanged. Requires song BPM. Save with Workflow; applies on the next re-analysis.",
+        "Snap candidate-note timing to a sixteenth-note grid; pitch and audio stay unchanged. Requires song BPM. Save with Workflow; applies on the next re-analysis.",
         enabled,
         UiAction::from(AnalysisCommand::SetWorkflowParameter(
             node_id.to_string(),

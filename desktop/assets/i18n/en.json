@@ -1854,7 +1854,7 @@
   "Re-run": "Re-run",
   "WORKFLOW SUMMARY": "WORKFLOW SUMMARY",
   "Rhythm quantization": "Rhythm quantization",
-  "Snap candidate-note timing to a 1/16-beat grid; pitch and audio stay unchanged. Requires song BPM. Save with Workflow; applies on the next re-analysis.": "Snap candidate-note timing to a 1/16-beat grid; pitch and audio stay unchanged. Requires song BPM. Save with Workflow; applies on the next re-analysis.",
+  "Snap candidate-note timing to a sixteenth-note grid; pitch and audio stay unchanged. Requires song BPM. Save with Workflow; applies on the next re-analysis.": "Snap candidate-note timing to a sixteenth-note grid; pitch and audio stay unchanged. Requires song BPM. Save with Workflow; applies on the next re-analysis.",
   "Select a module card to edit its provider, routing and execution condition.": "Select a module card to edit its provider, routing and execution condition.",
   "ACTIVE MODULES": "ACTIVE MODULES",
   "QUALITY MODE": "QUALITY MODE",

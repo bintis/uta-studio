@@ -590,7 +590,7 @@ fn workflow_quantization_copy_is_available_in_all_supported_languages() {
             serde_json::from_str(source).unwrap();
         for key in [
             "Rhythm quantization",
-            "Snap candidate-note timing to a 1/16-beat grid; pitch and audio stay unchanged. Requires song BPM. Save with Workflow; applies on the next re-analysis.",
+            "Snap candidate-note timing to a sixteenth-note grid; pitch and audio stay unchanged. Requires song BPM. Save with Workflow; applies on the next re-analysis.",
             "ON",
             "OFF",
         ] {
