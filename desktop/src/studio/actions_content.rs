@@ -255,6 +255,12 @@ pub(crate) fn apply_content_action(
             ));
             invalidated.invalidate(action.0.dirty_region());
         }
+        UiCommand::Library(LibraryCommand::ExportToOsu(file_hash)) => {
+            studio.dialogs.song_context = None;
+            studio.shell.notice =
+                Some(start_export_to_osu_job(file_hash, &mut studio.jobs.export_job));
+            invalidated.invalidate(action.0.dirty_region());
+        }
         UiCommand::Library(LibraryCommand::OpenSource(path)) => {
             studio.dialogs.song_context = None;
             studio.shell.notice = Some(match validate_source_path(path, &studio.shell.config) {

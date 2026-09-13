@@ -24,7 +24,7 @@ Uta! Studio is a native desktop application for preparing, reviewing, editing, a
 - Qwen3 singing transcription and word-level forced alignment, with an optional FireRed transcript challenger
 - GAME note evidence with optional Basic Pitch, JBM555, STARS, and ROSVOT challengers, plus STARS technique analysis
 - Candidate graph, deterministic fusion, review, and editing
-- UTZ and UltraStar export with atomic publication
+- UTZ and UltraStar export with atomic publication, plus direct hand-off to an installed osu!lazer
 - English, Simplified Chinese, and Japanese UI
 - Linux Wayland and Windows support
 

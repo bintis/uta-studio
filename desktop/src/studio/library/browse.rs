@@ -652,6 +652,14 @@ pub(crate) fn spawn_song_context_menu(
                         context.song.file_hash.clone(),
                     )),
                 );
+                spawn_menu_text_button(
+                    menu,
+                    font.clone(),
+                    theme,
+                    "Export to osu!lazer",
+                    11.0,
+                    UiAction::from(LibraryCommand::ExportToOsu(context.song.file_hash.clone())),
+                );
             }
             spawn_menu_text_button(
                 menu,

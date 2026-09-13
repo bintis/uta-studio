@@ -65,6 +65,7 @@ pub(crate) enum LibraryCommand {
     OpenEditor(String),
     ExportUtz(String),
     ExportUltraStar(String),
+    ExportToOsu(String),
     OpenSource(PathBuf),
     RevealSource(PathBuf),
     DismissSongContext,

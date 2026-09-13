@@ -560,6 +560,7 @@ fn parse_library(name: &str, arguments: &serde_json::Value) -> Result<LibraryCom
         "open_editor" => LibraryCommand::OpenEditor(text(arguments, "file_hash")?),
         "export_utz" => LibraryCommand::ExportUtz(text(arguments, "file_hash")?),
         "export_ultra_star" => LibraryCommand::ExportUltraStar(text(arguments, "file_hash")?),
+        "export_to_osu" => LibraryCommand::ExportToOsu(text(arguments, "file_hash")?),
         "open_source" => LibraryCommand::OpenSource(path(arguments, "path")?),
         "reveal_source" => LibraryCommand::RevealSource(path(arguments, "path")?),
         "dismiss_song_context" => LibraryCommand::DismissSongContext,

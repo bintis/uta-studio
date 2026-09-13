@@ -774,6 +774,20 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "Export every authoring-ready chart as an atomic UltraStar bundle"
     ),
     capability!(
+        "export",
+        "export_to_osu",
+        "mutation",
+        false,
+        "Export a UTZ package to a Studio-owned hand-off folder and open it with the installed osu!lazer"
+    ),
+    capability!(
+        "export",
+        "detect_osu_lazer",
+        "read",
+        true,
+        "Report whether an osu!lazer launcher was found on this system"
+    ),
+    capability!(
         "editor",
         "chart_readiness",
         "read",

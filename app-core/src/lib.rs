@@ -29,6 +29,7 @@ mod log_storage;
 mod lrc;
 mod lyrics;
 mod lyrics_sources;
+mod osu_export;
 mod runtime_presentation;
 mod scanner;
 mod separation_inspection;
@@ -160,6 +161,10 @@ pub use lyrics::{
     lrc_transcript_line_segments, normalize_lyrics_text, provide_lrc, save_lyrics,
     save_timed_lyrics, search_lrclib_for_hash, search_lyrics_for_hash,
     search_lyrics_for_hash_with_title, strip_lyrics_timing,
+};
+pub use osu_export::{
+    OSU_EXECUTABLE_VARIABLE, OsuExportOutcome, OsuInstallation, OsuLauncherSource,
+    detect_osu_lazer, export_to_osu,
 };
 pub use runtime_presentation::{
     FUSION_AGENT_ADAPTER_RESOURCE_ID, RuntimeBackendCapabilityPresentation,

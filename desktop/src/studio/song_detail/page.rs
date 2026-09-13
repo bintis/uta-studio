@@ -945,6 +945,17 @@ pub(crate) fn spawn_song_detail(
                                         UiAction::from(LibraryCommand::ExportUltraStar(song.file_hash.clone())),
                                     )),
                                 );
+                                spawn_song_detail_action_row(
+                                    authoring,
+                                    font.clone(),
+                                    theme,
+                                    "osu!lazer",
+                                    "Export to a Studio-managed hand-off folder and open it with the installed osu!lazer.",
+                                    Some((
+                                        "Export to osu!lazer",
+                                        UiAction::from(LibraryCommand::ExportToOsu(song.file_hash.clone())),
+                                    )),
+                                );
                             } else {
                                 spawn_song_detail_action_row(
                                     authoring,

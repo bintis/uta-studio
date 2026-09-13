@@ -214,6 +214,32 @@ pub(crate) fn start_export_job(
     )
 }
 
+/// Exports straight to osu!lazer: no save dialog, since the destination is
+/// Studio's own hand-off folder, not a user-chosen path.
+pub(crate) fn start_export_to_osu_job(file_hash: &str, job: &mut NativeExportJob) -> String {
+    if job.receiver.is_some() {
+        return "An export is already in progress.".to_string();
+    }
+    let file_hash = file_hash.to_string();
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result = match app_core::export_to_osu(&file_hash) {
+            Ok(outcome) => format!(
+                "Sent {} to osu!lazer",
+                outcome
+                    .package
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| outcome.package.display().to_string())
+            ),
+            Err(error) => format!("Export to osu!lazer failed: {error}"),
+        };
+        let _ = sender.send(result);
+    });
+    job.receiver = Some(Mutex::new(receiver));
+    "Exporting to osu!lazer…".to_string()
+}
+
 pub(crate) fn start_export_all_job(
     extension: &'static str,
     export_directory: PathBuf,

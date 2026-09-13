@@ -84,6 +84,7 @@ const LIBRARY_COMMANDS: &[&str] = &[
     "ui.library.open_editor",
     "ui.library.export_utz",
     "ui.library.export_ultra_star",
+    "ui.library.export_to_osu",
     "ui.library.open_source",
     "ui.library.reveal_source",
     "ui.library.dismiss_song_context",

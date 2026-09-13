@@ -2098,5 +2098,8 @@
   "LibTorch XPU": "LibTorch XPU",
   "Native library not installed": "原生库未安装",
   "LibTorch XPU runs on the discrete Intel GPU only; CPU and iGPU selections fail instead of falling back.": "LibTorch XPU 仅在独立 Intel GPU 上运行；选择 CPU 或 iGPU 会直接失败，不会回退。",
-  "Compute backend set to {}. It applies to future analysis requests; per-model runtime choices below take precedence, and an unavailable backend fails in Plan Preview without fallback.": "计算后端已设为 {}。它适用于之后的分析请求；下方的每模型运行时选择优先，不可用的后端会在计划预览中直接失败，不会回退。"
+  "Compute backend set to {}. It applies to future analysis requests; per-model runtime choices below take precedence, and an unavailable backend fails in Plan Preview without fallback.": "计算后端已设为 {}。它适用于之后的分析请求；下方的每模型运行时选择优先，不可用的后端会在计划预览中直接失败，不会回退。",
+  "osu!lazer": "osu!lazer",
+  "Export to a Studio-managed hand-off folder and open it with the installed osu!lazer.": "导出到 Uta! Studio 管理的中转文件夹，并用已安装的 osu!lazer 打开。",
+  "Export to osu!lazer": "导出到 osu!lazer"
 }

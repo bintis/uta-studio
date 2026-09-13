@@ -2098,5 +2098,8 @@
   "LibTorch XPU": "LibTorch XPU",
   "Native library not installed": "ネイティブライブラリ未インストール",
   "LibTorch XPU runs on the discrete Intel GPU only; CPU and iGPU selections fail instead of falling back.": "LibTorch XPU は外付け Intel GPU でのみ動作します。CPU や iGPU を選ぶとフォールバックせずに失敗します。",
-  "Compute backend set to {}. It applies to future analysis requests; per-model runtime choices below take precedence, and an unavailable backend fails in Plan Preview without fallback.": "計算バックエンドを {} に設定しました。今後の解析リクエストに適用されます。下のモデル別ランタイム選択が優先され、利用できないバックエンドはフォールバックせずにプラン確認で失敗します。"
+  "Compute backend set to {}. It applies to future analysis requests; per-model runtime choices below take precedence, and an unavailable backend fails in Plan Preview without fallback.": "計算バックエンドを {} に設定しました。今後の解析リクエストに適用されます。下のモデル別ランタイム選択が優先され、利用できないバックエンドはフォールバックせずにプラン確認で失敗します。",
+  "osu!lazer": "osu!lazer",
+  "Export to a Studio-managed hand-off folder and open it with the installed osu!lazer.": "Studio 管理のハンドオフフォルダにエクスポートし、インストール済みの osu!lazer で開きます。",
+  "Export to osu!lazer": "osu!lazer にエクスポート"
 }

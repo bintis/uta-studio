@@ -21,6 +21,10 @@ thread_local! {
 pub enum ExportPackageKind {
     Utz,
     UltraStar,
+    /// A UTZ package handed directly to an installed osu!lazer, rather than
+    /// saved to a user-chosen file. Its "destination" is the hand-off path
+    /// Studio itself manages, tracked so a later export replaces it in place.
+    OsuLazer,
 }
 
 impl ExportPackageKind {
@@ -28,6 +32,7 @@ impl ExportPackageKind {
         match self {
             Self::Utz => "utz",
             Self::UltraStar => "ultrastar",
+            Self::OsuLazer => "osu_lazer",
         }
     }
 
@@ -35,13 +40,14 @@ impl ExportPackageKind {
         match id {
             "export.utz" => Some(Self::Utz),
             "export.ultrastar" => Some(Self::UltraStar),
+            "export.osu_lazer" => Some(Self::OsuLazer),
             _ => None,
         }
     }
 
     pub fn extension(self) -> &'static str {
         match self {
-            Self::Utz => "utz",
+            Self::Utz | Self::OsuLazer => "utz",
             Self::UltraStar => "txt",
         }
     }
@@ -143,7 +149,7 @@ pub fn validate_export_package(path: &Path, kind: ExportPackageKind) -> Result<S
         return Err(format!("export file is not available: {}", path.display()));
     }
     match kind {
-        ExportPackageKind::Utz => {
+        ExportPackageKind::Utz | ExportPackageKind::OsuLazer => {
             let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
             utz::UtzPackage::from_bytes(&bytes).map_err(|error| error.to_string())?;
             Ok(format!("UTZ package is valid · {}", path.display()))
