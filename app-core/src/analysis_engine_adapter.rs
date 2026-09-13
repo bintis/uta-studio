@@ -278,7 +278,8 @@ pub fn preview_engine_run(
     global: &crate::analysis_experience::AnalysisExperienceSettings,
 ) -> Result<EngineRunPreview, String> {
     let song_profile = crate::analysis_profile::get_song_analysis_profile(&draft.file_hash);
-    let effective = crate::analysis_experience::resolve_analysis_experience(
+    let stored = crate::workflow::load_song_workflow(&draft.file_hash)?;
+    let effective = stored.definition.resolve_analysis_experience(
         global,
         song_profile
             .as_ref()
@@ -313,7 +314,7 @@ pub fn preview_engine_run(
         },
         &effective,
     )?;
-    attach_song_execution_context(&mut request, &draft.file_hash, &effective)?;
+    attach_song_execution_context(&mut request, &draft.file_hash, &effective, &stored)?;
     preview_analyze_request(request, source, effective)
 }
 
@@ -321,6 +322,7 @@ fn attach_song_execution_context(
     request: &mut AnalyzeRequestWire,
     file_hash: &str,
     effective: &EffectiveAnalysisExperience,
+    stored: &crate::workflow::StoredWorkflow,
 ) -> Result<(), String> {
     let song = crate::library_db::load_song_by_hash(file_hash)
         .map_err(|error| format!("could not load song execution context: {error}"))?
@@ -332,6 +334,23 @@ fn attach_song_execution_context(
         .override_key
         .filter(|value| !value.trim().is_empty())
         .or_else(|| song.key.filter(|value| !value.trim().is_empty()));
+    attach_musical_context(request, effective, bpm, key)?;
+
+    let snapshot = crate::workflow::compile_workflow(&stored.definition)
+        .map_err(|error| format!("could not compile Processing Studio workflow: {error}"))?;
+    request.extensions.insert(
+        crate::workflow::WORKFLOW_EXECUTION_EXTENSION_KEY.to_string(),
+        crate::workflow::workflow_execution_extension(&snapshot)?,
+    );
+    Ok(())
+}
+
+fn attach_musical_context(
+    request: &mut AnalyzeRequestWire,
+    effective: &EffectiveAnalysisExperience,
+    bpm: Option<f64>,
+    key: Option<String>,
+) -> Result<(), String> {
     let quantization_enabled =
         effective.enable_quantization.value && request.requested_artifacts.vocal_chart;
     if quantization_enabled && bpm.is_none() {
@@ -351,13 +370,6 @@ fn attach_song_execution_context(
         });
     }
 
-    let stored = crate::workflow::load_song_workflow(file_hash)?;
-    let snapshot = crate::workflow::compile_workflow(&stored.definition)
-        .map_err(|error| format!("could not compile Processing Studio workflow: {error}"))?;
-    request.extensions.insert(
-        crate::workflow::WORKFLOW_EXECUTION_EXTENSION_KEY.to_string(),
-        crate::workflow::workflow_execution_extension(&snapshot)?,
-    );
     Ok(())
 }
 
@@ -1227,3 +1239,7 @@ mod turbo_tests;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "analysis_engine_adapter/quantization_tests.rs"]
+mod quantization_tests;

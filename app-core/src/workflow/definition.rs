@@ -56,6 +56,35 @@ pub fn fusion_mode(definition: &WorkflowDefinition) -> FusionMode {
     }
 }
 
+impl WorkflowDefinition {
+    fn quantization_override(&self) -> Option<bool> {
+        self.nodes
+            .iter()
+            .find(|node| node.capability_id.as_str() == "finalize.canonical_singing_track")
+            .and_then(|node| node.parameters.get("enable_quantization"))
+            .and_then(serde_json::Value::as_bool)
+    }
+
+    pub fn quantization_enabled(&self, default: bool) -> bool {
+        self.quantization_override().unwrap_or(default)
+    }
+
+    /// Workflow preferences are saved per song; an explicit run override still
+    /// wins. An unset preference uses the normal song/global analysis defaults.
+    pub fn resolve_analysis_experience(
+        &self,
+        global: &crate::analysis_experience::AnalysisExperienceSettings,
+        song: Option<&crate::analysis_experience::AnalysisExperienceOverride>,
+        run: Option<&crate::analysis_experience::AnalysisExperienceOverride>,
+    ) -> crate::analysis_experience::EffectiveAnalysisExperience {
+        let mut preferences = song.cloned().unwrap_or_default();
+        if let Some(enabled) = self.quantization_override() {
+            preferences.enable_quantization = Some(enabled);
+        }
+        crate::analysis_experience::resolve_analysis_experience(global, Some(&preferences), run)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ExpertFusionPolicy {
