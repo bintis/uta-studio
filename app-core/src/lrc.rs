@@ -8,7 +8,7 @@
 //! Line-level lines produce a single token spanning the whole line, so the
 //! renderer highlights the line as a unit.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Fallback duration (seconds) for the final segment, whose end cannot be
 /// derived from a following line.
@@ -29,8 +29,26 @@ pub struct LrcSegment {
     pub words: Vec<LrcWord>,
 }
 
+/// A supplied line window, not a measured word or note interval.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct LrcInputRange {
+    pub start: f64,
+    pub end: f64,
+}
+
+/// Complete canonical input, including body lines with no supplied timing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LrcInputLine {
+    pub text: String,
+    pub range: Option<LrcInputRange>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ParsedLrc {
+    /// Pure timed LRC is expanded in timestamp order. Mixed input retains
+    /// source order so untimed lines stay beside their original neighbours.
+    pub input_lines: Vec<LrcInputLine>,
+    /// Only timed lines can be projected onto the display timeline.
     pub segments: Vec<LrcSegment>,
     final_end_inferred: bool,
 }
@@ -43,24 +61,43 @@ impl ParsedLrc {
         if !self.final_end_inferred || !source_end.is_finite() {
             return;
         }
-        let Some(segment) = self.segments.last_mut() else {
+        let Some(final_start) = self.segments.last().map(|segment| segment.start) else {
             return;
         };
-        if source_end <= segment.end {
-            return;
-        }
-        let previous_end = segment.end;
-        segment.end = source_end;
-        if let Some(word) = segment.words.last_mut()
-            && (word.end - previous_end).abs() <= f64::EPSILON
+        for segment in self
+            .segments
+            .iter_mut()
+            .rev()
+            .take_while(|segment| segment.start == final_start)
         {
-            word.end = source_end;
+            if source_end <= segment.end {
+                continue;
+            }
+            let previous_range = LrcInputRange {
+                start: segment.start,
+                end: segment.end,
+            };
+            segment.end = source_end;
+            if let Some(word) = segment.words.last_mut()
+                && (word.end - previous_range.end).abs() <= f64::EPSILON
+            {
+                word.end = source_end;
+            }
+            for line in &mut self.input_lines {
+                if line.range == Some(previous_range) {
+                    line.range = Some(LrcInputRange {
+                        start: final_start,
+                        end: source_end,
+                    });
+                }
+            }
         }
     }
 }
 
 /// Intermediate per-timestamp entry before segment ends are resolved.
 struct RawEntry {
+    input_index: usize,
     start: f64,
     text: String,
     /// `Some` when the line was enhanced (word tokens parsed from `<...>` tags).
@@ -100,11 +137,12 @@ fn parse_timestamp(body: &str) -> Option<f64> {
 }
 
 /// Split enhanced-line content on `<mm:ss.xx>` tags into `(start, text)` tokens.
-/// Text before the first tag (rare) is discarded, matching common LRC tooling.
-fn parse_word_tokens(content: &str) -> Vec<(f64, String)> {
+/// A prefix uses the supplied line start, just like square-bracket word timing.
+fn parse_word_tokens(content: &str, line_start: f64) -> Vec<(f64, String)> {
     let mut tokens: Vec<(f64, String)> = Vec::new();
-    let mut cur_ts: Option<f64> = None;
+    let mut cur_ts = Some(line_start);
     let mut cur_text = String::new();
+    let mut saw_inline_timestamp = false;
     let mut i = 0;
 
     while i < content.len() {
@@ -121,6 +159,7 @@ fn parse_word_tokens(content: &str) -> Vec<(f64, String)> {
                 }
                 cur_text.clear();
                 cur_ts = Some(ts);
+                saw_inline_timestamp = true;
                 i += close_rel + 1;
                 continue;
             }
@@ -137,7 +176,11 @@ fn parse_word_tokens(content: &str) -> Vec<(f64, String)> {
         }
     }
 
-    tokens
+    if saw_inline_timestamp {
+        tokens
+    } else {
+        Vec::new()
+    }
 }
 
 /// Some providers (notably QQ Music fallbacks) encode per-character timing as
@@ -246,6 +289,8 @@ fn split_line(line: &str) -> (Vec<f64>, String, Option<f64>) {
 /// no timestamped lyric lines are found.
 pub fn parse_lrc(text: &str) -> Result<ParsedLrc, String> {
     let mut entries: Vec<RawEntry> = Vec::new();
+    let mut input_lines = Vec::new();
+    let mut has_untimed_body = false;
     // Timestamps on empty lines (e.g. a trailing `[mm:ss.xx]`) don't produce a
     // segment; they mark where the previous line's highlight should stop.
     let mut breaks: Vec<f64> = Vec::new();
@@ -257,6 +302,15 @@ pub fn parse_lrc(text: &str) -> Result<ParsedLrc, String> {
             offset_secs = ms / 1000.0;
         }
         if timestamps.is_empty() {
+            // Keep untagged body text, but do not turn metadata, section tags,
+            // or malformed leading tags that were filtered before into lyrics.
+            if !raw_line.trim_start().starts_with('[') && !content.trim().is_empty() {
+                input_lines.push(LrcInputLine {
+                    text: content.trim().to_string(),
+                    range: None,
+                });
+                has_untimed_body = true;
+            }
             continue;
         }
         if content.trim().is_empty() {
@@ -268,7 +322,7 @@ pub fn parse_lrc(text: &str) -> Result<ParsedLrc, String> {
 
         for ts in timestamps {
             let word_tokens = if content.contains('<') {
-                let tokens = parse_word_tokens(&content);
+                let tokens = parse_word_tokens(&content, ts);
                 (!tokens.is_empty()).then_some(tokens)
             } else if content.contains('[') {
                 let tokens = parse_square_word_tokens(&content, ts);
@@ -281,7 +335,13 @@ pub fn parse_lrc(text: &str) -> Result<ParsedLrc, String> {
                 .map(timed_tokens_display_text)
                 .filter(|text| !text.is_empty())
                 .unwrap_or_else(|| content.trim().to_string());
+            let input_index = input_lines.len();
+            input_lines.push(LrcInputLine {
+                text: display_text.clone(),
+                range: None,
+            });
             entries.push(RawEntry {
+                input_index,
                 start: (ts + offset_secs).max(0.0),
                 text: display_text,
                 word_tokens,
@@ -314,6 +374,10 @@ pub fn parse_lrc(text: &str) -> Result<ParsedLrc, String> {
         let seg_end = known_end.unwrap_or_else(|| {
             final_end_inferred = true;
             seg_start + LAST_SEGMENT_SECS
+        });
+        input_lines[entry.input_index].range = Some(LrcInputRange {
+            start: seg_start,
+            end: seg_end,
         });
 
         let words = match &entry.word_tokens {
@@ -348,7 +412,15 @@ pub fn parse_lrc(text: &str) -> Result<ParsedLrc, String> {
         });
     }
 
+    if !has_untimed_body {
+        input_lines = entries
+            .iter()
+            .map(|entry| input_lines[entry.input_index].clone())
+            .collect();
+    }
+
     Ok(ParsedLrc {
+        input_lines,
         segments,
         final_end_inferred,
     })
@@ -405,5 +477,155 @@ mod tests {
         assert_eq!(parsed.segments[1].text, "chorus");
         assert_eq!(parsed.segments[0].words.len(), 1);
         assert_eq!(parsed.segments[1].words.len(), 1);
+    }
+
+    #[test]
+    fn enhanced_prefix_uses_the_supplied_line_start_without_losing_text() {
+        let parsed = parse_lrc("[00:10.00]Hello <00:11.00>world\n[00:12.00]").unwrap();
+        let segment = &parsed.segments[0];
+        assert_eq!(segment.text, "Hello world");
+        assert_eq!(parsed.input_lines[0].text, "Hello world");
+        assert_eq!(segment.words.len(), 2);
+        assert_eq!(segment.words[0].word, "Hello");
+        assert_eq!((segment.words[0].start, segment.words[0].end), (10.0, 11.0));
+        assert_eq!(segment.words[1].word, "world");
+        assert_eq!((segment.words[1].start, segment.words[1].end), (11.0, 12.0));
+    }
+
+    #[test]
+    fn enhanced_cjk_prefix_keeps_text_and_applies_the_existing_offset() {
+        let parsed = parse_lrc("[offset:250]\n[00:10.00]霞<00:11.00>む\n[00:12.00]景色").unwrap();
+        let segment = &parsed.segments[0];
+        assert_eq!(segment.text, "霞む");
+        assert_eq!(segment.words[0].word, "霞");
+        assert_eq!(
+            (segment.words[0].start, segment.words[0].end),
+            (10.25, 11.25)
+        );
+        assert_eq!(segment.words[1].start, 11.25);
+    }
+
+    #[test]
+    fn mixed_body_lines_keep_source_order_without_acquiring_timestamps() {
+        let parsed = parse_lrc(concat!(
+            "opening\n",
+            "[00:20.00]late\n",
+            "bridge\n",
+            "[00:10.00][00:30.00]repeat\n",
+            "repeat\n",
+            "[00:40.00]\n",
+            "outro",
+        ))
+        .unwrap();
+        assert_eq!(
+            parsed
+                .input_lines
+                .iter()
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "opening", "late", "bridge", "repeat", "repeat", "repeat", "outro"
+            ]
+        );
+        assert_eq!(
+            parsed
+                .input_lines
+                .iter()
+                .map(|line| line.range.map(|range| range.start))
+                .collect::<Vec<_>>(),
+            [None, Some(20.0), None, Some(10.0), Some(30.0), None, None]
+        );
+        assert_eq!(
+            parsed
+                .segments
+                .iter()
+                .map(|segment| (segment.start, segment.end))
+                .collect::<Vec<_>>(),
+            [(10.0, 20.0), (20.0, 30.0), (30.0, 40.0)]
+        );
+    }
+
+    #[test]
+    fn pure_timed_input_expands_repeats_in_timestamp_order() {
+        let parsed = parse_lrc("[00:30.00][00:10.00]chorus\n[00:20.00]verse\n[00:40.00]").unwrap();
+        assert_eq!(
+            parsed
+                .input_lines
+                .iter()
+                .map(|line| line.text.as_str())
+                .collect::<Vec<_>>(),
+            ["chorus", "verse", "chorus"]
+        );
+        for (line, segment) in parsed.input_lines.iter().zip(&parsed.segments) {
+            assert_eq!(line.text, segment.text);
+            assert_eq!(
+                line.range,
+                Some(LrcInputRange {
+                    start: segment.start,
+                    end: segment.end,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn untimed_body_support_does_not_promote_filtered_tags_to_lyrics() {
+        let parsed = parse_lrc(concat!(
+            "[ar:Artist]\n[ti:Title]\n[by:Editor]\n[Offset:250]\n",
+            "[unknown:tag]ignored suffix\n[Verse 1]\n[00:invalid]ignored\n",
+            "\n[00:10.00]sung\n  body  \n[00:12.00]\n",
+        ))
+        .unwrap();
+        assert_eq!(
+            parsed.input_lines,
+            [
+                LrcInputLine {
+                    text: "sung".to_string(),
+                    range: Some(LrcInputRange {
+                        start: 10.25,
+                        end: 12.25
+                    }),
+                },
+                LrcInputLine {
+                    text: "body".to_string(),
+                    range: None
+                },
+            ]
+        );
+        assert!(parse_lrc("[ar:Artist]\n[ti:Title]\n[offset:0]").is_err());
+    }
+
+    #[test]
+    fn extending_final_display_scope_never_times_untimed_input() {
+        let mut parsed = parse_lrc("intro\n[00:10.00]last sung line\noutro").unwrap();
+        parsed.extend_inferred_final_end(22.0);
+        assert_eq!(parsed.input_lines[0].range, None);
+        assert_eq!(
+            parsed.input_lines[1].range,
+            Some(LrcInputRange {
+                start: 10.0,
+                end: 22.0
+            })
+        );
+        assert_eq!(parsed.input_lines[2].range, None);
+        assert_eq!(parsed.segments[0].end, 22.0);
+
+        let mut explicit = parse_lrc("[00:10.00]last\n[00:14.50]\noutro").unwrap();
+        explicit.extend_inferred_final_end(22.0);
+        assert_eq!(explicit.input_lines[0].range.unwrap().end, 14.5);
+        assert_eq!(explicit.input_lines[1].range, None);
+    }
+
+    #[test]
+    fn simultaneous_final_lines_keep_consistent_display_and_input_scopes() {
+        let mut parsed = parse_lrc("[00:10.00]first\n[00:10.00]second").unwrap();
+        parsed.extend_inferred_final_end(22.0);
+        assert!(parsed.segments.iter().all(|segment| segment.end == 22.0));
+        assert!(
+            parsed
+                .input_lines
+                .iter()
+                .all(|line| line.range.unwrap().end == 22.0)
+        );
     }
 }

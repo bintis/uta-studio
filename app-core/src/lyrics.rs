@@ -9,7 +9,7 @@ use crate::analyzer::{
 };
 use crate::cache::CacheDir;
 use crate::library_db;
-use crate::lrc::{self, ParsedLrc};
+use crate::lrc::{self, LrcInputLine, ParsedLrc};
 use crate::song::{TranscriptSource, read_transcript_meta};
 
 pub use crate::lyrics_sources::{
@@ -47,9 +47,9 @@ fn repair_legacy_timed_lines(mut lyrics: LyricsFile) -> LyricsFile {
         return lyrics;
     };
     let clean_lines = parsed
-        .segments
+        .input_lines
         .into_iter()
-        .map(|segment| segment.text.trim().to_string())
+        .map(|line| line.text.trim().to_string())
         .filter(|line| !line.is_empty())
         .collect::<Vec<_>>();
     if !clean_lines.is_empty() {
@@ -249,24 +249,33 @@ pub fn load_lyrics_file(file_hash: &str) -> Option<LyricsFile> {
         .map(repair_legacy_timed_lines)
 }
 
-/// Ordered line texts from a song's LRC-derived transcript (the shape
-/// `build_lrc_transcript` writes), for feeding forced alignment as
-/// caller-canonical lyrics -- the same route already used for plain known
-/// lyrics -- instead of discarding the timed-LRC text entirely. Returns an
-/// empty vec when there is no LRC-sourced transcript on disk.
+/// Complete canonical input saved alongside the timed display segments.
+/// Untimed body lines retain their position and an absent time window.
+pub(crate) fn lrc_transcript_input_lines(cache: &CacheDir, file_hash: &str) -> Vec<LrcInputLine> {
+    let Ok(data) = std::fs::read(cache.transcript_path(file_hash)) else {
+        return Vec::new();
+    };
+    let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&data) else {
+        return Vec::new();
+    };
+    if value.get("source").and_then(serde_json::Value::as_str) != Some("lrc") {
+        return Vec::new();
+    }
+    serde_json::from_value(value["input_lines"].take()).unwrap_or_default()
+}
+
+/// Ordered canonical line texts, including body lines without timestamps.
 pub fn lrc_transcript_line_texts(cache: &CacheDir, file_hash: &str) -> Vec<String> {
-    lrc_transcript_line_segments(cache, file_hash)
+    lrc_transcript_input_lines(cache, file_hash)
         .into_iter()
-        .map(|(_start, _end, text)| text)
+        .map(|line| line.text)
         .collect()
 }
 
 /// Ordered (start-seconds, end-seconds, text) triples from a song's
-/// LRC-derived transcript (the shape `build_lrc_transcript` writes). Used to
-/// feed forced alignment as caller-canonical lyrics with real per-line time
-/// anchors (`lrc_transcript_line_texts` drops the timing for the plain-text
-/// case), and to reconstruct the Timed LRC editor view when no authored
-/// chart exists yet for `load_chart` to read from instead.
+/// LRC-derived transcript's timed display projection. Used to reconstruct
+/// the Timed LRC editor view when no authored chart exists yet. Canonical
+/// analysis must use `lrc_transcript_input_lines` to retain untimed body text.
 pub fn lrc_transcript_line_segments(cache: &CacheDir, file_hash: &str) -> Vec<(f64, f64, String)> {
     let path = cache.transcript_path(file_hash);
     let Ok(data) = std::fs::read_to_string(path) else {
@@ -331,11 +340,11 @@ pub fn canonical_lyrics_status(file_hash: &str) -> Option<CanonicalLyricsStatus>
     if let Some(lyrics) = load_lyrics_file(file_hash) {
         if let Some(timed_lrc) = lyrics.timed_lrc.as_deref()
             && let Ok(parsed) = lrc::parse_lrc(timed_lrc)
-            && !parsed.segments.is_empty()
+            && !parsed.input_lines.is_empty()
         {
             return Some(CanonicalLyricsStatus {
                 source: CanonicalLyricsSource::TimedLrc,
-                line_count: parsed.segments.len(),
+                line_count: parsed.input_lines.len(),
             });
         }
         let line_count = lyrics
@@ -390,10 +399,26 @@ pub fn save_timed_lyrics(file_hash: &str, lrc_text: &str) -> Result<(), String> 
     }
 
     let parsed = lrc::parse_lrc(lrc_text)?;
+    write_timed_lyrics_input(&CacheDir::new(), file_hash, lrc_text, &parsed)?;
+
+    // Timed lyrics are user input, not an analysis command. Never call
+    // provide_lrc, apply_timed_lyrics, reanalysis, or queue APIs from this
+    // save path. Saving must not create transcript/chart artifacts, alter
+    // analysis state/history, or spend compute; only an explicit analysis
+    // action may consume this input later.
+    Ok(())
+}
+
+fn write_timed_lyrics_input(
+    cache: &CacheDir,
+    file_hash: &str,
+    lrc_text: &str,
+    parsed: &ParsedLrc,
+) -> Result<(), String> {
     let lines = parsed
-        .segments
-        .into_iter()
-        .map(|segment| segment.text.trim().to_string())
+        .input_lines
+        .iter()
+        .map(|line| line.text.trim().to_string())
         .filter(|line| !line.is_empty())
         .collect::<Vec<_>>();
     if lines.is_empty() {
@@ -404,15 +429,10 @@ pub fn save_timed_lyrics(file_hash: &str, lrc_text: &str) -> Result<(), String> 
         lines,
         timed_lrc: Some(lrc_text.trim().to_string()),
     };
-    let out = CacheDir::new().lyrics_path(file_hash);
+    let out = cache.lyrics_path(file_hash);
     std::fs::write(&out, serde_json::to_string_pretty(&lyrics).unwrap())
         .map_err(|error| format!("Failed to write lyrics file: {error}"))?;
 
-    // Timed lyrics are user input, not an analysis command. Never call
-    // provide_lrc, apply_timed_lyrics, reanalysis, or queue APIs from this
-    // save path. Saving must not create transcript/chart artifacts, alter
-    // analysis state/history, or spend compute; only an explicit analysis
-    // action may consume this input later.
     Ok(())
 }
 
@@ -456,6 +476,7 @@ fn build_lrc_transcript(
         "key": key,
         "tempo": tempo,
         "no_stems": no_stems,
+        "input_lines": parsed.input_lines,
         "segments": parsed.segments,
     })
 }
@@ -492,8 +513,8 @@ pub fn provide_lrc(file_hash: &str, lrc_text: &str) -> Result<(), String> {
     };
 
     let cache = CacheDir::new();
+    write_timed_lyrics_input(&cache, file_hash, lrc_text, &parsed)?;
     apply_lyrics_edit_reset(&cache, file_hash);
-    let _ = std::fs::remove_file(cache.lyrics_path(file_hash));
 
     let language = song.language.clone();
 
@@ -537,11 +558,11 @@ pub fn apply_timed_lyrics(file_hash: &str, lrc_text: &str) -> Result<(), String>
     let key = song.key.clone().or(meta.key);
     let no_stems = song.no_stems;
 
-    // Timing changed: drop any tempo-shifted transcript variants and the plain
-    // lyrics sidecar, and reset the song back to its base key/tempo. The
+    // Keep the complete new input, drop tempo-shifted transcript variants,
+    // and reset the song back to its base key/tempo. The
     // Authored Chart is preserved (the immutable artifact contract §6/Phase 5).
+    write_timed_lyrics_input(&cache, file_hash, lrc_text, &parsed)?;
     cache.delete_transcript_variants(file_hash);
-    let _ = std::fs::remove_file(cache.lyrics_path(file_hash));
 
     let value = build_lrc_transcript(
         &parsed,
@@ -829,6 +850,77 @@ mod chart_protection_tests {
     }
 
     #[test]
+    fn saving_mixed_timed_lyrics_keeps_complete_input_and_existing_charts() {
+        let cache = temp_cache();
+        let hash = "songMixedLyricsSave";
+        let input = "intro\n[00:10.00]Hello <00:11.00>world\nbridge\n[00:20.00]repeat\nrepeat";
+        let parsed = crate::lrc::parse_lrc(input).unwrap();
+        let transcript = br#"{"segments":[{"text":"old timing"}]}"#;
+        std::fs::write(cache.transcript_path(hash), transcript).unwrap();
+        std::fs::write(cache.vocal_chart_path(hash), b"authored fixture").unwrap();
+        std::fs::write(cache.candidate_chart_path(hash), b"candidate fixture").unwrap();
+
+        super::write_timed_lyrics_input(&cache, hash, input, &parsed).unwrap();
+
+        let saved: super::LyricsFile =
+            serde_json::from_slice(&std::fs::read(cache.lyrics_path(hash)).unwrap()).unwrap();
+        assert_eq!(
+            saved.lines,
+            ["intro", "Hello world", "bridge", "repeat", "repeat"]
+        );
+        assert_eq!(saved.timed_lrc.as_deref(), Some(input));
+        let reopened = crate::lrc::parse_lrc(saved.timed_lrc.as_deref().unwrap()).unwrap();
+        assert_eq!(reopened.input_lines, parsed.input_lines);
+        assert_eq!(
+            std::fs::read(cache.transcript_path(hash)).unwrap(),
+            transcript
+        );
+        assert_eq!(
+            std::fs::read(cache.vocal_chart_path(hash)).unwrap(),
+            b"authored fixture"
+        );
+        assert_eq!(
+            std::fs::read(cache.candidate_chart_path(hash)).unwrap(),
+            b"candidate fixture"
+        );
+        cache.clear_all();
+    }
+
+    #[test]
+    fn imported_mixed_transcript_round_trips_complete_input_separately_from_display() {
+        let cache = temp_cache();
+        let hash = "songMixedLyricsImport";
+        let parsed = crate::lrc::parse_lrc(
+            "intro\n[00:10.00]Hello <00:11.00>world\nbridge\n[00:20.00]repeat\nrepeat",
+        )
+        .unwrap();
+        let value = super::build_lrc_transcript(&parsed, Some("en"), None, 1.0, true);
+        super::write_transcript_json(&cache, hash, &value).unwrap();
+
+        assert_eq!(
+            super::lrc_transcript_input_lines(&cache, hash),
+            parsed.input_lines
+        );
+        assert_eq!(
+            super::lrc_transcript_line_texts(&cache, hash),
+            ["intro", "Hello world", "bridge", "repeat", "repeat"]
+        );
+        assert_eq!(
+            super::lrc_transcript_line_segments(&cache, hash),
+            [
+                (10.0, 20.0, "Hello world".to_string()),
+                (20.0, 24.0, "repeat".to_string())
+            ]
+        );
+        let timed: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(cache.timed_transcript_path(hash)).unwrap())
+                .unwrap();
+        assert_eq!(timed["input_lines"], value["input_lines"]);
+        assert_eq!(timed["input_lines"][0]["range"], serde_json::Value::Null);
+        cache.clear_all();
+    }
+
+    #[test]
     fn lyrics_edit_reset_preserves_the_authored_chart() {
         let cache = temp_cache();
         let hash = "songLyricsEdit";
@@ -895,16 +987,13 @@ mod chart_protection_tests {
     }
 
     #[test]
-    fn lrc_transcript_line_texts_reads_back_segments_in_order() {
+    fn lrc_transcript_line_texts_reads_back_current_input_in_order() {
         let cache = temp_cache();
         let hash = "songLrcLineTexts";
-        let value = serde_json::json!({
-            "source": "lrc",
-            "segments": [
-                {"text": "first line", "start": 0.0, "end": 2.0, "words": []},
-                {"text": "second line", "start": 2.0, "end": 4.0, "words": []},
-            ],
-        });
+        let parsed =
+            crate::lrc::parse_lrc("[00:00.00]first line\n[00:02.00]second line\n[00:04.00]")
+                .unwrap();
+        let value = super::build_lrc_transcript(&parsed, None, None, 1.0, true);
         super::write_transcript_json(&cache, hash, &value).unwrap();
 
         let lines = super::lrc_transcript_line_texts(&cache, hash);

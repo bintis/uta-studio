@@ -367,19 +367,28 @@ fn studio_tokens_from_timed_lrc(
 ) -> Result<Vec<StudioLyricToken>, String> {
     let mut parsed = crate::lrc::parse_lrc(timed_lrc)?;
     parsed.extend_inferred_final_end(source_duration_secs);
-    Ok(parsed
-        .segments
+    Ok(studio_tokens_from_lrc_input_lines(parsed.input_lines))
+}
+
+fn studio_tokens_from_lrc_input_lines(
+    input_lines: Vec<crate::lrc::LrcInputLine>,
+) -> Vec<StudioLyricToken> {
+    input_lines
         .into_iter()
         .enumerate()
-        .map(|(index, segment)| StudioLyricToken {
+        .map(|(index, line)| StudioLyricToken {
             id: format!("lrc-{index}"),
-            text: segment.text,
+            text: line.text,
             reading: None,
             phonemes: None,
-            start: Some((segment.start * f64::from(CANONICAL_TIMEBASE)).round() as u64),
-            end: Some((segment.end * f64::from(CANONICAL_TIMEBASE)).round() as u64),
+            start: line
+                .range
+                .map(|range| (range.start * f64::from(CANONICAL_TIMEBASE)).round() as u64),
+            end: line
+                .range
+                .map(|range| (range.end * f64::from(CANONICAL_TIMEBASE)).round() as u64),
         })
-        .collect())
+        .collect()
 }
 
 fn resolve_analysis_language(configured: Option<&str>, stored: Option<&str>) -> Option<String> {
@@ -430,11 +439,11 @@ fn lyrics_context_for_song(
             // still matches exactly; a genuine plain-text edit must continue
             // to override stale LRC text and use blind alignment.
             if song.transcript_source == Some(crate::song::TranscriptSource::Lrc) {
-                let lrc_segments = crate::lyrics::lrc_transcript_line_segments(
+                let lrc_lines = crate::lyrics::lrc_transcript_input_lines(
                     &crate::cache::CacheDir::new(),
                     file_hash,
                 );
-                if let Some(tokens) = matching_lrc_tokens(&tokens, &lrc_segments) {
+                if let Some(tokens) = matching_lrc_tokens(&tokens, &lrc_lines) {
                     return Ok(StudioLyricsContext {
                         mode: StudioLyricsMode::Canonical,
                         language_hint: language_hint.clone(),
@@ -468,19 +477,10 @@ fn lyrics_context_for_song(
         // known lyrics above -- it just came from a different editor mode.
         // Route it through the same skip-ASR, feed-forced-alignment path
         // instead of refusing to align a song whose lyrics are already known.
-        let tokens =
-            crate::lyrics::lrc_transcript_line_segments(&crate::cache::CacheDir::new(), file_hash)
-                .into_iter()
-                .enumerate()
-                .map(|(index, (start, end, text))| StudioLyricToken {
-                    id: format!("lrc-{index}"),
-                    text,
-                    reading: None,
-                    phonemes: None,
-                    start: Some((start * f64::from(CANONICAL_TIMEBASE)).round() as u64),
-                    end: Some((end * f64::from(CANONICAL_TIMEBASE)).round() as u64),
-                })
-                .collect::<Vec<_>>();
+        let tokens = studio_tokens_from_lrc_input_lines(crate::lyrics::lrc_transcript_input_lines(
+            &crate::cache::CacheDir::new(),
+            file_hash,
+        ));
         if tokens.is_empty() {
             return Err("Timed lyrics cannot be represented as exact Engine alignment input. Choose an independent target or edit supplied plain lyrics first.".to_string());
         }
@@ -509,30 +509,17 @@ fn lyrics_context_for_song(
 
 fn matching_lrc_tokens(
     plain_lines: &[String],
-    lrc_segments: &[(f64, f64, String)],
+    lrc_lines: &[crate::lrc::LrcInputLine],
 ) -> Option<Vec<StudioLyricToken>> {
-    if plain_lines.len() != lrc_segments.len()
+    if plain_lines.len() != lrc_lines.len()
         || !plain_lines
             .iter()
-            .zip(lrc_segments)
-            .all(|(plain, (_, _, timed))| plain == timed)
+            .zip(lrc_lines)
+            .all(|(plain, line)| plain == &line.text)
     {
         return None;
     }
-    Some(
-        lrc_segments
-            .iter()
-            .enumerate()
-            .map(|(index, (start, end, text))| StudioLyricToken {
-                id: format!("lrc-{index}"),
-                text: text.clone(),
-                reading: None,
-                phonemes: None,
-                start: Some((start * f64::from(CANONICAL_TIMEBASE)).round() as u64),
-                end: Some((end * f64::from(CANONICAL_TIMEBASE)).round() as u64),
-            })
-            .collect(),
-    )
+    Some(studio_tokens_from_lrc_input_lines(lrc_lines.to_vec()))
 }
 
 fn cached_step_one_audio_sources(

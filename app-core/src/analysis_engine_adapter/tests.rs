@@ -39,11 +39,8 @@ fn character_timed_lrc_reaches_alignment_as_clean_line_tokens_with_real_windows(
 #[test]
 fn identical_plain_and_lrc_lines_recover_the_existing_time_anchors() {
     let lines = vec!["一行目".to_string(), "二行目".to_string()];
-    let segments = vec![
-        (40.67, 47.16, "一行目".to_string()),
-        (47.16, 52.76, "二行目".to_string()),
-    ];
-    let tokens = matching_lrc_tokens(&lines, &segments).unwrap();
+    let parsed = crate::lrc::parse_lrc("[00:40.67]一行目\n[00:47.16]二行目\n[00:52.76]").unwrap();
+    let tokens = matching_lrc_tokens(&lines, &parsed.input_lines).unwrap();
     assert_eq!(tokens.len(), 2);
     assert_eq!(tokens[0].id, "lrc-0");
     assert_eq!(tokens[0].start, Some(40_670_000));
@@ -54,11 +51,82 @@ fn identical_plain_and_lrc_lines_recover_the_existing_time_anchors() {
 #[test]
 fn edited_plain_lines_do_not_reuse_stale_lrc_time_anchors() {
     let lines = vec!["一行目".to_string(), "編集した二行目".to_string()];
-    let segments = vec![
-        (40.67, 47.16, "一行目".to_string()),
-        (47.16, 52.76, "二行目".to_string()),
-    ];
-    assert!(matching_lrc_tokens(&lines, &segments).is_none());
+    let parsed = crate::lrc::parse_lrc("[00:40.67]一行目\n[00:47.16]二行目\n[00:52.76]").unwrap();
+    assert!(matching_lrc_tokens(&lines, &parsed.input_lines).is_none());
+}
+
+#[test]
+fn mixed_timed_lrc_keeps_all_canonical_lines_and_only_supplied_windows() {
+    let tokens = studio_tokens_from_timed_lrc(
+        "intro\n[00:10.00]Hello <00:11.00>world\nbridge\n[00:20.00]repeat\nrepeat",
+        30.0,
+    )
+    .unwrap();
+    assert_eq!(
+        tokens
+            .iter()
+            .map(|token| token.text.as_str())
+            .collect::<Vec<_>>(),
+        ["intro", "Hello world", "bridge", "repeat", "repeat"]
+    );
+    assert_eq!(
+        tokens
+            .iter()
+            .map(|token| (token.start, token.end))
+            .collect::<Vec<_>>(),
+        [
+            (None, None),
+            (Some(10_000_000), Some(20_000_000)),
+            (None, None),
+            (Some(20_000_000), Some(30_000_000)),
+            (None, None),
+        ]
+    );
+    let ids = tokens
+        .iter()
+        .map(|token| token.id.as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(ids.len(), tokens.len());
+}
+
+#[test]
+fn matching_mixed_plain_lines_keeps_unknown_ranges_and_duplicate_occurrences() {
+    let parsed =
+        crate::lrc::parse_lrc("repeat\n[00:10.00]repeat\nbridge\n[00:20.00]repeat").unwrap();
+    let mut lines = parsed
+        .input_lines
+        .iter()
+        .map(|line| line.text.clone())
+        .collect::<Vec<_>>();
+    let tokens = matching_lrc_tokens(&lines, &parsed.input_lines).unwrap();
+    assert_eq!(tokens[0].start, None);
+    assert_eq!(tokens[1].start, Some(10_000_000));
+    assert_eq!(tokens[2].start, None);
+    assert_eq!(tokens[3].start, Some(20_000_000));
+    assert_ne!(tokens[0].id, tokens[1].id);
+    assert_ne!(tokens[1].id, tokens[3].id);
+    lines.swap(1, 2);
+    assert!(matching_lrc_tokens(&lines, &parsed.input_lines).is_none());
+}
+
+#[test]
+fn pure_timed_canonical_tokens_expand_repeats_chronologically() {
+    let tokens = studio_tokens_from_timed_lrc(
+        "[00:30.00][00:10.00]repeat\n[00:20.00]middle\n[00:40.00]",
+        50.0,
+    )
+    .unwrap();
+    assert_eq!(
+        tokens
+            .iter()
+            .map(|token| (token.text.as_str(), token.start, token.end))
+            .collect::<Vec<_>>(),
+        [
+            ("repeat", Some(10_000_000), Some(20_000_000)),
+            ("middle", Some(20_000_000), Some(30_000_000)),
+            ("repeat", Some(30_000_000), Some(40_000_000)),
+        ]
+    );
 }
 
 fn effective(target: AnalysisDefaultTarget) -> EffectiveAnalysisExperience {
@@ -532,6 +600,51 @@ fn canonical_full_candidate_does_not_request_redundant_asr() {
     );
     assert!(projection.alignment_requested);
     assert!(!projection.transcript_requested);
+}
+
+#[test]
+fn mixed_timed_lrc_full_candidate_does_not_request_asr_or_drop_untimed_lines() {
+    let tokens = studio_tokens_from_timed_lrc(
+        "intro\n[00:10.00]Hello <00:11.00>world\nbridge\n[00:20.00]repeat\nrepeat",
+        30.0,
+    )
+    .unwrap();
+    let request = compile_analyze_request(
+        AnalysisRequestIntent {
+            model_settings: Default::default(),
+            request_id: "mixed-lrc-candidate".to_string(),
+            turbo_acceleration: false,
+            source: ResolvedAnalysisSource {
+                library_file_hash: "library".to_string(),
+                path: std::env::temp_dir().join("source.flac"),
+                sha256: "a".repeat(64),
+                role: AudioRoleWire::OriginalMix,
+            },
+            lyrics: StudioLyricsContext {
+                mode: StudioLyricsMode::Canonical,
+                language_hint: Some("en".to_string()),
+                tokens: tokens.clone(),
+            },
+            target_override: Some(AnalysisDefaultTarget::FullCandidate),
+            requested_outputs: None,
+            compute_backend: None,
+            model_backend_overrides: BTreeMap::new(),
+            default_device_class: None,
+            model_device_overrides: BTreeMap::new(),
+        },
+        &effective(AnalysisDefaultTarget::FullCandidate),
+    )
+    .unwrap();
+    assert_eq!(request.lyrics.mode, LyricsModeWire::Canonical);
+    assert!(request.requested_artifacts.vocal_chart);
+    assert!(request.requested_artifacts.alignment);
+    assert!(!request.requested_artifacts.transcript);
+    assert_eq!(request.lyrics.tokens.len(), tokens.len());
+    for (actual, expected) in request.lyrics.tokens.iter().zip(tokens) {
+        assert_eq!(actual.id, expected.id);
+        assert_eq!(actual.text, expected.text);
+        assert_eq!((actual.start, actual.end), (expected.start, expected.end));
+    }
 }
 
 #[test]
