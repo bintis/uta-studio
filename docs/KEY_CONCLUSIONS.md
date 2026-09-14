@@ -11,36 +11,39 @@
 
 ## Imported lyrics and word timing
 
-Imported text is preserved independently from successful word-timing measurements.
-Unresolved characters remain editable and marked. Measured words retain their
-original timestamps; ordered lyric ownership reuses an existing local touching
-note edge without recutting a correctly divided note. Genuine word boundaries
-inside held notes still split, and LRC scopes do not create empty prefixes.
+Imported text and timed LRC remain authoritative independently from successful
+word measurements. Lyric words now carry independent editable time in UTZ;
+several words may share a melody note, or one word may span notes. Word
+projection no longer cuts the selected melody path. Unresolved text remains
+visible, and note quantization preserves independent lyric times.
 
-Fusion now uses resolved Basic Pitch peaks, one reward per physical attack,
-shared nearby acoustic attack evidence, and duration-additive continuous pitch
-fit. All selected experts remain available. A resampling overhang repair clips
-only unresolved search scopes to the actual source, preserving measured-time
-validation.
+Fusion retains all experts and adds explicit voiced/rest decoding using agreed
+RMVPE/FCPE evidence and reliable DSP coverage. Duration-additive pitch loss and
+deduplicated native onset credit reduce false tails without deleting short notes.
+The follow-up on five public annotated recordings reduces extra cuts **48 → 34**
+and improves F1 including offsets **56.7% → 62.6%** over the preceding result.
+The three previously scored validation clips are now regression samples, not
+new heldout data. Vocadito gets worse, onset recall falls slightly, and GAME
+still beats fusion's onset/pitch F1 on the two calibration clips.
 
-Five public recordings ran the seven native models. On the three recordings
-with annotation scores withheld during tuning, false internal cuts fall
-**308 → 35**, onset/pitch F1 **61.0% → 85.2%**, offset F1 **35.0% → 59.4%** and
-recall **87.5% → 89.6%**. The original Asphodelos same-evidence replay reduces
-notes below 100 ms **52 → 20** while retaining **361/361 characters**, all
-measured words and raw continuous pitch. Its 179 unresolved timing units remain
-explicit. Long tails and displaced expert boundaries still need work: GAME
-alone has higher onset/pitch F1 on the two calibration recordings.
+The original song's imported **26 timed LRC lines and all 361 characters** are
+retained. Corrected native Qwen context/attention and ICU Japanese segmentation
+reduce unresolved characters **181 → 144**; **98 word units** remain unresolved.
+This is not a measured word-timing accuracy score. The full-context change also
+worsens one long repetitive Korean clip's unresolved-unit count **169 → 186**.
 
-The final Engine suite passes 364 tests with two ignored; strict all-target
-Engine Clippy and the debug CLI/example build pass. The final Vocadito chart
-exports successfully to UTZ and UltraStar with all 68 notes and 129 characters;
-both FLAC streams decode fully. Public sources, independent
-annotation definitions, calibration/validation split and limitations are in
-[the measurement report](NOTE_TRANSCRIPTION_EVALUATION.md#public-singing-measurements--2026-09-14).
-See [21J's current review](../tasks/final-features/followups/21J_MELODY_PATH_SCORE_COHERENCE.md#public-data-fusion-repair--2026-09-14-jst)
-for evidence and remaining work. This is scoped algorithm verification; installed
-charts and model readiness are unchanged.
+A fresh seven-model B580 run produces **493 pitched notes / 11 below 100 ms**.
+A matched replay retaining the prior six non-alignment outputs and using new Qwen
+produces **499 / 12**, versus the preceding **505 / 20**. These are distinct
+comparisons; lower short-note counts alone do not prove better transcription.
+Actual final public-chart UTZ and UltraStar exports preserve all 71 notes and
+129 characters, and both FLAC streams decode fully. UTZ additionally preserves
+the 32 independent lyric intervals; UltraStar cannot represent that timeline.
+
+See [the current measurement report](NOTE_TRANSCRIPTION_EVALUATION.md#boundary-and-independent-lyric-follow-up--2026-09-14)
+and [21J](../tasks/final-features/followups/21J_MELODY_PATH_SCORE_COHERENCE.md).
+This is scoped algorithm verification. Installed charts/runtimes and model
+readiness are unchanged; 21J remains `NEEDS_REVIEW`.
 
 ## Lyric sentences and Workflow quantization
 

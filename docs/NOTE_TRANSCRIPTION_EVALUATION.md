@@ -67,7 +67,168 @@ musical phrasing. Evaluate public annotated songs in addition to the reported
 user song, and inspect precision, recall, offsets and coverage together before
 interpreting a lower fragment count as better transcription.
 
+## Boundary and independent-lyric follow-up — 2026-09-14
+
+This follow-up compares the preceding `d5d1df49` result with the revised
+decoder, lyric representation and newly executed native Qwen alignment.
+The five recordings and human annotations below are unchanged. The two original
+calibration clips remain the tuning set; the three previously scored validation
+recordings are now **regression samples, not a new heldout set**.
+
+### Implemented mechanisms
+
+The selected melody path now includes explicit unpitched intervals. A pitched
+candidate pays duration-proportional loss where both valid RMVPE and FCPE
+observations lack voice and valid DSP provides no reliable periodicity. Missing
+model coverage remains unknown rather than being treated as silence. The decoder
+can choose termination, rest and recovery candidates without trimming or dropping
+notes afterward. All original candidates and the raw continuous pitch trace remain
+available. There is no minimum-note-duration filter or production RMS cutoff.
+
+GAME and the other note experts contribute localized native onset evidence.
+Credit is deduplicated by source/event, including events that recover after
+an unsupported interval. The native-event utility remains 0.6: a calibration
+simulation increasing it to 0.8 recovers more onset matches but increases false
+cuts from nine to thirteen and lowers both F1 measures. These alternate weights
+were CPU diagnostic simulations, not separate model runs or production changes.
+
+A second cause of fragmentation was downstream lyric projection: every measured
+word onset could cut an already selected melody note. Words now have independent
+absolute timing in UTZ. Multiple words can share a note while retaining separate
+editable intervals; one word can span multiple notes. The final projection keeps
+the selected pitched-note geometry intact. Unresolved text stays explicit and
+does not receive fabricated measured timing. Editor seek, drag, resize, split,
+merge, clipboard and explicit alignment commands distinguish lyric timing from
+note timing. Explicit Align MIDI binds the lyric to note time; independent lyric
+time survives ordinary note edits and quantization.
+
+### Measurements against human annotations
+
+These are previous → follow-up results. No short predictions are filtered.
+
+| Recording | Use | Human notes | Predicted notes | Extra cuts | Onset/pitch F1 | With offset F1 |
+|---|---|---:|---:|---:|---:|---:|
+| CSD kr001a | Calibration | 106 | 106 → 97 | 8 → 3 | 82.1% → 85.7% | 50.0% → 54.2% |
+| CSD kr003a | Calibration | 105 | 117 → 118 | 5 → 6 | 87.4% → 86.1% | 52.3% → 62.8% |
+| CSD kr002a | Regression | 231 | 247 → 237 | 13 → 5 | 89.5% → 91.0% | 69.9% → 78.2% |
+| CSD kr005a | Regression | 141 | 160 → 155 | 13 → 9 | 86.4% → 86.5% | 54.5% → 57.4% |
+| Vocadito A1 | Regression | 59 | 68 → 71 | 9 → 11 | 66.1% → 64.6% | 31.5% → 30.8% |
+
+Calibration micro F1 improves **84.8% → 85.9%** for onset/pitch and
+**51.2% → 58.7%** including offset; extra cuts fall **13 → 9**.
+However, onset recall falls **87.2% → 86.7%**, with one fewer matched onset.
+Uncovered reference time remains 0.219 seconds and wrong-pitch-only coverage
+increases 1.582 → 1.621 seconds. Standalone GAME still has higher calibration
+onset/pitch F1 (**90.6%**); its offset F1 is **50.4%**.
+
+The three regression recordings together reduce cuts **35 → 25** and improve
+onset/pitch F1 **85.2% → 85.7%**, offset F1 **59.4% → 64.4%**.
+Onset recall decreases **89.6% → 88.9%**; uncovered reference time increases
+**1.433 → 1.631 seconds**, entirely in Vocadito. Wrong-pitch-only coverage
+increases **5.268 → 5.323 seconds**. Across all five, cuts fall **48 → 34** and
+offset F1 improves **56.7% → 62.6%**. These averages do not erase the Vocadito
+regression or demonstrate uniformly better singing coverage.
+
+Vocadito's second annotation remains a separate evaluation; it is never combined
+with A1 to select favorable matches. The follow-up result has 71 predicted notes
+against A2's 64, with onset/pitch F1 78.5%. Detailed matches and offset results are
+in `evaluations/vocadito-1/final-annotator-second.json`.
+
+The comparison retains the same six non-alignment native-model outputs for each
+public recording and reruns their candidate construction and fusion on CPU.
+Qwen was actually rerun on B580 with the corrected native implementation.
+Parallel `final-retained-alignment` replays hold Qwen evidence fixed as well,
+allowing the decoder/projection effect to be inspected separately.
+Raw RMVPE curves and the six non-alignment input artifacts are unchanged.
+
+### Imported LRC and native alignment
+
+The original song did include timed LRC: all **26 exact line texts and start/end
+ranges** match the retained caller input. LRC supplies line ranges, not measured
+word or mora boundaries. All **361 non-whitespace characters** remain in the
+original-song chart.
+
+The native Qwen implementation now follows the corresponding full audio/text
+context rather than pairing a long transcript with only the first eight seconds.
+Both native backends use the official block-diagonal encoder attention structure.
+Native Japanese segmentation now uses the already available ICU dictionary
+instead of individual characters. ICU is not identical to the official Nagisa
+segmenter, especially on rare words. See the
+[official Qwen implementation](https://github.com/QwenLM/Qwen3-ASR)
+for the reference architecture; retained source comparisons are under
+`qwen-full-context/`.
+
+On the original character segmentation, unresolved units decrease **179 → 168**
+and unresolved characters **181 → 170**. After dictionary segmentation, the
+236 word units contain **98 unresolved words covering 144 characters**.
+The 179 and 98 counts use different units and must not be presented as an
+81-item timing-accuracy improvement. The original 26 LRC scopes and all 361
+characters are unchanged. `目覚める` is now one measured word interval
+51.620–53.380 seconds; `切れ` and `に` retain separate intervals
+104.240–104.640 and 104.640–105.040 seconds even when they share one note.
+
+The full-context change helps four public clips' unresolved-unit counts, but the
+138-second repetitive Korean kr002a case worsens **169 → 186**. Its head/context
+limits are not saturated, and applying official timestamp postprocessing to the
+new raw outputs matches the native result. Real-audio tensor/logit parity with
+the official implementation remains unproven. A positive word interval alone is
+not independent evidence that its timing is correct. The shared encoder ASR path
+has relevant unit coverage but no fresh real-ASR qualification in this follow-up.
+
+A fresh complete original-song analysis ran all seven native models on **B580**:
+GGML/Vulkan for its selected models and LibTorch/XPU for JBM and Qwen. It finishes
+as `ok_degraded`, preserving unresolved timing, with **493 pitched notes and
+11 below 100 ms**. This is real inference, not a replay. A matched replay using
+the preceding six non-alignment model outputs plus newly measured Qwen produces
+**499 notes / 12 below 100 ms**, versus **505 / 20** at `d5d1df49`.
+Pitched duration changes 176.760 → 175.800 seconds. The fresh run yields
+175.870 seconds; its six newly generated outputs are not identical to the matched
+replay inputs. Neither difference should be attributed solely to a score change.
+The historical 575-note / 40-short-note chart remains a different-run comparison.
+
+### Execution evidence and remaining scope
+
+Follow-up artifacts are under
+`test-artifacts/singing-boundary-alignment-followup/`.
+`results-summary.json` contains per-recording and micro scores;
+`replay-inputs/`, `replays/` and `evaluations/` retain the exact inputs and
+outputs. `qwen-full-context/` holds raw classes, timestamps and alignment
+diagnostics. `fresh-execution-summary.json` and `fresh/analysis-result.json`
+describe the fresh complete original analysis.
+
+Key operation receipts:
+
+- Native XPU library compilation: `20260914T045424-18960492dbdd`.
+- Native Qwen units: 34 passed, six ignored,
+  `20260914T045917-d8d3e18412f5`.
+- Original full pipeline: `20260914T054056-6afbdd997acd`.
+- Calibration final replays: `20260914T054020-06ecdc5af0fb`;
+  regression final replays: `20260914T054929-2d935ee86173`.
+- Native runtime/worker strict Clippy: `20260914T053345-636508350083`.
+- Final UTZ and UltraStar exports: `20260914T055702-ee8222837e89` and
+  `20260914T055738-aea16599b241`; semantic verification
+  `20260914T055851-7191f07bde38`.
+
+The actual follow-up Vocadito chart exports in an isolated library with all
+**71 pitched notes and 129 characters**. UTZ round-trips the entire chart
+semantically, including **32 independent lyric intervals** and three unresolved
+text tokens. UltraStar retains the note geometry and text, with maximum grid
+displacement **20 ms**; its format cannot encode the independent word timeline,
+fractional pitch or unresolved flags. It does not split melody notes to simulate
+that timeline. Both lossless FLAC streams decode completely through
+33.212245 seconds. Evidence:
+`export-final/verification/summary.json`.
+
+This is bounded algorithm verification. Installed runtime libraries, configured
+model directories, user source media and cached charts were not replaced.
+Build artifacts and an isolated native runtime were produced for execution.
+No whole-workspace, Nix-package or release pass is claimed. 21J remains
+`NEEDS_REVIEW`: GAME's better calibration onset score, remaining lyrics,
+Vocadito's regression and broader singing/listening coverage remain open.
+
 ## Public singing measurements — 2026-09-14
+
+This section records the preceding d5d1df49 experiment; the follow-up above supersedes its current-result and next-action statements.
 
 The current fusion and lyric projection reduce false internal note cuts on
 three recordings whose annotation scores were withheld during tuning. This is
