@@ -283,31 +283,118 @@ pub struct SegmentCandidate {
     pub alternatives: Vec<PitchAlternative>,
 }
 
-fn correlation_discounted_constraint_support(constraints: &[BoundaryConstraintEvidence]) -> f32 {
-    let mut groups = std::collections::BTreeMap::<String, f32>::new();
-    for constraint in constraints {
-        let Some(value) = constraint
+const BOUNDARY_CONTEXT_TOLERANCE: u64 = 50_000;
+
+fn constraint_group(constraint: &BoundaryConstraintEvidence) -> &str {
+    match constraint.kind {
+        BoundaryConstraintKind::BasicPitchOnset => "basic_pitch",
+        BoundaryConstraintKind::AcousticArticulation => "acoustic",
+        _ => constraint
+            .correlation_group
+            .as_deref()
+            .or_else(|| constraint.depends_on.first().map(String::as_str))
+            .unwrap_or(&constraint.source_expert),
+    }
+}
+
+fn boundary_group(candidate: &SegmentCandidate) -> &str {
+    match candidate.boundary_kind {
+        BoundaryEvidenceKind::BasicPitchOnset => "basic_pitch",
+        BoundaryEvidenceKind::AcousticOnset => "acoustic",
+        BoundaryEvidenceKind::Alignment => "forced_alignment",
+        BoundaryEvidenceKind::F0Derived
+        | BoundaryEvidenceKind::F0Transition
+        | BoundaryEvidenceKind::F0Consolidation => "continuous-pitch-neural",
+        _ => &candidate.boundary_source,
+    }
+}
+
+/// An event near both ends of a short state belongs to its nearer edge.
+/// End evidence is retained on the candidate for audit, but cannot pay for
+/// another onset at the beginning of the same state.
+fn belongs_to_start(candidate: &SegmentCandidate, time: u64) -> bool {
+    time.abs_diff(candidate.range.start) <= time.abs_diff(candidate.range.end)
+}
+
+fn attack_belongs_to_start(candidate: &SegmentCandidate, kind: BoundaryConstraintKind) -> bool {
+    const ONSET_WINDOW: u64 = 60_000;
+    candidate
+        .boundary_constraints
+        .iter()
+        .filter(|constraint| {
+            constraint.kind == kind
+                && constraint.time.abs_diff(candidate.range.start) <= ONSET_WINDOW
+        })
+        .min_by_key(|constraint| constraint.time.abs_diff(candidate.range.start))
+        .is_none_or(|constraint| belongs_to_start(candidate, constraint.time))
+}
+
+#[derive(Default)]
+struct BoundaryEventScore {
+    strength: f32,
+    reward: f32,
+}
+
+/// A boundary proposal, an attack feature and a context annotation can all be
+/// views of the same model observation. Credit its strongest contribution once,
+/// using the existing feature weights. Only independent source groups add.
+fn boundary_event_score(candidate: &SegmentCandidate) -> BoundaryEventScore {
+    let mut groups = std::collections::BTreeMap::<&str, BoundaryEventScore>::new();
+    let mut add = |group, strength: f32, reward: f32| {
+        let entry = groups.entry(group).or_default();
+        entry.strength = entry.strength.max(strength);
+        entry.reward = entry.reward.max(reward);
+    };
+    if candidate.boundary_hard {
+        add("caller-hard-boundary", 1.5, 0.65);
+    } else {
+        if let Some(support) = candidate.boundary_support {
+            add(boundary_group(candidate), support * 0.6, support * 0.25);
+        }
+        if let Some(confidence) = candidate.boundary_calibrated_confidence {
+            add(
+                boundary_group(candidate),
+                confidence,
+                ((confidence - 0.5) * 0.8).max(0.0),
+            );
+        }
+    }
+    for constraint in &candidate.boundary_constraints {
+        if constraint.time.abs_diff(candidate.range.start) > BOUNDARY_CONTEXT_TOLERANCE
+            || !belongs_to_start(candidate, constraint.time)
+        {
+            continue;
+        }
+        if let Some(value) = constraint
             .calibrated_confidence
             .or(constraint.source_local_strength)
-        else {
-            continue;
-        };
-        let group = constraint
-            .correlation_group
-            .clone()
-            .or_else(|| constraint.depends_on.first().cloned())
-            .unwrap_or_else(|| constraint.source_expert.clone());
-        groups
-            .entry(group)
-            .and_modify(|current| *current = current.max(value))
-            .or_insert(value);
+        {
+            add(constraint_group(constraint), value * 0.6, value * 0.2);
+        }
+    }
+    if candidate.basic_pitch.as_ref().is_some_and(|features| {
+        features.onset_supported
+            && features.onset_activation >= 0.9
+            && features.note_activation >= 0.75
+    }) && attack_belongs_to_start(candidate, BoundaryConstraintKind::BasicPitchOnset)
+    {
+        add("basic_pitch", 0.9, 0.7 * 0.9 / 1.5);
+    }
+    if candidate
+        .acoustic
+        .as_ref()
+        .is_some_and(|features| features.onset_supported == Some(true))
+        && attack_belongs_to_start(candidate, BoundaryConstraintKind::AcousticArticulation)
+    {
+        add("acoustic", 0.8, 0.7 * 0.8 / 1.5);
     }
     groups
         .values()
-        .fold(0.0, |combined, value| {
-            1.0 - (1.0 - combined) * (1.0 - value.clamp(0.0, 1.0))
+        .fold(BoundaryEventScore::default(), |mut combined, group| {
+            combined.strength += group.strength;
+            combined.reward += group.reward;
+            combined
         })
-        .clamp(0.0, 1.0)
 }
 
 /// Attaches only boundary-local contextual evidence to each duration state.
@@ -317,7 +404,6 @@ pub fn attach_boundary_constraints(
     candidates: &mut [SegmentCandidate],
     constraints: &[BoundaryConstraintEvidence],
 ) -> Result<(), String> {
-    const TOLERANCE: u64 = 50_000;
     // This executes after pitch-state expansion, so the same cumulative
     // candidate/evidence relation limit must protect this attachment pass too.
     validate_candidate_evidence_relation_count(candidates.len(), constraints.len())?;
@@ -326,8 +412,8 @@ pub fn attach_boundary_constraints(
     for candidate in candidates {
         let mut matches = Vec::<(usize, &BoundaryConstraintEvidence)>::new();
         for edge in [candidate.range.start, candidate.range.end] {
-            let lower = edge.saturating_sub(TOLERANCE);
-            let upper = edge.saturating_add(TOLERANCE);
+            let lower = edge.saturating_sub(BOUNDARY_CONTEXT_TOLERANCE);
+            let upper = edge.saturating_add(BOUNDARY_CONTEXT_TOLERANCE);
             let first = indexed.partition_point(|(_, constraint)| constraint.time < lower);
             let end = indexed.partition_point(|(_, constraint)| constraint.time <= upper);
             matches.extend_from_slice(&indexed[first..end]);
@@ -510,11 +596,6 @@ impl SegmentCandidate {
         // Pitch proposals for the same duration geometry remain peers. A pitch
         // does not gain semantic authority merely because its expert also
         // supplied the boundary object.
-        if self.boundary_hard {
-            utility += 0.65;
-        } else if let Some(support) = self.boundary_support {
-            utility += support * 0.25;
-        }
         let fcpe_cents_from_target = self
             .fcpe_center_hz
             .map(|center| 1_200.0 * (center / self.center_pitch_hz).log2());
@@ -530,11 +611,11 @@ impl SegmentCandidate {
                 utility -= duration_seconds * 0.1;
             }
         }
-        let event_support = note_event_support(self);
-        let event_quality = (event_support / 1.5).clamp(0.0, 1.0);
+        let event = boundary_event_score(self);
+        utility += event.reward;
+        let event_quality = (event.strength / 1.5).clamp(0.0, 1.0);
         let shortness = ((0.2 - duration_seconds) / 0.16).clamp(0.0, 1.0);
         if onset_supported(self) {
-            utility += 0.7 * event_quality;
             utility -= shortness * (1.0 - event_quality) * 0.35;
         } else {
             utility -= shortness * 0.15;
@@ -553,56 +634,33 @@ impl SegmentCandidate {
                 utility += duration_seconds * 0.05;
             }
         }
-        let context_support = correlation_discounted_constraint_support(&self.boundary_constraints);
+        // Positive calibration support was credited to its source above.
+        // Keep negative calibration evidence as a penalty.
         Ok(utility
-            + context_support * 0.2
             + self
                 .boundary_calibrated_confidence
-                .map_or(0.0, |confidence| (confidence - 0.5) * 0.8))
+                .map_or(0.0, |confidence| ((confidence - 0.5) * 0.8).min(0.0)))
     }
 }
 
 fn onset_supported(candidate: &SegmentCandidate) -> bool {
-    candidate
+    (candidate
         .acoustic
         .as_ref()
         .is_some_and(|features| features.onset_supported == Some(true))
-        || candidate
+        && attack_belongs_to_start(candidate, BoundaryConstraintKind::AcousticArticulation))
+        || (candidate
             .basic_pitch
             .as_ref()
             .is_some_and(|features| features.onset_supported)
+            && attack_belongs_to_start(candidate, BoundaryConstraintKind::BasicPitchOnset))
 }
 
 /// Boundary-local support for a semantic note event. Sustained pitch evidence
 /// deliberately does not count here: stable F0 can validate a pitch target, but
 /// it cannot turn a carried tone into a new onset.
 fn note_event_support(candidate: &SegmentCandidate) -> f32 {
-    let boundary = if candidate.boundary_hard {
-        1.5
-    } else {
-        candidate
-            .boundary_calibrated_confidence
-            .unwrap_or(0.0)
-            .max(candidate.boundary_support.unwrap_or(0.0) * 0.6)
-            .max(correlation_discounted_constraint_support(&candidate.boundary_constraints) * 0.6)
-    };
-    let attack = candidate
-        .basic_pitch
-        .as_ref()
-        .filter(|features| {
-            features.onset_supported
-                && features.onset_activation >= 0.9
-                && features.note_activation >= 0.75
-        })
-        .map_or(0.0, |_| 0.9_f32)
-        .max(
-            candidate
-                .acoustic
-                .as_ref()
-                .filter(|features| features.onset_supported == Some(true))
-                .map_or(0.0, |_| 0.8),
-        );
-    boundary + attack
+    boundary_event_score(candidate).strength
 }
 
 fn target_relative_expert_support(
@@ -1318,3 +1376,7 @@ pub fn decode_candidate_graph_with_boundaries(
     validate_candidate_path_with_index(&ordered, &decoded, &hard_boundary_times)?;
     Ok(decoded)
 }
+
+#[cfg(test)]
+#[path = "hsmm_event_tests.rs"]
+mod event_tests;
