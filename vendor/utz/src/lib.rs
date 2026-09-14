@@ -674,7 +674,13 @@ impl VocalChart {
                                 }
                                 if let Some(timing) = token.timing {
                                     validate_exact_value(timing.start, "lyric start")?;
-                                    validate_time_value(timing.duration, "lyric duration")?;
+                                    if token.timing_unresolved {
+                                        // A point marks an unresolved word when adjacent
+                                        // measured words leave no positive interval.
+                                        validate_exact_value(timing.duration, "lyric duration")?;
+                                    } else {
+                                        validate_time_value(timing.duration, "lyric duration")?;
+                                    }
                                     timing
                                         .start
                                         .checked_add(timing.duration)
@@ -834,6 +840,8 @@ pub struct LyricTextToken {
 
 /// An independent lyric interval in absolute chart-timebase units.
 /// It may extend beyond the hosting note or overlap other lyric intervals.
+/// An unresolved token may have zero duration: this is a placement marker,
+/// not a measured interval or a zero-length note.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LyricTiming {
     pub start: u64,
@@ -1465,6 +1473,36 @@ mod tests {
         let notes = &chart.tracks[0].phrases[0].notes;
         assert_eq!(notes.len(), 1);
         assert_eq!((notes[0].start, notes[0].duration), (0, 500_000));
+    }
+
+    #[test]
+    fn unresolved_lyric_point_round_trips_without_a_synthetic_note() {
+        let mut chart = chart();
+        let LyricToken::Text(token) = &mut chart.tracks[0].phrases[0].notes[0].lyrics[0] else {
+            panic!("expected text token");
+        };
+        token.text = "覆う".into();
+        token.timing_unresolved = true;
+        token.timing = Some(LyricTiming {
+            start: 250_000,
+            duration: 0,
+        });
+        chart.validate().unwrap();
+        let (manifest, mut files) = sample_v03();
+        files.insert(
+            "charts/vocal.json".into(),
+            serde_json::to_vec(&chart).unwrap(),
+        );
+        let package = UtzPackage::build(manifest, files).unwrap();
+        let decoded = UtzPackage::from_bytes(&package.to_bytes().unwrap()).unwrap();
+        assert_eq!(decoded.vocal_chart().unwrap(), chart);
+        let note = &chart.tracks[0].phrases[0].notes[0];
+        assert_eq!((note.start, note.duration), (0, 500_000));
+        let LyricToken::Text(token) = &mut chart.tracks[0].phrases[0].notes[0].lyrics[0] else {
+            unreachable!();
+        };
+        token.timing_unresolved = false;
+        assert!(chart.validate().is_err());
     }
 
     #[test]

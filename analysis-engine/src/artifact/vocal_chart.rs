@@ -1,4 +1,4 @@
-use super::lyric_projection::{LyricDisplayGroup, lyric_display_groups, lyric_placeholder_scope};
+use super::lyric_projection::{LyricDisplayGroup, lyric_display_groups, lyric_display_scopes};
 use std::collections::BTreeMap;
 
 use crate::contract::{EngineError, EngineErrorCode, EngineResult};
@@ -33,6 +33,7 @@ pub fn finalize_candidate_vocal_chart(
 
     let projection_notes = notes_with_lyric_ownership(track);
     let lyric_groups = lyric_display_groups(track);
+    let lyric_scopes = lyric_display_scopes(&lyric_groups);
     let mut notes_by_word = BTreeMap::<&str, Vec<&CanonicalNote>>::new();
     for note in &projection_notes {
         if let Some(word_id) = note.word_id.as_deref() {
@@ -125,9 +126,15 @@ pub fn finalize_candidate_vocal_chart(
             .max_by_key(|(overlap, _)| *overlap)
             .map(|(_, id)| id.clone());
         let spoken_range = if candidates.is_empty() && overlap_target.is_none() {
-            lyric_placeholder_scope(&lyric_groups, word_index).and_then(|scope| {
-                largest_unoccupied_range(scope, emitted_notes.iter().map(|(_, range, _)| *range))
-            })
+            let scope = lyric_scopes[word_index];
+            (scope.end > scope.start)
+                .then(|| {
+                    largest_unoccupied_range(
+                        scope,
+                        emitted_notes.iter().map(|(_, range, _)| *range),
+                    )
+                })
+                .flatten()
         } else {
             None
         };
@@ -151,7 +158,7 @@ pub fn finalize_candidate_vocal_chart(
                 word_index,
                 LyricToken::Text(LyricTextToken {
                     timing_unresolved: group.timing_unresolved,
-                    timing: Some(lyric_timing(&lyric_groups, word_index)),
+                    timing: Some(lyric_timing(lyric_scopes[word_index])),
                     id: word.word_id.clone(),
                     text: word.text.clone(),
                     join_before,
@@ -169,7 +176,7 @@ pub fn finalize_candidate_vocal_chart(
             candidates,
             spoken_range,
             join_before,
-            lyric_timing(&lyric_groups, word_index),
+            lyric_timing(lyric_scopes[word_index]),
         )?;
         previous_lyric_anchor = Some(notes[first_emitted].id.clone());
         if let Some(range) = spoken_range {
@@ -392,8 +399,7 @@ fn append_word_notes(
     Ok(())
 }
 
-fn lyric_timing(groups: &[LyricDisplayGroup], index: usize) -> LyricTiming {
-    let range = lyric_placeholder_scope(groups, index).unwrap_or(groups[index].boundary.range);
+fn lyric_timing(range: TimeRange) -> LyricTiming {
     LyricTiming {
         start: range.start,
         duration: range.end - range.start,
@@ -754,6 +760,76 @@ mod tests {
         });
         track.notes[0].range = TimeRange::new(500_000, note_end).unwrap();
         track
+    }
+
+    #[test]
+    fn unresolved_word_between_touching_measured_words_keeps_timeline_order() {
+        let mut track = cross_word_track(2_000_000);
+        track.transcript.text = "一二三".into();
+        track.words[0].text = "一".into();
+        track.words[1].text = "三".into();
+        track.lyric_units = [
+            ("word-1", "一", Some(track.words[0].range)),
+            ("missing-middle", "二", None),
+            ("word-2", "三", Some(track.words[1].range)),
+        ]
+        .into_iter()
+        .map(
+            |(id, text, measured_range)| crate::fusion::CanonicalLyricUnit {
+                id: id.into(),
+                text: text.into(),
+                line_id: None,
+                measured_range,
+                audition_range: TimeRange::new(0, 2_000_000).unwrap(),
+            },
+        )
+        .collect();
+        let original = track.clone();
+        let chart = finalize_candidate_vocal_chart(&track, "touching-words", None).unwrap();
+        chart.validate().unwrap();
+        let notes = &chart.tracks[0].phrases[0].notes;
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].start, track.notes[0].range.start);
+        assert_eq!(
+            notes[0].duration,
+            track.notes[0].range.end - track.notes[0].range.start
+        );
+        let tokens = notes
+            .iter()
+            .flat_map(|note| &note.lyrics)
+            .filter_map(|token| {
+                if let LyricToken::Text(text) = token {
+                    Some(text)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            tokens
+                .iter()
+                .map(|token| token.text.as_str())
+                .collect::<String>(),
+            "一二三"
+        );
+        assert!(
+            tokens
+                .windows(2)
+                .all(|pair| pair[0].timing.unwrap().start <= pair[1].timing.unwrap().start)
+        );
+        assert_eq!(
+            tokens[1].timing,
+            Some(LyricTiming {
+                start: 1_000_000,
+                duration: 0
+            })
+        );
+        assert!(tokens[1].timing_unresolved);
+        assert!(!tokens[0].timing_unresolved && !tokens[2].timing_unresolved);
+        assert_eq!(track, original);
+        let decoded: VocalChart =
+            serde_json::from_slice(&serde_json::to_vec(&chart).unwrap()).unwrap();
+        assert_eq!(decoded, chart);
     }
 
     #[test]
