@@ -1353,11 +1353,6 @@ pub(crate) fn fuse_singing_evidence_with_challengers(
         .cloned()
         .collect::<Vec<_>>();
     generated_challengers.extend(alignment_boundary_challengers(boundaries, words)?);
-    generated_challengers.extend(super::articulation::boundary_challengers(
-        boundaries,
-        boundary_challengers,
-        words,
-    ));
     let selected_f0 = match primary_pitch_owner {
         "rmvpe" => rmvpe_curve,
         "fcpe" => fcpe_curve,

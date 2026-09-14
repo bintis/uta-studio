@@ -21,7 +21,6 @@ const NATIVE_EVENT_UTILITY: f32 = 0.6;
 struct OnsetObservation {
     time: u64,
     support: f32,
-    articulated: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -69,15 +68,6 @@ pub(super) struct NativeNoteEvents {
 impl NativeNoteEvents {
     pub(super) fn new(candidates: &[SegmentCandidate]) -> Self {
         let unsupported = unsupported_ranges(candidates);
-        let word_starts = candidates
-            .iter()
-            .flat_map(|candidate| &candidate.boundary_constraints)
-            .filter(|constraint| {
-                constraint.kind == super::BoundaryConstraintKind::WordStart
-                    && constraint.source_expert == "forced_alignment"
-            })
-            .map(|constraint| constraint.time)
-            .collect::<Vec<_>>();
         let mut observations = BTreeMap::<&str, BTreeMap<u64, f32>>::new();
         for candidate in candidates {
             if !candidate.target.is_pitched()
@@ -97,9 +87,12 @@ impl NativeNoteEvents {
             let support = sustained_pitch_support_for_target(candidate, target_hz).max(
                 acoustic_fundamental_support_for_target(candidate, target_hz),
             );
-            // Preserve source-local onset identity until all of that expert's
-            // events are available for one-to-one lexical association.
-            let onset = candidate.range.start;
+            // Keep the native range on the candidate. For onset credit only,
+            // an observation inside an unsupported interval refers to its
+            // recovery. Several same-source observations at that recovery
+            // remain one vote, even when their original starts differ.
+            let onset = unsupported_at(&unsupported, candidate.range.start)
+                .map_or(candidate.range.start, |range| range.end);
             observations
                 .entry(&candidate.boundary_source)
                 .or_default()
@@ -110,39 +103,22 @@ impl NativeNoteEvents {
         let observations = observations
             .into_values()
             .map(|source| {
-                let onsets = source.keys().copied().collect::<Vec<_>>();
-                let anchors = crate::fusion::articulation::onset_anchors(&onsets, &word_starts);
-                let mut resolved = BTreeMap::<u64, (f32, bool)>::new();
-                for (time, support) in source {
-                    let articulated = anchors.contains_key(&time);
-                    let onset = anchors.get(&time).copied().unwrap_or_else(|| {
-                        unsupported_at(&unsupported, time).map_or(time, |range| range.end)
-                    });
-                    resolved
-                        .entry(onset)
-                        .and_modify(|previous| {
-                            previous.0 = previous.0.max(support);
-                            previous.1 |= articulated;
-                        })
-                        .or_insert((support, articulated));
-                }
-                resolved
+                source
                     .into_iter()
-                    .map(|(time, (support, articulated))| OnsetObservation {
-                        time,
-                        support,
-                        articulated,
-                    })
+                    .map(|(time, support)| OnsetObservation { time, support })
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
         let credits = candidates
             .iter()
             .map(|candidate| {
-                // A measured consonant attack may precede periodic pitch.
-                // Its existing native event moves to that attack; unanchored
-                // events still belong to voiced recovery, never empty silence.
-                if !candidate.target.is_pitched() {
+                // A pitched candidate remains eligible in the graph, but
+                // an onset inside explicitly unsupported time earns no
+                // native event credit. A recovery proposal can receive the
+                // original observation instead.
+                if !candidate.target.is_pitched()
+                    || unsupported_at(&unsupported, candidate.range.start).is_some()
+                {
                     return Vec::new();
                 }
                 observations
@@ -159,8 +135,6 @@ impl NativeNoteEvents {
                         let distance = nearest.time.abs_diff(candidate.range.start);
                         if distance >= ATTACK_CONTEXT_TOLERANCE
                             || !belongs_to_start(candidate, nearest.time)
-                            || (!nearest.articulated
-                                && unsupported_at(&unsupported, candidate.range.start).is_some())
                         {
                             return None;
                         }
@@ -401,29 +375,5 @@ mod tests {
                 .abs()
                 < 0.000001
         );
-    }
-
-    #[test]
-    fn measured_consonant_start_moves_one_native_vote_without_an_extra_event() {
-        let native = note("expert", 180_000, 500_000);
-        let mut articulated = note("derived", 100_000, 500_000);
-        articulated.boundary_kind = BoundaryEvidenceKind::Alignment;
-        articulated.boundary_constraints.push(
-            serde_json::from_value(serde_json::json!({
-                "source_expert":"forced_alignment", "kind":"word_start", "time":100_000,
-                "source_local_strength":null, "calibrated_confidence":null,
-                "calibration_version":null, "correlation_group":null, "depends_on":[]
-            }))
-            .unwrap(),
-        );
-        let gap = rest("consonant", 100_000, 200_000);
-        let candidates = [native.clone(), articulated.clone(), gap];
-        let events = NativeNoteEvents::new(&candidates);
-        assert_eq!(events.reward(0), 0.0);
-        assert_eq!(events.reward(1), NATIVE_EVENT_UTILITY);
-        assert_eq!(events.reward(2), 0.0);
-        assert_eq!(candidates[0].range, native.range);
-        let only_words = NativeNoteEvents::new(&[articulated]);
-        assert_eq!(only_words.reward(0), 0.0);
     }
 }
