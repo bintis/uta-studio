@@ -66,8 +66,10 @@ fn caller_japanese_lines_expand_into_words_inside_each_real_line_scope() {
                 .collect::<String>(),
             token.text
         );
-        assert!(line_words.iter().all(|word| word.get("start").is_none()
-            && word.get("end").is_none()),
+        assert!(
+            line_words
+                .iter()
+                .all(|word| word.get("start").is_none() && word.get("end").is_none()),
             "caller line scopes do not measure word or character times"
         );
         cursor += line_words.len();
@@ -103,8 +105,10 @@ fn japanese_dictionary_boundaries_preserve_source_spelling_and_punctuation() {
             .filter(|character| !character.is_whitespace())
             .collect::<String>()
     );
-    assert!(words.iter().all(|word| word["audio_range"]
-        == serde_json::json!({"start": 48_180_000, "end": 53_700_000})));
+    assert!(
+        words.iter().all(|word| word["audio_range"]
+            == serde_json::json!({"start": 48_180_000, "end": 53_700_000}))
+    );
     assert!(words.iter().any(|word| word["text"] == "一人"));
     assert!(words.iter().any(|word| word["text"] == "目覚める。"));
 }
@@ -402,9 +406,15 @@ fn prepare_alignment_words_from_explicit_lyrics() {
         serde_json::from_slice(&std::fs::read(input).unwrap()).unwrap();
     let words = qwen_alignment_words(&transcript, &[]).unwrap();
     assert_eq!(
-        words.iter().map(|word| word["text"].as_str().unwrap()).collect::<String>(),
-        transcript.text.chars()
-            .filter(|character| !character.is_whitespace()).collect::<String>()
+        words
+            .iter()
+            .map(|word| word["text"].as_str().unwrap())
+            .collect::<String>(),
+        transcript
+            .text
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>()
     );
     let mut file = std::fs::OpenOptions::new()
         .write(true)
@@ -419,4 +429,3 @@ fn prepare_alignment_words_from_explicit_lyrics() {
         words.len()
     );
 }
-
