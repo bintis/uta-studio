@@ -63,7 +63,6 @@ pub(crate) fn spawn_model_settings(
                     session.config,
                     &snapshot.runtime_models,
                     session.open_model_runtime_select.as_deref(),
-                    automatic_routing,
                 );
             } else {
                 let (title, description) = if session.model_settings_job.receiver.is_some() {
@@ -380,8 +379,8 @@ fn spawn_model_backend_settings(
     config: &AppConfig,
     registry: &[app_core::RuntimeModelPresentation],
     open_runtime_select: Option<&str>,
-    automatic_routing: bool,
 ) {
+    let automatic_routing = config.turbo_acceleration.unwrap_or(false);
     if registry.is_empty() {
         spawn_setting_row(
             parent,

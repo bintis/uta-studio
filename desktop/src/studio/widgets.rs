@@ -758,35 +758,6 @@ pub(crate) fn update_button_visuals(
 }
 
 #[cfg(test)]
-mod editor_surface_tests {
-    use super::*;
-
-    #[test]
-    fn timeline_capture_surface_never_receives_button_hover_tint() {
-        let mut app = App::new();
-        app.insert_resource(StudioTheme::new(false));
-        app.add_systems(Update, update_button_visuals);
-        let resting = Color::srgb(0.1, 0.12, 0.14);
-        let surface = app
-            .world_mut()
-            .spawn((Button, EditorTimelineSurface, BackgroundColor(resting)))
-            .id();
-        for interaction in [
-            Interaction::None,
-            Interaction::Hovered,
-            Interaction::Pressed,
-        ] {
-            app.world_mut().entity_mut(surface).insert(interaction);
-            app.update();
-            assert_eq!(
-                app.world().get::<BackgroundColor>(surface).unwrap().0,
-                resting
-            );
-        }
-    }
-}
-
-#[cfg(test)]
 pub(crate) fn button_background(
     action: &UiAction,
     interaction: Interaction,
@@ -885,3 +856,33 @@ pub(crate) fn format_duration(seconds: f64) -> String {
     let total = seconds.round() as u64;
     format!("{}:{:02}", total / 60, total % 60)
 }
+
+#[cfg(test)]
+mod editor_surface_tests {
+    use super::*;
+
+    #[test]
+    fn timeline_capture_surface_never_receives_button_hover_tint() {
+        let mut app = App::new();
+        app.insert_resource(StudioTheme::new(false));
+        app.add_systems(Update, update_button_visuals);
+        let resting = Color::srgb(0.1, 0.12, 0.14);
+        let surface = app
+            .world_mut()
+            .spawn((Button, EditorTimelineSurface, BackgroundColor(resting)))
+            .id();
+        for interaction in [
+            Interaction::None,
+            Interaction::Hovered,
+            Interaction::Pressed,
+        ] {
+            app.world_mut().entity_mut(surface).insert(interaction);
+            app.update();
+            assert_eq!(
+                app.world().get::<BackgroundColor>(surface).unwrap().0,
+                resting
+            );
+        }
+    }
+}
+
