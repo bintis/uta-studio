@@ -1,6 +1,8 @@
 use crate::artifact::{AcousticEvidence, BasicPitchEvidence};
 
-use super::baseline::{BoundaryEvidenceSet, acoustic_attack_score, decide_fractional_target};
+use super::baseline::{
+    BoundaryEvidenceSet, acoustic_attack_score, basic_pitch_onsets, decide_fractional_target,
+};
 use super::{
     BoundaryAlternative, BoundaryEvidenceKind, CanonicalWordBoundary, F0Point, PitchAlternative,
     SegmentCandidate, TimeRange,
@@ -182,16 +184,12 @@ fn has_word_edge(words: &[CanonicalWordBoundary], time: u64) -> bool {
     })
 }
 
-fn has_basic_pitch_attack(evidence: Option<&BasicPitchEvidence>, time: u64) -> bool {
-    evidence.is_some_and(|evidence| {
-        let start = time.saturating_sub(BOUNDARY_EVIDENCE_TOLERANCE);
-        let end = time.saturating_add(BOUNDARY_EVIDENCE_TOLERANCE);
-        let first = evidence.frames.partition_point(|frame| frame.time < start);
-        let end = evidence.frames.partition_point(|frame| frame.time <= end);
-        evidence.frames[first..end]
-            .iter()
-            .any(|frame| frame.onset_activation >= 0.5)
-    })
+fn has_basic_pitch_attack(onsets: &[(u64, f32)], time: u64) -> bool {
+    let start = time.saturating_sub(BOUNDARY_EVIDENCE_TOLERANCE);
+    let end = time.saturating_add(BOUNDARY_EVIDENCE_TOLERANCE);
+    onsets
+        .get(onsets.partition_point(|(time, _)| *time < start))
+        .is_some_and(|(time, _)| *time <= end)
 }
 
 fn has_acoustic_attack(evidence: Option<&AcousticEvidence>, time: u64) -> bool {
@@ -238,7 +236,7 @@ fn consolidation_range_is_clear(
     words: &[CanonicalWordBoundary],
     curve: &[F0Point],
     acoustic: Option<&AcousticEvidence>,
-    basic_pitch: Option<&BasicPitchEvidence>,
+    basic_pitch_onsets: &[(u64, f32)],
     caller_boundaries: &[BoundaryAlternative],
     persistent_shifts: &[(u64, f32)],
 ) -> bool {
@@ -252,17 +250,13 @@ fn consolidation_range_is_clear(
             BoundaryEvidenceKind::Constraint | BoundaryEvidenceKind::PhraseConstraint
         ) && (inner_consolidation_time(range, boundary.range.start)
             || inner_consolidation_time(range, boundary.range.end))
-    }) || basic_pitch.is_some_and(|evidence| {
-        let first = evidence
-            .frames
-            .partition_point(|frame| frame.time <= range.start);
-        let end = evidence
-            .frames
-            .partition_point(|frame| frame.time < range.end);
-        evidence.frames[first..end].iter().any(|frame| {
-            inner_consolidation_time(range, frame.time) && frame.onset_activation >= 0.5
-        })
-    }) || acoustic.is_some_and(|evidence| {
+    }) || {
+        let first = basic_pitch_onsets.partition_point(|(time, _)| *time <= range.start);
+        let end = basic_pitch_onsets.partition_point(|(time, _)| *time < range.end);
+        basic_pitch_onsets[first..end]
+            .iter()
+            .any(|(time, _)| inner_consolidation_time(range, *time))
+    } || acoustic.is_some_and(|evidence| {
         let first = evidence
             .frames
             .partition_point(|frame| frame.start <= range.start)
@@ -360,6 +354,7 @@ pub(crate) fn f0_consolidation_challengers(
     )?;
 
     let persistent_shifts = persistent_f0_shifts(curve);
+    let basic_pitch_onsets = basic_pitch.map(basic_pitch_onsets).unwrap_or_default();
     let maximum_gap = maximum_voiced_gap(curve);
     let mut runs = Vec::<(usize, usize, f32)>::new();
     let mut run_start = 0;
@@ -373,7 +368,7 @@ pub(crate) fn f0_consolidation_challengers(
             .then(|| f0_is_continuous_at(curve, time, maximum_gap))
             .flatten()
             .filter(|_| !has_word_edge(words, time))
-            .filter(|_| !has_basic_pitch_attack(basic_pitch, time))
+            .filter(|_| !has_basic_pitch_attack(&basic_pitch_onsets, time))
             .filter(|_| !has_acoustic_attack(acoustic, time))
             .filter(|_| !has_caller_boundary(caller_boundaries, time))
             .filter(|_| !has_persistent_shift_near(&persistent_shifts, time));
@@ -402,7 +397,7 @@ pub(crate) fn f0_consolidation_challengers(
             words,
             curve,
             acoustic,
-            basic_pitch,
+            &basic_pitch_onsets,
             caller_boundaries,
             &persistent_shifts,
         ) {

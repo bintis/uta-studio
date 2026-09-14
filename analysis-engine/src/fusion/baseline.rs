@@ -390,9 +390,56 @@ fn validate_basic_pitch_evidence(evidence: &BasicPitchEvidence) -> Result<(), St
     Ok(())
 }
 
+/// A sustained above-threshold activation is one onset event. Select its
+/// strongest measured frame before looking inside individual note regions, so
+/// cropping a long response cannot turn its tail into repeated attacks.
+pub(super) fn basic_pitch_onsets(evidence: &BasicPitchEvidence) -> Vec<(u64, f32)> {
+    const ONSET_THRESHOLD: f32 = 0.5;
+    const MIN_ONSET_DISTANCE: u64 = 100_000;
+    let mut regions = Vec::new();
+    let mut peak: Option<(u64, f32)> = None;
+    let mut previous_time = None;
+    for frame in &evidence.frames {
+        let separated =
+            previous_time.is_some_and(|time| frame.time.saturating_sub(time) >= MIN_ONSET_DISTANCE);
+        if (frame.onset_activation < ONSET_THRESHOLD || separated)
+            && let Some(peak) = peak.take()
+        {
+            regions.push(peak);
+        }
+        if frame.onset_activation >= ONSET_THRESHOLD {
+            match &mut peak {
+                Some(peak) if frame.onset_activation > peak.1 => {
+                    *peak = (frame.time, frame.onset_activation);
+                }
+                None => peak = Some((frame.time, frame.onset_activation)),
+                _ => {}
+            }
+        }
+        previous_time = Some(frame.time);
+    }
+    if let Some(peak) = peak {
+        regions.push(peak);
+    }
+    let mut onsets: Vec<(u64, f32)> = Vec::new();
+    for peak in regions {
+        if let Some(previous) = onsets.last_mut()
+            && peak.0.saturating_sub(previous.0) < MIN_ONSET_DISTANCE
+        {
+            if peak.1 > previous.1 {
+                *previous = peak;
+            }
+        } else {
+            onsets.push(peak);
+        }
+    }
+    onsets
+}
+
 fn summarize_basic_pitch(
     range: TimeRange,
     evidence: &BasicPitchEvidence,
+    onsets: &[(u64, f32)],
 ) -> Result<BasicPitchCandidateFeatures, String> {
     const ONSET_WINDOW: u64 = 60_000;
     let onset_window_start = range.start.saturating_sub(ONSET_WINDOW);
@@ -434,18 +481,17 @@ fn summarize_basic_pitch(
         note_activation,
         contour_activation,
         contour_class,
-        onset_supported: onset_activation >= 0.5,
+        onset_supported: onsets
+            .get(onsets.partition_point(|(time, _)| *time < onset_window_start))
+            .is_some_and(|(time, _)| *time < onset_window_end),
     })
 }
 
 fn basic_pitch_onset_challengers(
     boundaries: &BoundaryEvidenceSet,
-    evidence: &BasicPitchEvidence,
+    onsets: &[(u64, f32)],
 ) -> Result<Vec<BoundaryAlternative>, String> {
-    validate_basic_pitch_evidence(evidence)?;
-    const ONSET_THRESHOLD: f32 = 0.5;
     const EDGE_MARGIN: u64 = 60_000;
-    const MIN_ONSET_DISTANCE: u64 = 100_000;
 
     let mut alternatives = Vec::new();
     for segment in &boundaries.segments {
@@ -454,23 +500,9 @@ fn basic_pitch_onset_challengers(
         }
         let lower = segment.range.start.saturating_add(EDGE_MARGIN);
         let upper = segment.range.end.saturating_sub(EDGE_MARGIN);
-        let first = evidence.frames.partition_point(|frame| frame.time < lower);
-        let end = evidence.frames.partition_point(|frame| frame.time <= upper);
-        let mut peaks: Vec<(u64, f32)> = Vec::new();
-        for frame in &evidence.frames[first..end] {
-            if frame.onset_activation < ONSET_THRESHOLD {
-                continue;
-            }
-            if let Some(last) = peaks.last_mut()
-                && frame.time.saturating_sub(last.0) < MIN_ONSET_DISTANCE
-            {
-                if frame.onset_activation > last.1 {
-                    *last = (frame.time, frame.onset_activation);
-                }
-            } else {
-                peaks.push((frame.time, frame.onset_activation));
-            }
-        }
+        let first = onsets.partition_point(|(time, _)| *time < lower);
+        let end = onsets.partition_point(|(time, _)| *time <= upper);
+        let peaks = &onsets[first..end];
         if peaks.is_empty() {
             continue;
         }
@@ -895,6 +927,7 @@ fn build_segment_candidate(
     acoustic: Option<&AcousticEvidence>,
     acoustic_onset_enabled: bool,
     basic_pitch: Option<&BasicPitchEvidence>,
+    basic_pitch_onsets: &[(u64, f32)],
     technique_evidence: &[TechniqueEvidenceIndex<'_>],
     all_boundary_evidence: &[BoundaryAlternative],
 ) -> Result<SegmentCandidate, String> {
@@ -1035,7 +1068,7 @@ fn build_segment_candidate(
             })
             .transpose()?,
         basic_pitch: basic_pitch
-            .map(|evidence| summarize_basic_pitch(segment.range, evidence))
+            .map(|evidence| summarize_basic_pitch(segment.range, evidence, basic_pitch_onsets))
             .transpose()?,
         boundary_alternatives: all_boundary_evidence
             .iter()
@@ -1170,9 +1203,11 @@ pub(crate) fn fuse_singing_evidence_with_challengers(
     if acoustic_onset_enabled && let Some(evidence) = acoustic {
         generated_challengers.extend(acoustic_onset_challengers(boundaries, evidence)?);
     }
-    if let Some(evidence) = basic_pitch {
-        generated_challengers.extend(basic_pitch_onset_challengers(boundaries, evidence)?);
-    }
+    let basic_pitch_onsets = basic_pitch.map(basic_pitch_onsets).unwrap_or_default();
+    generated_challengers.extend(basic_pitch_onset_challengers(
+        boundaries,
+        &basic_pitch_onsets,
+    )?);
     generated_challengers.extend(constraint_partition_challengers(
         boundaries,
         &constraint_events,
@@ -1378,6 +1413,7 @@ pub(crate) fn fuse_singing_evidence_with_challengers(
             acoustic,
             acoustic_onset_enabled,
             basic_pitch,
+            &basic_pitch_onsets,
             &indexed_technique_evidence,
             &all_boundary_evidence,
         )?);
@@ -1404,6 +1440,7 @@ pub(crate) fn fuse_singing_evidence_with_challengers(
             acoustic,
             acoustic_onset_enabled,
             basic_pitch,
+            &basic_pitch_onsets,
             &indexed_technique_evidence,
             &all_boundary_evidence,
         ) {

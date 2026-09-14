@@ -238,3 +238,156 @@ fn peer_summary_preserves_distinct_experts_and_fractional_pitch() {
         }));
     }
 }
+
+fn basic_pitch_response(activation: impl Fn(u64) -> f32) -> BasicPitchEvidence {
+    BasicPitchEvidence {
+        frames: (0..60)
+            .map(|index| {
+                let time = 100_000 + index * 10_000;
+                crate::artifact::BasicPitchFrame {
+                    time,
+                    note_activation: 0.9,
+                    onset_activation: activation(time),
+                    contour_class: 42,
+                    contour_activation: 0.8,
+                }
+            })
+            .collect(),
+        model_gguf_size_bytes: 144_512,
+        runtime_manifest_sha256: "b".repeat(64),
+    }
+}
+
+#[test]
+fn sustained_basic_pitch_response_proposes_one_attack_instead_of_periodic_cuts() {
+    let evidence = basic_pitch_response(|time| {
+        if (200_000..650_000).contains(&time) {
+            0.8
+        } else {
+            0.1
+        }
+    });
+    let onsets = basic_pitch_onsets(&evidence);
+    assert_eq!(onsets, vec![(200_000, 0.8)]);
+    let boundaries = primary([(100_000, 700_000, 69.0)]);
+    let challengers = basic_pitch_onset_challengers(&boundaries, &onsets).unwrap();
+    let ranges = challengers
+        .iter()
+        .map(|candidate| candidate.range)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ranges,
+        vec![
+            TimeRange::new(100_000, 200_000).unwrap(),
+            TimeRange::new(200_000, 700_000).unwrap(),
+        ]
+    );
+    let tail = summarize_basic_pitch(
+        TimeRange::new(400_000, 500_000).unwrap(),
+        &evidence,
+        &onsets,
+    )
+    .unwrap();
+    assert_eq!(tail.onset_activation, 0.8, "retain measured activation");
+    assert!(
+        !tail.onset_supported,
+        "a sustained tail is not another attack"
+    );
+}
+
+#[test]
+fn sustained_basic_pitch_tail_no_longer_blocks_f0_consolidation() {
+    let boundaries = primary([
+        (100_000, 300_000, 69.0),
+        (300_000, 500_000, 69.0),
+        (500_000, 700_000, 69.0),
+    ]);
+    let evidence = basic_pitch_response(|time| match time {
+        100_000 => 0.1,
+        110_000 => 0.95,
+        _ => 0.8,
+    });
+    let curve = stable_vibrato();
+    let original_curve = curve.clone();
+    let fused = fuse_singing_evidence_with_challengers(
+        &[],
+        &boundaries,
+        "rmvpe",
+        &curve,
+        None,
+        &[],
+        None,
+        None,
+        true,
+        Some(&evidence),
+        &[],
+        &[],
+    )
+    .unwrap();
+    for segment in &boundaries.segments {
+        assert!(fused.candidates.iter().any(|candidate| {
+            candidate.boundary_role == BoundaryCandidateRole::Primary
+                && candidate.range == segment.range
+        }));
+    }
+    let selected = crate::fusion::decode_candidate_graph(&fused.candidates).unwrap();
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].range, TimeRange::new(100_000, 700_000).unwrap());
+    assert_eq!(
+        selected[0].boundary_kind,
+        BoundaryEvidenceKind::F0Consolidation
+    );
+    assert_eq!(
+        curve, original_curve,
+        "continuous expression remains unchanged"
+    );
+}
+
+#[test]
+fn separated_basic_pitch_responses_keep_independent_attacks_and_block_merging() {
+    let evidence = basic_pitch_response(|time| {
+        if (200_000..320_000).contains(&time) || (450_000..600_000).contains(&time) {
+            0.95
+        } else {
+            0.1
+        }
+    });
+    let onsets = basic_pitch_onsets(&evidence);
+    assert_eq!(onsets, vec![(200_000, 0.95), (450_000, 0.95)]);
+    let boundaries = primary([(100_000, 400_000, 69.0), (400_000, 700_000, 69.0)]);
+    let challengers = f0_consolidation_challengers(
+        &boundaries,
+        &[],
+        "rmvpe",
+        &stable_vibrato(),
+        None,
+        Some(&evidence),
+        &[],
+    )
+    .unwrap();
+    assert!(challengers.is_empty());
+    let partitions =
+        basic_pitch_onset_challengers(&primary([(100_000, 700_000, 69.0)]), &onsets).unwrap();
+    assert_eq!(partitions.len(), 3);
+    assert_eq!(
+        partitions[1].range,
+        TimeRange::new(200_000, 450_000).unwrap()
+    );
+}
+
+#[test]
+fn onset_peak_is_selected_before_primary_note_cropping() {
+    let evidence = basic_pitch_response(|time| if time == 110_000 { 0.95 } else { 0.8 });
+    let onsets = basic_pitch_onsets(&evidence);
+    let later = primary([(300_000, 700_000, 69.0)]);
+    assert!(
+        basic_pitch_onset_challengers(&later, &onsets)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        !summarize_basic_pitch(later.segments[0].range, &evidence, &onsets)
+            .unwrap()
+            .onset_supported
+    );
+}
