@@ -679,9 +679,10 @@ impl SegmentCandidate {
         // A segment median can hide a shorter real pitch plateau inside a
         // long note. Integrate target error over fixed absolute-time
         // observations instead. The scale is a decoder utility weight, not a
-        // calibrated model confidence: a two-semitone mismatch held for 160 ms
-        // costs 0.72, enough to compete with an extra state and transition.
-        const PITCH_ERROR_WEIGHT: f32 = 3.0;
+        // calibrated model confidence. Fractional pitch targets and the
+        // tolerance band reduce a short plateau's loss; its integrated cost
+        // must still compete with the extra state and legato transition.
+        const PITCH_ERROR_WEIGHT: f32 = 4.0;
         utility -= self.continuous_pitch_error_integral.unwrap_or(0.0) * PITCH_ERROR_WEIGHT;
         let event = boundary_event_score(self);
         utility += event.reward;
