@@ -3,6 +3,9 @@
 //! An onset alone cannot prefer its measured note end over an arbitrary tail.
 //! Each complete envelope contributes once per source and owns one midpoint, so
 //! splitting a candidate cannot multiply that observation's reward.
+//! The extra utility is only cross-source agreement: sum minus the strongest
+//! local source. A solo model retains its existing onset vote, not a second
+//! duration preference capable of overriding independent articulation or rest.
 
 use std::collections::BTreeMap;
 
@@ -59,7 +62,7 @@ impl NativeNoteEnvelopes {
                 if !candidate.target.is_pitched() {
                     return 0.0;
                 }
-                sources
+                let support = sources
                     .iter()
                     .map(|events| {
                         let lower = candidate
@@ -94,7 +97,10 @@ impl NativeNoteEnvelopes {
                             })
                             .fold(0.0_f32, f32::max)
                     })
-                    .sum()
+                    .fold((0.0_f32, 0.0_f32), |(sum, strongest), reward| {
+                        (sum + reward, strongest.max(reward))
+                    });
+                (support.0 - support.1).max(0.0)
             })
             .collect();
         Self { rewards }
@@ -133,7 +139,8 @@ mod tests {
         let exact = derived(100_000, 500_000);
         let late = derived(100_000, 700_000);
         let early = derived(100_000, 300_000);
-        let scores = NativeNoteEnvelopes::new(&[measured, exact, late, early]);
+        let confirming = note("other-expert", 100_000, 500_000);
+        let scores = NativeNoteEnvelopes::new(&[measured, exact, late, early, confirming]);
         assert_eq!(scores.reward(0), NATIVE_ENVELOPE_UTILITY);
         assert_eq!(scores.reward(1), scores.reward(0));
         assert_eq!(scores.reward(2), 0.0);
@@ -143,13 +150,19 @@ mod tests {
     #[test]
     fn pitch_proposals_and_duplicate_observations_do_not_multiply_evidence() {
         let measured = note("expert", 0, 500_000);
-        let expected = NativeNoteEnvelopes::new(std::slice::from_ref(&measured)).reward(0);
+        assert_eq!(
+            NativeNoteEnvelopes::new(std::slice::from_ref(&measured)).reward(0),
+            0.0
+        );
+        let confirming = note("other-expert", 0, 500_000);
+        let expected = NativeNoteEnvelopes::new(&[measured.clone(), confirming.clone()]).reward(0);
         let mut alternative = measured.clone();
         alternative.target = crate::fusion::CandidateTarget::Pitched {
             midi: 81,
             center_hz: 880.0,
         };
-        let scores = NativeNoteEnvelopes::new(&[measured.clone(), alternative, measured]);
+        let scores =
+            NativeNoteEnvelopes::new(&[measured.clone(), alternative, measured, confirming]);
         assert_eq!(scores.reward(0), expected);
         assert_eq!(scores.reward(1), expected);
     }
@@ -159,7 +172,8 @@ mod tests {
         let measured = note("expert", 0, 40_000);
         let prefix = derived(0, 20_000);
         let suffix = derived(20_000, 40_000);
-        let scores = NativeNoteEnvelopes::new(&[measured, prefix, suffix]);
+        let confirming = note("other-expert", 0, 40_000);
+        let scores = NativeNoteEnvelopes::new(&[measured, prefix, suffix, confirming]);
         assert_eq!(scores.reward(1), 0.0);
         assert!(scores.reward(2) > 0.0);
         assert!(scores.reward(1) + scores.reward(2) <= scores.reward(0));
@@ -183,8 +197,9 @@ mod tests {
         let first = note("first-expert", 0, 500_000);
         let second = note("second-expert", 0, 500_000);
         let next = note("first-expert", 500_000, 1_000_000);
-        let scores = NativeNoteEnvelopes::new(&[first, second, next]);
-        assert_eq!(scores.reward(0), NATIVE_ENVELOPE_UTILITY * 2.0);
+        let following = note("second-expert", 500_000, 1_000_000);
+        let scores = NativeNoteEnvelopes::new(&[first, second, next, following]);
+        assert_eq!(scores.reward(0), NATIVE_ENVELOPE_UTILITY);
         assert_eq!(scores.reward(2), NATIVE_ENVELOPE_UTILITY);
     }
 }
