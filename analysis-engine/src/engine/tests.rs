@@ -167,7 +167,10 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
             candidates: vec![SegmentCandidate {
                 id: "game-note-0".to_string(),
                 range,
-                target_midi: 69,
+                target: crate::fusion::CandidateTarget::Pitched {
+                    midi: 69,
+                    center_hz: 440.0,
+                },
                 boundary_source: "game".to_string(),
                 boundary_kind: BoundaryEvidenceKind::Game,
                 boundary_role: BoundaryCandidateRole::Primary,
@@ -180,7 +183,6 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
                 target_pitch_source: "game".to_string(),
                 target_pitch_source_local_score: None,
                 target_pitch_calibrated_confidence: None,
-                center_pitch_hz: 440.0,
                 continuous_pitch_error_integral: None,
                 continuous_pitch_observed_duration: None,
                 rmvpe_center_hz: None,

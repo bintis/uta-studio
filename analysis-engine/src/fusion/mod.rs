@@ -9,6 +9,9 @@ mod review;
 mod scalar;
 mod transcript_fusion;
 mod types;
+mod voicing;
+
+pub use voicing::CandidateTarget;
 
 pub use alignment_fusion::{CanonicalWordBoundary, WordBoundaryEvidence, fuse_word_boundaries};
 pub use baseline::{
@@ -68,7 +71,10 @@ mod tests {
         SegmentCandidate {
             id: id.to_string(),
             range: range(start, end),
-            target_midi: midi,
+            target: crate::fusion::CandidateTarget::Pitched {
+                midi,
+                center_hz: 440.0 * 2.0_f32.powf((midi as f32 - 69.0) / 12.0),
+            },
             boundary_source: "game".to_string(),
             boundary_kind: BoundaryEvidenceKind::Game,
             boundary_role: BoundaryCandidateRole::Primary,
@@ -80,7 +86,6 @@ mod tests {
             target_pitch_source: "game".to_string(),
             target_pitch_source_local_score: None,
             target_pitch_calibrated_confidence: None,
-            center_pitch_hz: 440.0 * 2.0_f32.powf((midi as f32 - 69.0) / 12.0),
             continuous_pitch_error_integral: None,
             continuous_pitch_observed_duration: None,
             rmvpe_center_hz: None,
@@ -423,10 +428,10 @@ mod tests {
     #[test]
     fn candidate_utility_is_not_biased_against_fcpe_primary_evidence() {
         let mut rmvpe = candidate("rmvpe", 0.0, 0.5, 69);
-        rmvpe.rmvpe_center_hz = Some(rmvpe.center_pitch_hz);
+        rmvpe.rmvpe_center_hz = rmvpe.target.center_hz();
         rmvpe.rmvpe_cents_difference = Some(0.0);
         let mut fcpe = candidate("fcpe", 0.0, 0.5, 69);
-        fcpe.fcpe_center_hz = Some(fcpe.center_pitch_hz);
+        fcpe.fcpe_center_hz = fcpe.target.center_hz();
         assert_eq!(
             rmvpe.emission_utility().unwrap(),
             fcpe.emission_utility().unwrap()
@@ -468,8 +473,10 @@ mod tests {
 
         let mut matching = wrong_octave.clone();
         matching.id = "rmvpe-a4".to_string();
-        matching.target_midi = 69;
-        matching.center_pitch_hz = 440.0;
+        matching.target = CandidateTarget::Pitched {
+            midi: 69,
+            center_hz: 440.0,
+        };
         matching.target_pitch_source = "rmvpe".to_string();
         assert!(super::hsmm::sustained_pitch_support(&matching) > 0.9);
 
@@ -1055,9 +1062,11 @@ mod tests {
 
         let mut matching_peer = wrong_boundary_pitch.clone();
         matching_peer.id = "matching-rmvpe".to_string();
-        matching_peer.target_midi = 69;
+        matching_peer.target = CandidateTarget::Pitched {
+            midi: 69,
+            center_hz: 440.0,
+        };
         matching_peer.target_pitch_source = "rmvpe".to_string();
-        matching_peer.center_pitch_hz = 440.0;
         matching_peer.rmvpe_cents_difference = Some(0.0);
         matching_peer.continuous_pitch_error_integral = Some(0.0);
 

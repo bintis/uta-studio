@@ -215,7 +215,7 @@ fn every_pitch_proposal_is_scored_against_the_declared_owner() {
         for candidate in evidence.candidates {
             assert_eq!(candidate.continuous_pitch_observed_duration, Some(400_000));
             let error = candidate.continuous_pitch_error_integral.unwrap();
-            if candidate.target_midi == expected_midi {
+            if candidate.target.midi() == Some(expected_midi) {
                 assert_eq!(error, 0.0);
             } else {
                 assert!((error - 0.6).abs() < 0.00001);

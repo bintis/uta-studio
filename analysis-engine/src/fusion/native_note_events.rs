@@ -38,10 +38,12 @@ impl NativeNoteEvents {
     pub(super) fn new(candidates: &[SegmentCandidate]) -> Self {
         let mut observations = BTreeMap::<&str, BTreeMap<u64, f32>>::new();
         for candidate in candidates {
-            if !matches!(
-                candidate.boundary_kind,
-                BoundaryEvidenceKind::Game | BoundaryEvidenceKind::AdvancedNote
-            ) {
+            if !candidate.target.is_pitched()
+                || !matches!(
+                    candidate.boundary_kind,
+                    BoundaryEvidenceKind::Game | BoundaryEvidenceKind::AdvancedNote
+                )
+            {
                 continue;
             }
             let Some(midi) = candidate.boundary_fractional_midi else {
@@ -72,6 +74,9 @@ impl NativeNoteEvents {
         let credits = candidates
             .iter()
             .map(|candidate| {
+                if !candidate.target.is_pitched() {
+                    return Vec::new();
+                }
                 observations
                     .iter()
                     .enumerate()
@@ -129,13 +134,12 @@ mod tests {
         serde_json::from_value(serde_json::json!({
             "id": format!("{source}-{start}"),
             "range": { "start": start, "end": end },
-            "target_midi": 69,
+            "target": { "kind": "pitched", "midi": 69, "center_hz": 440.0 },
             "boundary_source": source,
             "boundary_kind": "advanced_note",
             "boundary_role": "challenger",
             "boundary_fractional_midi": 69.0,
             "target_pitch_source": source,
-            "center_pitch_hz": 440.0,
             "rmvpe_center_hz": 440.0,
             "rmvpe_voiced_ratio": 1.0,
             "rmvpe_pitch_mad_cents": 0.0
@@ -156,8 +160,10 @@ mod tests {
         );
         let mut alternative = original.clone();
         alternative.id = "pitch-alternative".to_string();
-        alternative.target_midi = 81;
-        alternative.center_pitch_hz = 880.0;
+        alternative.target = crate::fusion::CandidateTarget::Pitched {
+            midi: 81,
+            center_hz: 880.0,
+        };
         let index = NativeNoteEvents::new(&[original.clone(), alternative, original]);
         assert_eq!(index.reward(0), original_reward);
         assert_eq!(index.reward(1), original_reward);

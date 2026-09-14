@@ -103,7 +103,7 @@ fn peer_pitch_summary_uses_local_duration_not_note_count_or_raw_duration() {
         })
         .collect::<Vec<_>>();
     assert_eq!(primary_peer_states.len(), 1);
-    assert!((primary_peer_states[0].center_pitch_hz - midi_hz(69.25)).abs() < 0.001);
+    assert!((primary_peer_states[0].target.center_hz().unwrap() - midi_hz(69.25)).abs() < 0.001);
     assert!(
         primary_peer_states[0]
             .boundary_alternatives
@@ -115,7 +115,7 @@ fn peer_pitch_summary_uses_local_duration_not_note_count_or_raw_duration() {
             candidate.boundary_source == "peer"
                 && candidate.target_pitch_source == "peer"
                 && candidate.range.start == 400_000
-                && candidate.target_midi == 81
+                && candidate.target.midi() == Some(81)
         }),
         "real short-note proposals retain their own duration states"
     );
@@ -234,7 +234,8 @@ fn peer_summary_preserves_distinct_experts_and_fractional_pitch() {
     assert_eq!(states.len(), 3);
     for (source, midi) in [("peer", 81.13), ("independent", 69.37)] {
         assert!(states.iter().any(|candidate| {
-            candidate.target_pitch_source == source && candidate.center_pitch_hz == midi_hz(midi)
+            candidate.target_pitch_source == source
+                && candidate.target.center_hz() == Some(midi_hz(midi))
         }));
     }
 }
@@ -481,6 +482,9 @@ fn basic_pitch_small_rises_accumulate_against_the_time_anchor() {
     });
     let onsets = basic_pitch_onsets(&evidence);
     assert_eq!(onsets.len(), 1);
-    assert!(onsets[0].0 > 200_000, "the resolved rise still moves the peak");
+    assert!(
+        onsets[0].0 > 200_000,
+        "the resolved rise still moves the peak"
+    );
     assert!((onsets[0].1 - 0.84).abs() < 0.000001);
 }

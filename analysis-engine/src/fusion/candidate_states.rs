@@ -594,12 +594,12 @@ pub(crate) fn expand_pitch_alternative_states(
         let mut identities = std::collections::BTreeSet::new();
         identities.insert((
             candidate.target_pitch_source.as_str(),
-            candidate.center_pitch_hz.to_bits(),
+            candidate.target.center_hz().map(f32::to_bits),
         ));
         for alternative in &candidate.alternatives {
             identities.insert((
                 alternative.source_expert.as_str(),
-                alternative.center_hz.to_bits(),
+                Some(alternative.center_hz.to_bits()),
             ));
         }
         let proposal_count = identities.len();
@@ -627,9 +627,13 @@ pub(crate) fn expand_pitch_alternative_states(
     let mut expanded = Vec::with_capacity(projected);
     let mut assigned_ids = std::collections::BTreeSet::new();
     for (candidate_index, candidate) in candidates.into_iter().enumerate() {
+        let Some((_, center_hz)) = candidate.target.as_pitched() else {
+            expanded.push(candidate);
+            continue;
+        };
         let mut proposals = vec![PitchAlternative {
             source_expert: candidate.target_pitch_source.clone(),
-            center_hz: candidate.center_pitch_hz,
+            center_hz,
             cents_from_target: 0.0,
             confidence: None,
         }];
@@ -655,9 +659,11 @@ pub(crate) fn expand_pitch_alternative_states(
                     &mut assigned_ids,
                 );
             }
-            state.target_midi = target_midi;
+            state.target = super::CandidateTarget::Pitched {
+                midi: target_midi,
+                center_hz: selected.center_hz,
+            };
             state.target_pitch_source = selected.source_expert.clone();
-            state.center_pitch_hz = selected.center_hz;
             state.rmvpe_cents_difference = state
                 .rmvpe_center_hz
                 .map(|center| 1_200.0 * (center / selected.center_hz).log2());
@@ -687,7 +693,10 @@ mod tests {
         SegmentCandidate {
             id: "candidate".to_string(),
             range: TimeRange::new(100_000, 200_000).unwrap(),
-            target_midi: 69,
+            target: crate::fusion::CandidateTarget::Pitched {
+                midi: 69,
+                center_hz: 440.1,
+            },
             boundary_source: "game".to_string(),
             boundary_kind: BoundaryEvidenceKind::Game,
             boundary_role: BoundaryCandidateRole::Primary,
@@ -700,7 +709,6 @@ mod tests {
             target_pitch_source: "pitch/a".to_string(),
             target_pitch_source_local_score: None,
             target_pitch_calibrated_confidence: None,
-            center_pitch_hz: 440.1,
             continuous_pitch_error_integral: None,
             continuous_pitch_observed_duration: None,
             rmvpe_center_hz: None,
@@ -994,7 +1002,11 @@ mod tests {
         ];
         let expanded = expand_pitch_alternative_states(vec![candidate]).unwrap();
         assert_eq!(expanded.len(), 3, "only the exact duplicate is collapsed");
-        assert!(expanded.iter().all(|candidate| candidate.target_midi == 69));
+        assert!(
+            expanded
+                .iter()
+                .all(|candidate| candidate.target.midi() == Some(69))
+        );
         let ids = expanded
             .iter()
             .map(|candidate| candidate.id.as_str())

@@ -210,7 +210,7 @@ impl TechniqueCandidateFeatures {
 pub struct SegmentCandidate {
     pub id: String,
     pub range: TimeRange,
-    pub target_midi: u8,
+    pub target: super::CandidateTarget,
     pub boundary_source: String,
     pub boundary_kind: BoundaryEvidenceKind,
     #[serde(default)]
@@ -242,7 +242,6 @@ pub struct SegmentCandidate {
     /// Versioned calibrated confidence for the selected discrete pitch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_pitch_calibrated_confidence: Option<f32>,
-    pub center_pitch_hz: f32,
     /// Target error outside the 50-cent band, in semitone-seconds, from
     /// absolute-time primary F0 and reliable independent DSP observations.
     /// Repartitioning one target must preserve the sum of this observation.
@@ -525,7 +524,9 @@ pub fn attach_boundary_constraints(
 impl SegmentCandidate {
     fn validate(&self) -> Result<(), String> {
         if self.range.end <= self.range.start
-            || self.target_midi > 127
+            || self.target.as_pitched().is_some_and(|(midi, center_hz)| {
+                midi > 127 || !center_hz.is_finite() || center_hz <= 0.0
+            })
             || self.boundary_source.trim().is_empty()
             || self.target_pitch_source.trim().is_empty()
             || self
@@ -568,8 +569,6 @@ impl SegmentCandidate {
                 .technique_evidence
                 .iter()
                 .any(|evidence| !evidence.is_valid())
-            || !self.center_pitch_hz.is_finite()
-            || self.center_pitch_hz <= 0.0
             || self
                 .continuous_pitch_error_integral
                 .is_some_and(|value| !value.is_finite() || value < 0.0)
@@ -687,6 +686,9 @@ impl SegmentCandidate {
         // Repeating the same observation in shorter states must not multiply
         // its reward. Only boundary-local evidence can pay the state cost.
         let duration_seconds = self.range.end.saturating_sub(self.range.start) as f32 / 1_000_000.0;
+        if !self.target.is_pitched() {
+            return Ok(duration_seconds);
+        }
         let mut utility = duration_seconds - 0.45;
         // Pitch proposals for the same duration geometry remain peers. A pitch
         // does not gain semantic authority merely because its expert also
@@ -771,7 +773,9 @@ fn target_relative_expert_support(
 }
 
 pub(super) fn sustained_pitch_support(candidate: &SegmentCandidate) -> f32 {
-    sustained_pitch_support_for_target(candidate, candidate.center_pitch_hz)
+    candidate.target.center_hz().map_or(0.0, |target_hz| {
+        sustained_pitch_support_for_target(candidate, target_hz)
+    })
 }
 
 fn sustained_pitch_support_for_target(candidate: &SegmentCandidate, target_hz: f32) -> f32 {
@@ -795,7 +799,9 @@ fn sustained_pitch_support_for_target(candidate: &SegmentCandidate, target_hz: f
 }
 
 pub(super) fn acoustic_fundamental_support(candidate: &SegmentCandidate) -> f32 {
-    acoustic_fundamental_support_for_target(candidate, candidate.center_pitch_hz)
+    candidate.target.center_hz().map_or(0.0, |target_hz| {
+        acoustic_fundamental_support_for_target(candidate, target_hz)
+    })
 }
 
 fn acoustic_fundamental_support_for_target(candidate: &SegmentCandidate, target_hz: f32) -> f32 {
@@ -843,10 +849,13 @@ fn expressive_continuity(previous: &SegmentCandidate, next: &SegmentCandidate) -
 }
 
 fn pitch_interval_cents(previous: &SegmentCandidate, next: &SegmentCandidate) -> f32 {
-    1_200.0
-        * (next.center_pitch_hz / previous.center_pitch_hz)
-            .log2()
-            .abs()
+    previous
+        .target
+        .center_hz()
+        .zip(next.target.center_hz())
+        .map_or(0.0, |(previous_hz, next_hz)| {
+            1_200.0 * (next_hz / previous_hz).log2().abs()
+        })
 }
 
 fn phrase_start_strength(candidate: &SegmentCandidate) -> f32 {
@@ -873,14 +882,17 @@ fn has_typed_reset_between(
     hard_boundaries: &HardBoundaryTimeIndex,
     voicing_reset_times: &[u64],
 ) -> bool {
-    hard_boundaries.resets_between(
-        previous.range.end,
-        next.range.start,
-        HARD_BOUNDARY_TOLERANCE,
-    ) || voicing_reset_times.iter().any(|time| {
-        *time >= previous.range.end.saturating_sub(CONTEXT_RESET_TOLERANCE)
-            && *time <= next.range.start.saturating_add(CONTEXT_RESET_TOLERANCE)
-    })
+    !previous.target.is_pitched()
+        || !next.target.is_pitched()
+        || hard_boundaries.resets_between(
+            previous.range.end,
+            next.range.start,
+            HARD_BOUNDARY_TOLERANCE,
+        )
+        || voicing_reset_times.iter().any(|time| {
+            *time >= previous.range.end.saturating_sub(CONTEXT_RESET_TOLERANCE)
+                && *time <= next.range.start.saturating_add(CONTEXT_RESET_TOLERANCE)
+        })
 }
 
 #[cfg(test)]

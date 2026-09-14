@@ -4,12 +4,11 @@ fn sustain(id: &str, start: u64, end: u64) -> SegmentCandidate {
     serde_json::from_value(serde_json::json!({
         "id": id,
         "range": { "start": start, "end": end },
-        "target_midi": 69,
+        "target": { "kind": "pitched", "midi": 69, "center_hz": 440.0 },
         "boundary_source": "game",
         "boundary_kind": "game",
         "boundary_fractional_midi": 69.0,
         "target_pitch_source": "game",
-        "center_pitch_hz": 440.0,
         "rmvpe_center_hz": 440.0,
         "rmvpe_cents_difference": 0.0,
         "rmvpe_voiced_ratio": 1.0,
@@ -194,8 +193,10 @@ fn real_pitch_change_can_defeat_a_long_note_whose_median_hides_the_shorter_pitch
         note.continuous_pitch_error_integral = Some(0.0);
         note.continuous_pitch_observed_duration = Some(note.range.end - note.range.start);
     }
-    before.target_midi = 67;
-    before.center_pitch_hz = 440.0 * 2.0_f32.powf(-2.0 / 12.0);
+    before.target = crate::fusion::CandidateTarget::Pitched {
+        midi: 67,
+        center_hz: 440.0 * 2.0_f32.powf(-2.0 / 12.0),
+    };
     let selected = decode_candidate_graph(&[wide, before, after]).unwrap();
     assert_eq!(
         selected

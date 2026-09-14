@@ -1182,7 +1182,10 @@ fn build_segment_candidate(
     Ok(SegmentCandidate {
         id: format!("{source_expert}-segment-{index}"),
         range: segment.range,
-        target_midi,
+        target: crate::fusion::CandidateTarget::Pitched {
+            midi: target_midi,
+            center_hz: center_pitch_hz,
+        },
         boundary_source: source_expert.to_string(),
         boundary_kind,
         boundary_role,
@@ -1201,7 +1204,6 @@ fn build_segment_candidate(
             .filter(|_| target_pitch_source == source_expert)
             .and_then(|alternative| alternative.calibrated_pitch_confidence),
         target_pitch_source,
-        center_pitch_hz,
         continuous_pitch_error_integral: None,
         continuous_pitch_observed_duration: None,
         rmvpe_center_hz: rmvpe.center_hz,
@@ -1622,11 +1624,10 @@ pub(crate) fn fuse_singing_evidence_with_challengers(
     // Pitch expansion changes the target. Recompute every proposal against
     // the same absolute-time observations, never candidate-level expert minima.
     for candidate in &mut candidates {
-        let fit = continuous_pitch_fit(
-            candidate.range,
-            candidate.center_pitch_hz,
-            observations.as_deref(),
-        );
+        let Some((_, center_hz)) = candidate.target.as_pitched() else {
+            continue;
+        };
+        let fit = continuous_pitch_fit(candidate.range, center_hz, observations.as_deref());
         candidate.continuous_pitch_error_integral = fit.as_ref().map(|fit| fit.error_integral);
         candidate.continuous_pitch_observed_duration = fit.map(|fit| fit.observed_duration);
     }

@@ -187,7 +187,7 @@ fn resume_suspended_child(child: &Child) -> io::Result<()> {
     Ok(())
 }
 
-const FUSION_AGENT_INSTRUCTIONS: &str = "Select the final ordered, non-overlapping singing-note path for a karaoke chart. Read candidates.json, lyrics.json, and hard_boundaries.json from the current temporary directory. candidates.json is a compact decision projection: each segment is [start,end,options], each option follows option_fields, and string-valued columns index string_table. Return only {\"contract\":\"uta.fusion_agent_response\",\"version\":4,\"selected\":[candidate_index,...]}. Cover every represented voiced segment exactly, never cross a hard boundary, and never invent an index. Silence, instrumental passages, intros, and outros need no coverage. Do not return chain-of-thought.";
+const FUSION_AGENT_INSTRUCTIONS: &str = "Select the final ordered, non-overlapping singing-note path for a karaoke chart. Read candidates.json, lyrics.json, and hard_boundaries.json from the current temporary directory. candidates.json is a compact decision projection: each segment is [start,end,options], each option follows option_fields, and string-valued columns index string_table. Return only {\"contract\":\"uta.fusion_agent_response\",\"version\":4,\"selected\":[candidate_index,...]}. Cover every represented candidate component exactly, never cross a hard boundary, and never invent an index. A target with kind unpitched is an explicit covering state without a note pitch; retain such candidates when the evidence supports an unpitched interval. Only intervals outside represented components need no coverage. Do not return chain-of-thought.";
 
 fn executable_file(path: &Path) -> bool {
     #[cfg(unix)]
@@ -205,7 +205,7 @@ fn executable_file(path: &Path) -> bool {
 
 const OPTION_FIELDS: [&str; 15] = [
     "candidate_index",
-    "midi",
+    "target",
     "boundary_source",
     "boundary_kind",
     "boundary_role",
@@ -416,7 +416,8 @@ fn candidate_projection(
                 .ok_or_else(|| worker_failed("could not encode boundary role"))?;
             options.push(serde_json::Value::Array(vec![
                 serde_json::Value::from(index as u64),
-                serde_json::Value::from(candidate.target_midi),
+                serde_json::to_value(candidate.target)
+                    .map_err(|_| worker_failed("could not encode candidate target"))?,
                 intern_string(
                     candidate.boundary_source.clone(),
                     &mut string_table,
@@ -888,7 +889,10 @@ mod tests {
         SegmentCandidate {
             id: id.to_string(),
             range: TimeRange::from_seconds(start_seconds, end_seconds).unwrap(),
-            target_midi: 60,
+            target: crate::fusion::CandidateTarget::Pitched {
+                midi: 60,
+                center_hz: 261.6,
+            },
             boundary_source: "game".to_string(),
             boundary_kind: BoundaryEvidenceKind::Game,
             boundary_role: BoundaryCandidateRole::Primary,
@@ -901,7 +905,6 @@ mod tests {
             target_pitch_source: "game".to_string(),
             target_pitch_source_local_score: None,
             target_pitch_calibrated_confidence: None,
-            center_pitch_hz: 261.6,
             continuous_pitch_error_integral: None,
             continuous_pitch_observed_duration: None,
             rmvpe_center_hz: None,

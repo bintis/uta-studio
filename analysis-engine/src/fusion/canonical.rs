@@ -616,8 +616,11 @@ pub fn build_canonical_singing_track(
     let mut notes = Vec::with_capacity(candidates.len());
     for candidate in candidates {
         candidate.emission_utility()?;
-        let reference_hz = midi_frequency(candidate.target_midi);
-        let center_offset_cents = 1_200.0 * (candidate.center_pitch_hz / reference_hz).log2();
+        let Some((target_midi, center_pitch_hz)) = candidate.target.as_pitched() else {
+            continue;
+        };
+        let reference_hz = midi_frequency(target_midi);
+        let center_offset_cents = 1_200.0 * (center_pitch_hz / reference_hz).log2();
         let note_f0 = f0_curve
             .iter()
             .copied()
@@ -647,9 +650,10 @@ pub fn build_canonical_singing_track(
         };
         let low_pitch_coverage = voiced_ratio.is_some_and(|ratio| ratio < 0.5);
         let pitch_instability = pitch_mad_cents.is_some_and(|mad| mad > 60.0);
-        let boundary_disagreement = candidate.boundary_alternatives.iter().any(|alternative| {
-            alternative.materially_disagrees_with(candidate.range, candidate.target_midi)
-        });
+        let boundary_disagreement = candidate
+            .boundary_alternatives
+            .iter()
+            .any(|alternative| alternative.materially_disagrees_with(candidate.range, target_midi));
         let uncertain = pitch_disagreement
             || low_pitch_coverage
             || pitch_instability
@@ -660,8 +664,8 @@ pub fn build_canonical_singing_track(
         notes.push(CanonicalNote {
             id: candidate.id,
             range: candidate.range,
-            midi_note: candidate.target_midi,
-            center_pitch_hz: candidate.center_pitch_hz,
+            midi_note: target_midi,
+            center_pitch_hz,
             center_offset_cents,
             confidence: None,
             uncertain,

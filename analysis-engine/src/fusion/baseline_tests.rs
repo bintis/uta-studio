@@ -141,7 +141,7 @@ fn fractional_game_midi_is_retained_at_explicit_target_decision() {
         None,
     )
     .unwrap();
-    assert_eq!(fused.candidates[0].target_midi, 69);
+    assert_eq!(fused.candidates[0].target.midi(), Some(69));
     assert_eq!(fused.candidates[0].boundary_fractional_midi, Some(69.25));
     assert!(fused.candidates[0].rmvpe_center_hz.is_none());
 }
@@ -266,7 +266,7 @@ fn octave_f0_disagreement_remains_continuous_review_evidence() {
     assert_eq!(alternative.center_hz, 880.0);
     assert!((alternative.cents_from_target - 1_200.0).abs() < 0.01);
     assert!(fused.candidates.iter().any(|candidate| {
-        candidate.target_pitch_source == "rmvpe" && candidate.target_midi == 81
+        candidate.target_pitch_source == "rmvpe" && candidate.target.midi() == Some(81)
     }));
 }
 
@@ -304,8 +304,10 @@ fn globally_coherent_segment_pitch_alternative_can_win() {
         context.boundary_source = "game".to_string();
         context.target_pitch_source = "game".to_string();
         context.boundary_fractional_midi = Some(69.0);
-        context.target_midi = 69;
-        context.center_pitch_hz = 440.0;
+        context.target = super::super::CandidateTarget::Pitched {
+            midi: 69,
+            center_hz: 440.0,
+        };
         context.rmvpe_cents_difference = Some(0.0);
         context.alternatives.clear();
         candidates.push(context);
@@ -319,7 +321,7 @@ fn globally_coherent_segment_pitch_alternative_can_win() {
         .iter()
         .find(|candidate| candidate.range.start == 100_000)
         .unwrap();
-    assert_eq!(middle.target_midi, 69);
+    assert_eq!(middle.target.midi(), Some(69));
     assert_eq!(middle.target_pitch_source, "rmvpe");
 }
 
@@ -343,7 +345,7 @@ fn fcpe_records_support_and_disagreement_without_replacing_rmvpe() {
     )
     .unwrap();
     assert_eq!(agreed.candidates[0].fcpe_supports_rmvpe, Some(true));
-    assert_eq!(agreed.candidates[0].center_pitch_hz, 440.0);
+    assert_eq!(agreed.candidates[0].target.center_hz(), Some(440.0));
     let pitch_sources = agreed
         .candidates
         .iter()
@@ -426,7 +428,7 @@ fn basic_pitch_is_source_local_onset_support_not_note_authority() {
     )
     .unwrap();
     let candidate = &fused.candidates[0];
-    assert_eq!(candidate.target_midi, 69);
+    assert_eq!(candidate.target.midi(), Some(69));
     assert_eq!(
         candidate.basic_pitch.as_ref().unwrap().onset_activation,
         0.8
