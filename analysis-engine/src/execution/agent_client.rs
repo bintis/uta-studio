@@ -203,7 +203,7 @@ fn executable_file(path: &Path) -> bool {
     }
 }
 
-const OPTION_FIELDS: [&str; 15] = [
+const OPTION_FIELDS: [&str; 16] = [
     "candidate_index",
     "target",
     "boundary_source",
@@ -219,6 +219,7 @@ const OPTION_FIELDS: [&str; 15] = [
     "acoustic_periodicity",
     "acoustic_snr_db",
     "basic_pitch_onset",
+    "voicing_evidence",
 ];
 
 #[derive(Serialize, Default)]
@@ -233,7 +234,7 @@ struct AgentLyrics {
 struct AgentCandidateProjection {
     candidate_set_digest: String,
     string_table: Vec<String>,
-    option_fields: [&'static str; 15],
+    option_fields: [&'static str; 16],
     segments: Vec<Vec<serde_json::Value>>,
 }
 
@@ -246,7 +247,7 @@ struct AgentFusionRequest<'a> {
     lyrics: &'a AgentLyrics,
     candidate_set_digest: &'a str,
     string_table: &'a [String],
-    option_fields: [&'static str; 15],
+    option_fields: [&'static str; 16],
     segments: &'a [Vec<serde_json::Value>],
 }
 
@@ -449,6 +450,8 @@ fn candidate_projection(
                         .as_ref()
                         .map(|value| value.onset_activation),
                 ),
+                serde_json::to_value(&candidate.voicing_evidence)
+                    .map_err(|_| worker_failed("could not encode candidate voicing evidence"))?,
             ]));
         }
         segments.push(vec![
@@ -893,6 +896,7 @@ mod tests {
                 midi: 60,
                 center_hz: 261.6,
             },
+            voicing_evidence: None,
             boundary_source: "game".to_string(),
             boundary_kind: BoundaryEvidenceKind::Game,
             boundary_role: BoundaryCandidateRole::Primary,

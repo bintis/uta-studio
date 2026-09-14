@@ -697,6 +697,7 @@ mod tests {
                 midi: 69,
                 center_hz: 440.1,
             },
+            voicing_evidence: None,
             boundary_source: "game".to_string(),
             boundary_kind: BoundaryEvidenceKind::Game,
             boundary_role: BoundaryCandidateRole::Primary,

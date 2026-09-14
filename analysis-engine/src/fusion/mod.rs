@@ -11,7 +11,7 @@ mod transcript_fusion;
 mod types;
 mod voicing;
 
-pub use voicing::CandidateTarget;
+pub use voicing::{CandidateTarget, VoicingCandidateEvidence};
 
 pub use alignment_fusion::{CanonicalWordBoundary, WordBoundaryEvidence, fuse_word_boundaries};
 pub use baseline::{
@@ -75,6 +75,7 @@ mod tests {
                 midi,
                 center_hz: 440.0 * 2.0_f32.powf((midi as f32 - 69.0) / 12.0),
             },
+            voicing_evidence: None,
             boundary_source: "game".to_string(),
             boundary_kind: BoundaryEvidenceKind::Game,
             boundary_role: BoundaryCandidateRole::Primary,

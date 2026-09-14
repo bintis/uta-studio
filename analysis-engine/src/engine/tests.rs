@@ -171,6 +171,7 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
                     midi: 69,
                     center_hz: 440.0,
                 },
+                voicing_evidence: None,
                 boundary_source: "game".to_string(),
                 boundary_kind: BoundaryEvidenceKind::Game,
                 boundary_role: BoundaryCandidateRole::Primary,

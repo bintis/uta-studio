@@ -215,4 +215,18 @@ mod tests {
         assert!(index.reward(1) > 0.0);
         assert_eq!(index.repeated_reward(0, 1), 0.0);
     }
+
+    #[test]
+    fn an_unpitched_state_cannot_supply_or_receive_a_native_onset_vote() {
+        let pitched = note("singer-expert", 0, 500_000);
+        let expected = NativeNoteEvents::new(std::slice::from_ref(&pitched)).reward(0);
+        let mut rest = pitched.clone();
+        rest.id = "unpitched".into();
+        rest.target = crate::fusion::CandidateTarget::Unpitched;
+        rest.boundary_kind = BoundaryEvidenceKind::Voicing;
+        rest.boundary_fractional_midi = None;
+        let index = NativeNoteEvents::new(&[pitched, rest]);
+        assert_eq!(index.reward(0), expected);
+        assert_eq!(index.reward(1), 0.0);
+    }
 }

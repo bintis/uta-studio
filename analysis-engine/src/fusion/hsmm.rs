@@ -34,6 +34,8 @@ pub enum BoundaryEvidenceKind {
     /// A coarser duration state backed by stable continuous-F0 evidence across
     /// an otherwise unsupported primary boundary.
     F0Consolidation,
+    /// Duration geometry supported by a measured singing-activity boundary.
+    Voicing,
     /// Caller-supplied phrase context. It is a soft melodic reset, not a hard
     /// structural cut unless separately present in `HardBoundarySet`.
     PhraseConstraint,
@@ -211,6 +213,8 @@ pub struct SegmentCandidate {
     pub id: String,
     pub range: TimeRange,
     pub target: super::CandidateTarget,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub voicing_evidence: Option<super::voicing::VoicingCandidateEvidence>,
     pub boundary_source: String,
     pub boundary_kind: BoundaryEvidenceKind,
     #[serde(default)]
@@ -524,6 +528,14 @@ pub fn attach_boundary_constraints(
 impl SegmentCandidate {
     fn validate(&self) -> Result<(), String> {
         if self.range.end <= self.range.start
+            || self
+                .voicing_evidence
+                .as_ref()
+                .is_some_and(|evidence| !evidence.valid_for(self.range))
+            || (!self.target.is_pitched()
+                && self.voicing_evidence.as_ref().is_none_or(|evidence| {
+                    evidence.duration() != self.range.end - self.range.start
+                }))
             || self.target.as_pitched().is_some_and(|(midi, center_hz)| {
                 midi > 127 || !center_hz.is_finite() || center_hz <= 0.0
             })
@@ -689,7 +701,15 @@ impl SegmentCandidate {
         if !self.target.is_pitched() {
             return Ok(duration_seconds);
         }
-        let mut utility = duration_seconds - 0.45;
+        let unsupported_seconds = self
+            .voicing_evidence
+            .as_ref()
+            .map_or(0.0, |evidence| evidence.duration() as f32 / 1_000_000.0);
+        // Coverage credit is shared with explicit unpitched states. Only a
+        // pitched target pays for time where all activity sources lack support.
+        // This absolute-time term is additive under arbitrary state cuts.
+        const UNSUPPORTED_PITCH_WEIGHT: f32 = 3.0;
+        let mut utility = duration_seconds - 0.45 - unsupported_seconds * UNSUPPORTED_PITCH_WEIGHT;
         // Pitch proposals for the same duration geometry remain peers. A pitch
         // does not gain semantic authority merely because its expert also
         // supplied the boundary object.

@@ -1186,6 +1186,7 @@ fn build_segment_candidate(
             midi: target_midi,
             center_hz: center_pitch_hz,
         },
+        voicing_evidence: None,
         boundary_source: source_expert.to_string(),
         boundary_kind,
         boundary_role,
@@ -1380,6 +1381,19 @@ pub(crate) fn fuse_singing_evidence_with_challengers(
         basic_pitch,
         boundary_challengers,
     )?);
+    let unsupported_voicing = super::voicing::unsupported_voicing_ranges(
+        rmvpe_curve,
+        rmvpe_grid,
+        fcpe_curve,
+        fcpe_grid,
+        acoustic,
+    )?;
+    let voicing_challengers = super::voicing::voicing_boundary_challengers(
+        boundaries,
+        &generated_challengers,
+        &unsupported_voicing,
+    );
+    generated_challengers.extend(voicing_challengers);
     if generated_challengers.len() > 100_000 {
         return Err("contextual candidate graph exceeds the bounded candidate limit".to_string());
     }
@@ -1620,10 +1634,13 @@ pub(crate) fn fuse_singing_evidence_with_challengers(
         "fcpe" => fcpe_grid,
         _ => unreachable!("primary pitch owner checked above"),
     };
+    super::voicing::append_unpitched_candidates(&mut candidates, &unsupported_voicing)?;
     let observations = continuous_pitch_observations(selected_f0, selected_grid, acoustic)?;
     // Pitch expansion changes the target. Recompute every proposal against
     // the same absolute-time observations, never candidate-level expert minima.
     for candidate in &mut candidates {
+        candidate.voicing_evidence =
+            super::voicing::voicing_evidence(candidate.range, &unsupported_voicing);
         let Some((_, center_hz)) = candidate.target.as_pitched() else {
             continue;
         };
