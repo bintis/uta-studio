@@ -391,3 +391,71 @@ fn onset_peak_is_selected_before_primary_note_cropping() {
             .onset_supported
     );
 }
+
+#[test]
+fn basic_pitch_valley_above_threshold_preserves_a_repeated_attack() {
+    let evidence = basic_pitch_response(|time| match time {
+        100_000..200_000 => 0.1,
+        200_000..260_000 => 0.83,
+        260_000..400_000 => 0.575,
+        400_000..450_000 => 0.899,
+        450_000..490_000 => 0.865,
+        490_000..550_000 => 0.901,
+        _ => 0.6,
+    });
+    let onsets = basic_pitch_onsets(&evidence);
+    assert_eq!(onsets, vec![(200_000, 0.83), (400_000, 0.899)]);
+    let boundaries = primary([(100_000, 400_000, 69.0), (400_000, 700_000, 69.0)]);
+    assert!(
+        f0_consolidation_challengers(
+            &boundaries,
+            &[],
+            "rmvpe",
+            &stable_vibrato(),
+            None,
+            Some(&evidence),
+            &[],
+        )
+        .unwrap()
+        .is_empty(),
+        "continuous pitch does not erase a measured same-pitch reattack"
+    );
+}
+
+#[test]
+fn basic_pitch_minor_jitter_does_not_retrigger_a_sustained_response() {
+    let evidence = basic_pitch_response(|time| {
+        if time < 200_000 {
+            0.1
+        } else if time % 40_000 == 0 {
+            0.805
+        } else {
+            0.8
+        }
+    });
+    assert_eq!(basic_pitch_onsets(&evidence), vec![(200_000, 0.805)]);
+}
+
+#[test]
+fn basic_pitch_monotone_tail_does_not_retrigger_after_a_large_drop() {
+    let evidence = basic_pitch_response(|time| {
+        if time < 200_000 {
+            0.1
+        } else {
+            0.95 - (time - 200_000) as f32 / 2_000_000.0
+        }
+    });
+    assert_eq!(basic_pitch_onsets(&evidence), vec![(200_000, 0.95)]);
+}
+
+#[test]
+fn basic_pitch_missing_frames_separate_observed_response_regions() {
+    let mut evidence = basic_pitch_response(|_| 0.8);
+    evidence
+        .frames
+        .retain(|frame| frame.time < 300_000 || frame.time >= 450_000);
+    assert_eq!(
+        basic_pitch_onsets(&evidence),
+        vec![(100_000, 0.8), (450_000, 0.8)]
+    );
+}

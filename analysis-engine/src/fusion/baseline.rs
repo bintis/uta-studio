@@ -505,43 +505,60 @@ fn validate_basic_pitch_evidence(evidence: &BasicPitchEvidence) -> Result<(), St
     Ok(())
 }
 
-/// A sustained above-threshold activation is one onset event. Select its
-/// strongest measured frame before looking inside individual note regions, so
-/// cropping a long response cannot turn its tail into repeated attacks.
+/// Resolve measured peaks before cropping note regions. A sustained response
+/// can contain another attack without returning below the activation threshold;
+/// a fall and recovery distinguish those peaks from a plateau or monotone tail.
 pub(crate) fn basic_pitch_onsets(evidence: &BasicPitchEvidence) -> Vec<(u64, f32)> {
     const ONSET_THRESHOLD: f32 = 0.5;
     const MIN_ONSET_DISTANCE: u64 = 100_000;
-    let mut regions = Vec::new();
+    // Source-local activation hysteresis, not a confidence or an acceptance
+    // threshold. It ignores small ripples while preserving resolved valleys.
+    const MIN_ONSET_CHANGE: f32 = 0.03;
+    let mut peaks = Vec::new();
     let mut peak: Option<(u64, f32)> = None;
+    let mut valley: Option<f32> = None;
     let mut previous_time = None;
     for frame in &evidence.frames {
         let separated =
             previous_time.is_some_and(|time| frame.time.saturating_sub(time) >= MIN_ONSET_DISTANCE);
-        if (frame.onset_activation < ONSET_THRESHOLD || separated)
-            && let Some(peak) = peak.take()
-        {
-            regions.push(peak);
+        if frame.onset_activation < ONSET_THRESHOLD || separated {
+            if let Some(peak) = peak.take() {
+                peaks.push(peak);
+            }
+            valley = None;
         }
         if frame.onset_activation >= ONSET_THRESHOLD {
-            match &mut peak {
-                Some(peak) if frame.onset_activation > peak.1 => {
-                    *peak = (frame.time, frame.onset_activation);
+            if let Some(current) = &mut peak {
+                if frame.onset_activation > current.1 {
+                    *current = (frame.time, frame.onset_activation);
+                } else if current.1 - frame.onset_activation >= MIN_ONSET_CHANGE {
+                    peaks.push(*current);
+                    peak = None;
+                    valley = Some(frame.onset_activation);
                 }
-                None => peak = Some((frame.time, frame.onset_activation)),
-                _ => {}
+            } else if let Some(low) = &mut valley {
+                *low = low.min(frame.onset_activation);
+                if frame.onset_activation - *low >= MIN_ONSET_CHANGE {
+                    peak = Some((frame.time, frame.onset_activation));
+                    valley = None;
+                }
+            } else {
+                peak = Some((frame.time, frame.onset_activation));
             }
         }
         previous_time = Some(frame.time);
     }
     if let Some(peak) = peak {
-        regions.push(peak);
+        peaks.push(peak);
     }
     let mut onsets: Vec<(u64, f32)> = Vec::new();
-    for peak in regions {
+    for peak in peaks {
         if let Some(previous) = onsets.last_mut()
             && peak.0.saturating_sub(previous.0) < MIN_ONSET_DISTANCE
         {
-            if peak.1 > previous.1 {
+            // Nearby maxima of almost the same strength describe one attack.
+            // Do not move its time forward for a small activation ripple.
+            if peak.1 - previous.1 >= MIN_ONSET_CHANGE {
                 *previous = peak;
             }
         } else {
