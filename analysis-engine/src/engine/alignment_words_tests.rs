@@ -255,7 +255,10 @@ fn generated_sentences_reach_chart_phrases_even_when_a_sentence_end_is_unresolve
             start: 0,
             duration: 2_000_000,
             text_start: 0,
-            text_end: text.chars().count(),
+            text_end: text
+                .chars()
+                .filter(|character| !character.is_whitespace())
+                .count(),
         }],
         confidence: None,
         source_experts: vec!["qwen3_asr_1_7b".to_string()],
