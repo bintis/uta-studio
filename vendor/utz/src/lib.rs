@@ -1426,27 +1426,39 @@ mod tests {
     fn independent_lyric_ranges_survive_package_without_changing_note_geometry() {
         let mut chart = chart();
         let bound = serde_json::to_value(&chart).unwrap();
-        assert!(bound["tracks"][0]["phrases"][0]["notes"][0]["lyrics"][0]
-            .get("timing").is_none());
+        assert!(
+            bound["tracks"][0]["phrases"][0]["notes"][0]["lyrics"][0]
+                .get("timing")
+                .is_none()
+        );
 
         let note = &mut chart.tracks[0].phrases[0].notes[0];
         let LyricToken::Text(token) = &mut note.lyrics[0] else {
             panic!("expected text token");
         };
         token.text = "切".to_string();
-        token.timing = Some(LyricTiming { start: 125_000, duration: 600_000 });
+        token.timing = Some(LyricTiming {
+            start: 125_000,
+            duration: 600_000,
+        });
         note.lyrics.push(LyricToken::Text(LyricTextToken {
             id: "next-word".to_string(),
             text: "に".to_string(),
             join_before: LyricJoin::None,
-            timing: Some(LyricTiming { start: 725_000, duration: 250_000 }),
+            timing: Some(LyricTiming {
+                start: 725_000,
+                duration: 250_000,
+            }),
             timing_unresolved: false,
             reading: None,
             phonemes: None,
         }));
         chart.validate().unwrap();
         let (manifest, mut files) = sample_v03();
-        files.insert("charts/vocal.json".into(), serde_json::to_vec(&chart).unwrap());
+        files.insert(
+            "charts/vocal.json".into(),
+            serde_json::to_vec(&chart).unwrap(),
+        );
         let package = UtzPackage::build(manifest, files).unwrap();
         let decoded = UtzPackage::from_bytes(&package.to_bytes().unwrap()).unwrap();
         assert_eq!(decoded.vocal_chart().unwrap(), chart);
@@ -1459,11 +1471,26 @@ mod tests {
     fn independent_lyric_ranges_use_existing_exact_time_and_overflow_rules() {
         let mut chart = chart();
         for timing in [
-            LyricTiming { start: 0, duration: 0 },
-            LyricTiming { start: MAX_EXACT_INTEGER + 1, duration: 1 },
-            LyricTiming { start: 0, duration: MAX_EXACT_INTEGER + 1 },
-            LyricTiming { start: MAX_EXACT_INTEGER, duration: 1 },
-            LyricTiming { start: u64::MAX, duration: u64::MAX },
+            LyricTiming {
+                start: 0,
+                duration: 0,
+            },
+            LyricTiming {
+                start: MAX_EXACT_INTEGER + 1,
+                duration: 1,
+            },
+            LyricTiming {
+                start: 0,
+                duration: MAX_EXACT_INTEGER + 1,
+            },
+            LyricTiming {
+                start: MAX_EXACT_INTEGER,
+                duration: 1,
+            },
+            LyricTiming {
+                start: u64::MAX,
+                duration: u64::MAX,
+            },
         ] {
             let LyricToken::Text(token) = &mut chart.tracks[0].phrases[0].notes[0].lyrics[0] else {
                 panic!("expected text token");
@@ -1474,7 +1501,10 @@ mod tests {
         let LyricToken::Text(token) = &mut chart.tracks[0].phrases[0].notes[0].lyrics[0] else {
             panic!("expected text token");
         };
-        token.timing = Some(LyricTiming { start: MAX_EXACT_INTEGER - 1, duration: 1 });
+        token.timing = Some(LyricTiming {
+            start: MAX_EXACT_INTEGER - 1,
+            duration: 1,
+        });
         token.timing_unresolved = true;
         // Timing scope validity and unresolved status are independent, and
         // a lyric's interval need not be contained in its hosting note.
