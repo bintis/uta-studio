@@ -10,6 +10,7 @@ use crate::artifact_workbench::ArtifactRef;
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceKind {
     FusedF0,
+    Unpitched,
     RmvpeF0,
     FcpeF0,
     GameBoundary,
@@ -24,6 +25,7 @@ pub struct EvidencePoint {
     pub time: f64,
     /// Track-specific measured value. F0 tracks use Hz; uncalibrated
     /// technique tracks use their explicitly labeled source-local score.
+    /// Unpitched tracks use interval duration in seconds, starting at `time`.
     pub value: f32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pitch: Option<f32>,
@@ -136,7 +138,9 @@ struct SingingAnalysisWire {
 struct SingingCandidateWire {
     id: String,
     range: SingingRangeWire,
-    target_midi: u8,
+    target: SingingCandidateTargetWire,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    voicing_evidence: Option<SingingVoicingEvidenceWire>,
     boundary_source: String,
     boundary_kind: String,
     #[serde(default)]
@@ -154,7 +158,6 @@ struct SingingCandidateWire {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     boundary_calibrated_confidence: Option<f32>,
     target_pitch_source: String,
-    center_pitch_hz: f32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     rmvpe_center_hz: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -191,6 +194,29 @@ struct SingingCandidateWire {
     word_id: Option<String>,
     #[serde(default)]
     alternatives: Vec<SingingPitchAlternativeWire>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SingingVoicingEvidenceWire {
+    source_experts: Vec<String>,
+    unsupported_ranges: Vec<SingingRangeWire>,
+}
+
+/// Independent DTO for the packaged Engine's candidate target.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum SingingCandidateTargetWire {
+    Pitched { midi: u8, center_hz: f32 },
+    Unpitched,
+}
+
+impl SingingCandidateTargetWire {
+    fn center_hz(&self) -> Option<f32> {
+        match self {
+            Self::Pitched { center_hz, .. } => Some(*center_hz),
+            Self::Unpitched => None,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -374,7 +400,7 @@ impl SingingCandidateWire {
             |value: Option<f32>| value.is_some_and(|v| !v.is_finite() || v < 0.0);
         if self.id.trim().is_empty()
             || self.range.start >= self.range.end
-            || self.target_midi > 127
+            || matches!(self.target, SingingCandidateTargetWire::Pitched { midi, center_hz } if midi > 127 || !valid_hz(center_hz))
             || self.boundary_source.trim().is_empty()
             || !valid_boundary_kind(&self.boundary_kind)
             || !matches!(self.boundary_role.as_str(), "primary" | "challenger")
@@ -389,7 +415,6 @@ impl SingingCandidateWire {
             || invalid_optional_unit(self.boundary_support)
             || invalid_optional_unit(self.boundary_calibrated_confidence)
             || self.target_pitch_source.trim().is_empty()
-            || !valid_hz(self.center_pitch_hz)
             || self.rmvpe_center_hz.is_some_and(|value| !valid_hz(value))
             || invalid_optional_unit(self.rmvpe_confidence)
             || invalid_optional_finite(self.rmvpe_cents_difference)
@@ -657,7 +682,8 @@ fn validate_singing_analysis_wire_shape(value: &serde_json::Value) -> Result<(),
     const CANDIDATE: &[&str] = &[
         "id",
         "range",
-        "target_midi",
+        "target",
+        "voicing_evidence",
         "boundary_source",
         "boundary_kind",
         "boundary_role",
@@ -668,7 +694,6 @@ fn validate_singing_analysis_wire_shape(value: &serde_json::Value) -> Result<(),
         "boundary_support",
         "boundary_calibrated_confidence",
         "target_pitch_source",
-        "center_pitch_hz",
         "rmvpe_center_hz",
         "rmvpe_confidence",
         "rmvpe_cents_difference",
@@ -887,7 +912,7 @@ fn validate_selected_candidate_coverage(
             .any(|(start, end)| candidate.range.start >= *start && candidate.range.end <= *end)
         {
             return Err(
-                "SingingAnalysis selected candidate lies outside voiced coverage".to_string(),
+                "SingingAnalysis selected candidate lies outside candidate coverage".to_string(),
             );
         }
     }
@@ -903,7 +928,7 @@ fn validate_selected_candidate_coverage(
                 .any(|pair| pair[0].range.end != pair[1].range.start)
         {
             return Err(
-                "SingingAnalysis selected candidate path does not exactly cover voiced components"
+                "SingingAnalysis selected candidate path does not exactly cover candidate components"
                     .to_string(),
             );
         }
@@ -1028,7 +1053,7 @@ pub fn singing_analysis_evidence_bundle(
         EvidenceKind::FusedF0,
         &selected,
         &source,
-        |candidate| Some(candidate.center_pitch_hz),
+        |candidate| candidate.target.center_hz(),
     )];
     for (id, label, kind, value) in [
         (
@@ -1050,6 +1075,11 @@ pub fn singing_analysis_evidence_bundle(
         if !track.points.is_empty() {
             tracks.push(track);
         }
+    }
+
+    let unpitched = unpitched_track(&selected, &source);
+    if !unpitched.points.is_empty() {
+        tracks.push(unpitched);
     }
 
     let review_regions = analysis
@@ -1096,6 +1126,25 @@ fn f0_track(
         kind,
         source: source.clone(),
         points,
+    }
+}
+
+fn unpitched_track(candidates: &[&SingingCandidateWire], source: &ArtifactRef) -> EvidenceTrack {
+    EvidenceTrack {
+        id: "selected-unpitched".into(),
+        label: "Selected candidate · no pitch target".into(),
+        kind: EvidenceKind::Unpitched,
+        source: source.clone(),
+        points: candidates
+            .iter()
+            .filter(|candidate| matches!(candidate.target, SingingCandidateTargetWire::Unpitched))
+            .map(|candidate| EvidencePoint {
+                time: candidate.range.start as f64 / 1_000_000.0,
+                value: (candidate.range.end - candidate.range.start) as f32 / 1_000_000.0,
+                pitch: None,
+                label: Some(format!("No pitch target · {}", candidate.id)),
+            })
+            .collect(),
     }
 }
 
@@ -1252,7 +1301,7 @@ mod tests {
 
     fn candidate(
         id: &str,
-        center_pitch_hz: f32,
+        center_hz: f32,
         rmvpe_center_hz: Option<f32>,
         fcpe_center_hz: Option<f32>,
     ) -> SingingCandidateWire {
@@ -1262,7 +1311,11 @@ mod tests {
                 start: 1_000_000,
                 end: 2_000_000,
             },
-            target_midi: 69,
+            target: SingingCandidateTargetWire::Pitched {
+                midi: 69,
+                center_hz,
+            },
+            voicing_evidence: None,
             boundary_source: "rmvpe".to_string(),
             boundary_kind: "f0_derived".to_string(),
             boundary_role: "primary".to_string(),
@@ -1273,7 +1326,6 @@ mod tests {
             boundary_support: None,
             boundary_calibrated_confidence: None,
             target_pitch_source: "rmvpe".to_string(),
-            center_pitch_hz,
             rmvpe_center_hz,
             rmvpe_confidence: None,
             rmvpe_cents_difference: None,
@@ -1382,6 +1434,107 @@ mod tests {
     }
 
     #[test]
+    fn singing_analysis_unpitched_target_deserializes_without_a_fabricated_pitch() {
+        let target: SingingCandidateTargetWire =
+            serde_json::from_value(serde_json::json!({"kind": "unpitched"})).unwrap();
+        assert!(matches!(target, SingingCandidateTargetWire::Unpitched));
+        assert_eq!(target.center_hz(), None);
+        assert_eq!(
+            serde_json::to_value(target).unwrap(),
+            serde_json::json!({"kind": "unpitched"})
+        );
+        let pitched: SingingCandidateTargetWire = serde_json::from_value(
+            serde_json::json!({"kind": "pitched", "midi": 69, "center_hz": 440.0}),
+        )
+        .unwrap();
+        assert_eq!(pitched.center_hz(), Some(440.0));
+    }
+
+    #[test]
+    fn singing_analysis_unpitched_interval_remains_evidence_without_a_fused_pitch_point() {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&singing_analysis("selected")).unwrap();
+        value["candidate_evidence"][0]["target"] = serde_json::json!({"kind": "unpitched"});
+        let bundle = singing_analysis_evidence_bundle(
+            &serde_json::to_vec(&value).unwrap(),
+            evidence_source(),
+        )
+        .unwrap();
+        let fused = bundle
+            .tracks
+            .iter()
+            .find(|track| track.kind == EvidenceKind::FusedF0)
+            .unwrap();
+        assert!(fused.points.is_empty());
+        let unpitched = bundle
+            .tracks
+            .iter()
+            .find(|track| track.kind == EvidenceKind::Unpitched)
+            .unwrap();
+        assert_eq!(unpitched.points.len(), 1);
+        assert_eq!(unpitched.points[0].time, 1.0);
+        assert_eq!(unpitched.points[0].value, 1.0);
+        assert_eq!(unpitched.points[0].pitch, None);
+        assert!(
+            unpitched.points[0]
+                .label
+                .as_deref()
+                .unwrap()
+                .contains("No pitch target")
+        );
+        // Model observations remain available even when the chosen state has no target.
+        let observed = bundle
+            .tracks
+            .iter()
+            .find(|track| track.kind == EvidenceKind::RmvpeF0)
+            .unwrap();
+        assert_eq!(observed.points[0].value, 439.0);
+    }
+
+    #[test]
+    fn singing_analysis_unpitched_silence_keeps_voicing_sources_and_has_no_pitch_points() {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&singing_analysis("selected")).unwrap();
+        let silence = &mut value["candidate_evidence"][0];
+        silence["target"] = serde_json::json!({"kind": "unpitched"});
+        silence["rmvpe_center_hz"] = serde_json::Value::Null;
+        silence["fcpe_center_hz"] = serde_json::Value::Null;
+        silence["voicing_evidence"] = serde_json::json!({
+            "source_experts": ["rmvpe", "fcpe", "acoustic_dsp"],
+            "unsupported_ranges": [{"start": 1_000_000, "end": 2_000_000}]
+        });
+        let decoded: SingingCandidateWire = serde_json::from_value(silence.clone()).unwrap();
+        let round_trip = serde_json::to_value(decoded).unwrap();
+        assert_eq!(round_trip["voicing_evidence"], silence["voicing_evidence"]);
+        let bundle = singing_analysis_evidence_bundle(
+            &serde_json::to_vec(&value).unwrap(),
+            evidence_source(),
+        )
+        .unwrap();
+        assert!(
+            bundle
+                .tracks
+                .iter()
+                .flat_map(|track| &track.points)
+                .all(|point| point.pitch.is_none())
+        );
+        assert_eq!(
+            bundle
+                .tracks
+                .iter()
+                .filter(|track| !track.points.is_empty())
+                .count(),
+            1
+        );
+        assert!(
+            bundle
+                .tracks
+                .iter()
+                .any(|track| track.kind == EvidenceKind::Unpitched)
+        );
+    }
+
+    #[test]
     fn singing_analysis_accepts_any_nonempty_engine_validated_adapter_identity() {
         let mut value: serde_json::Value =
             serde_json::from_slice(&singing_analysis("selected")).unwrap();
@@ -1473,7 +1626,7 @@ mod tests {
     fn singing_analysis_rejects_semantically_invalid_candidate_evidence() {
         let mut invalid_midi: serde_json::Value =
             serde_json::from_slice(&singing_analysis("selected")).unwrap();
-        invalid_midi["candidate_evidence"][0]["target_midi"] = serde_json::json!(255);
+        invalid_midi["candidate_evidence"][0]["target"]["midi"] = serde_json::json!(255);
         refresh_candidate_pool_digest(&mut invalid_midi);
         assert!(
             singing_analysis_evidence_bundle(
@@ -1502,7 +1655,8 @@ mod tests {
     fn singing_analysis_uses_structural_candidate_and_provenance_validation() {
         let mut candidate_tamper: serde_json::Value =
             serde_json::from_slice(&singing_analysis("selected")).unwrap();
-        candidate_tamper["candidate_evidence"][0]["center_pitch_hz"] = serde_json::json!(466.16);
+        candidate_tamper["candidate_evidence"][0]["target"]["center_hz"] =
+            serde_json::json!(466.16);
         singing_analysis_evidence_bundle(
             &serde_json::to_vec(&candidate_tamper).unwrap(),
             evidence_source(),
@@ -1536,7 +1690,7 @@ mod tests {
                 evidence_source()
             )
             .unwrap_err()
-            .contains("exactly cover voiced components")
+            .contains("exactly cover candidate components")
         );
 
         let mut provenance_tamper: serde_json::Value =

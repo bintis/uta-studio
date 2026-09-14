@@ -451,6 +451,33 @@ pub(crate) fn spawn_editor_timeline(
                             );
                     }
                 }
+                if editor
+                    .visible_evidence
+                    .contains(&app_core::EvidenceKind::FusedF0)
+                {
+                    for point in editor
+                        .evidence
+                        .tracks
+                        .iter()
+                        .filter(|track| track.kind == app_core::EvidenceKind::Unpitched)
+                        .flat_map(|track| &track.points)
+                        .filter(|point| {
+                            point.time <= editor.viewport_end()
+                                && point.time + f64::from(point.value) >= editor.viewport_start
+                        })
+                    {
+                        let left = time_percent(point.time, editor);
+                        let right = time_percent(point.time + f64::from(point.value), editor);
+                        spawn_unpitched_evidence(
+                            canvas,
+                            font.clone(),
+                            point,
+                            left,
+                            right - left,
+                            theme,
+                        );
+                    }
+                }
                 // Other tracks read as context: visible enough to place a
                 // second voice against, never mistakable for what is editable.
                 for ghost in ghosts.iter().filter(|note| {
@@ -973,4 +1000,141 @@ pub(crate) fn spawn_menu_check_row(
         );
         spawn_text(row, font, label, 10.0, color);
     });
+}
+
+/// Unpitched candidate intervals live beside the audio evidence, without a
+/// pitch-row coordinate or an editable note entity.
+fn spawn_unpitched_evidence(
+    parent: &mut ChildSpawnerCommands,
+    font: Handle<Font>,
+    point: &app_core::EvidencePoint,
+    left: f32,
+    width: f32,
+    theme: &StudioTheme,
+) {
+    let mut marker = parent.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            left: percent(left),
+            top: px(38),
+            width: percent(width),
+            min_width: px(2),
+            height: px(16),
+            align_items: AlignItems::Center,
+            border: UiRect::bottom(px(2)),
+            ..default()
+        },
+        BackgroundColor(theme.card.with_alpha(0.78)),
+        BorderColor::all(theme.muted_foreground.with_alpha(0.58)),
+        ZIndex(2),
+    ));
+    let mut tooltip = None;
+    marker.with_children(|children| {
+        children.spawn((
+            Node {
+                width: percent(100),
+                overflow: Overflow::clip(),
+                padding: UiRect::horizontal(px(3)),
+                ..default()
+            },
+            Text::new("No pitch target"),
+            ui_text_font(font.clone(), 7.0),
+            TextColor(theme.muted_foreground),
+            TextLayout::no_wrap(),
+            Pickable::IGNORE,
+        ));
+        tooltip = Some(
+            children
+                .spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        top: px(20),
+                        width: px(225),
+                        padding: UiRect::all(px(7)),
+                        border: UiRect::all(px(1)),
+                        border_radius: BorderRadius::all(px(4)),
+                        ..default()
+                    },
+                    Text::new(unpitched_evidence_detail(point)),
+                    ui_text_font(font, 9.0),
+                    TextColor(theme.foreground),
+                    BackgroundColor(theme.card),
+                    BorderColor::all(theme.border),
+                    Visibility::Hidden,
+                    ZIndex(20),
+                    Pickable::IGNORE,
+                ))
+                .id(),
+        );
+    });
+    let tooltip = tooltip.expect("evidence tooltip was spawned");
+    marker.observe(
+        move |_: On<Pointer<Over>>, mut visibility: Query<&mut Visibility>| {
+            if let Ok(mut state) = visibility.get_mut(tooltip) {
+                *state = Visibility::Visible;
+            }
+        },
+    );
+    marker.observe(
+        move |_: On<Pointer<Out>>, mut visibility: Query<&mut Visibility>| {
+            if let Ok(mut state) = visibility.get_mut(tooltip) {
+                *state = Visibility::Hidden;
+            }
+        },
+    );
+}
+
+fn unpitched_evidence_detail(point: &app_core::EvidencePoint) -> String {
+    let end = point.time + f64::from(point.value);
+    format!(
+        "No pitch target
+{:.3}s – {end:.3}s
+This interval has no stable pitch target and creates no pitch note.",
+        point.time,
+    )
+}
+
+#[cfg(test)]
+mod unpitched_tests {
+    use super::*;
+
+    #[test]
+    fn unpitched_evidence_tooltip_renders_interval_without_a_fabricated_midi_note() {
+        let point = app_core::EvidencePoint {
+            time: 1.25,
+            value: 0.5,
+            pitch: None,
+            label: Some("No pitch target · rest".into()),
+        };
+        let mut world = World::new();
+        let mut queue = bevy::ecs::world::CommandQueue::default();
+        {
+            let mut commands = Commands::new(&mut queue, &world);
+            commands.spawn(Node::default()).with_children(|parent| {
+                spawn_unpitched_evidence(
+                    parent,
+                    Handle::default(),
+                    &point,
+                    10.0,
+                    5.0,
+                    &StudioTheme::new(true),
+                );
+            });
+        }
+        queue.apply(&mut world);
+        let mut text = world.query::<&Text>();
+        let labels = text
+            .iter(&world)
+            .map(|text| text.0.as_str())
+            .collect::<Vec<_>>();
+        assert!(labels.contains(&"No pitch target"));
+        let tooltip = labels
+            .iter()
+            .find(|label| label.contains("1.250s – 1.750s"))
+            .unwrap();
+        assert!(tooltip.contains("no pitch note"));
+        assert!(!tooltip.contains("MIDI"));
+        assert!(!tooltip.contains("Hz"));
+        assert_eq!(world.query::<&EditorNoteNode>().iter(&world).count(), 0);
+    }
 }
