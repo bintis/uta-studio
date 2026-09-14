@@ -907,3 +907,21 @@ fn basic_pitch_onset_survives_without_acoustic_dsp() {
     assert_eq!(features.onset_activation, 0.8);
     assert!(features.onset_supported);
 }
+
+#[test]
+fn nearby_acoustic_attack_supports_the_note_start_without_retriggering_its_tail() {
+    let mut evidence = acoustic();
+    evidence.frames[19].rms = 0.10;
+    evidence.frames[19].spectral_flux = Some(0.001);
+    evidence.frames[20].rms = 0.12;
+    evidence.frames[20].spectral_flux = Some(0.003);
+    evidence.frames[21].spectral_flux = Some(0.003);
+    // The measured event precedes this note proposal by twenty milliseconds.
+    let note = summarize_acoustic(TimeRange::new(220_000, 400_000).unwrap(), &evidence).unwrap();
+    assert_eq!(note.onset_supported, Some(true));
+    let tail = summarize_acoustic(TimeRange::new(270_000, 400_000).unwrap(), &evidence).unwrap();
+    assert_eq!(tail.onset_supported, Some(false));
+    // A nearby event owned by the far edge cannot create a short empty prefix.
+    let prefix = summarize_acoustic(TimeRange::new(160_000, 210_000).unwrap(), &evidence).unwrap();
+    assert_eq!(prefix.onset_supported, Some(false));
+}

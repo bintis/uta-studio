@@ -16,7 +16,8 @@ use crate::fusion::{
     CanonicalWordBoundary, EvidenceProvenance, ExpertTask, F0Point, HardBoundarySet,
     HarmonyMetadata, LyricsAuthority, PitchGrid, SingingFusionEvidence, SingingReviewReason,
     SingingReviewRegion, TranscriptHypothesis, TranscriptTokenEvidence, WordBoundaryEvidence,
-    attach_boundary_constraints, basic_pitch_onsets, build_canonical_singing_track,
+    acoustic_attack_score, attach_boundary_constraints, basic_pitch_onsets,
+    build_canonical_singing_track,
     build_review_regions, decode_candidate_graph_with_boundaries,
     fuse_singing_evidence_with_challengers, fuse_transcripts, fuse_word_boundaries,
     persistent_f0_shifts, trustworthy_f0_point, validate_candidate_path_with_boundaries,
@@ -981,31 +982,18 @@ fn context_boundary_constraints(
     }
 
     if let Some(acoustic) = acoustic {
-        let mut fluxes = acoustic
-            .frames
-            .iter()
-            .filter_map(|frame| frame.spectral_flux)
-            .filter(|flux| flux.is_finite() && *flux > 0.0)
-            .collect::<Vec<_>>();
-        if !fluxes.is_empty() {
-            fluxes.sort_by(f32::total_cmp);
-            let threshold_index = ((fluxes.len() - 1) * 9) / 10;
-            let threshold = fluxes[threshold_index].max(0.05);
-            constraints.extend(acoustic.frames.iter().filter_map(|frame| {
-                frame.spectral_flux.and_then(|flux| {
-                    (flux.is_finite() && flux >= threshold).then(|| BoundaryConstraintEvidence {
-                        source_expert: acoustic.algorithm.clone(),
-                        kind: BoundaryConstraintKind::AcousticArticulation,
-                        time: frame.start,
-                        source_local_strength: Some((flux / (threshold * 2.0)).clamp(0.0, 1.0)),
-                        calibrated_confidence: None,
-                        calibration_version: Some("acoustic-articulation-source-local".to_string()),
-                        correlation_group: None,
-                        depends_on: Vec::new(),
-                    })
-                })
-            }));
-        }
+        constraints.extend(acoustic.frames.windows(2).filter_map(|pair| {
+            acoustic_attack_score(&pair[0], &pair[1]).map(|strength| BoundaryConstraintEvidence {
+                source_expert: acoustic.algorithm.clone(),
+                kind: BoundaryConstraintKind::AcousticArticulation,
+                time: pair[1].start,
+                source_local_strength: Some(strength),
+                calibrated_confidence: None,
+                calibration_version: Some("acoustic-articulation-source-local".to_string()),
+                correlation_group: None,
+                depends_on: Vec::new(),
+            })
+        }));
     }
 
     constraints.sort_by(|left, right| {

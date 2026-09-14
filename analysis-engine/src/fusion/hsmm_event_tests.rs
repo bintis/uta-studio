@@ -218,3 +218,22 @@ fn dividing_one_pitch_target_cannot_improve_the_integrated_pitch_fit() {
     assert_eq!(selected.len(), 1);
     assert_eq!(selected[0].id, "wide");
 }
+
+#[test]
+fn acoustic_attack_identity_survives_the_full_window_and_is_credited_once() {
+    let mut event = onset_constraint(445_000);
+    event.source_expert = "acoustic".to_string();
+    event.kind = BoundaryConstraintKind::AcousticArticulation;
+    let mut notes = vec![
+        sustain("first", 490_000, 500_000),
+        sustain("second", 500_000, 900_000),
+    ];
+    for note in &mut notes {
+        add_acoustic_attack(note);
+    }
+    attach_boundary_constraints(&mut notes, &[event]).unwrap();
+    assert_eq!(notes[0].boundary_constraints.len(), 1);
+    assert_eq!(notes[1].boundary_constraints.len(), 1);
+    assert!(!distinct_onset_supported(&notes[0], &notes[1]));
+    assert!(repeated_attack_reward(&notes[0], &notes[1]) > 0.0);
+}

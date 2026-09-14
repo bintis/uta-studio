@@ -1433,3 +1433,36 @@ fn sustained_basic_pitch_response_cannot_return_as_contextual_reattacks() {
             .all(|attack| !(200_000..400_000).contains(&attack.time))
     );
 }
+
+#[test]
+fn acoustic_context_uses_the_same_corroborated_low_flux_attack_as_candidates() {
+    let mut evidence = acoustic();
+    for frame in &mut evidence.frames {
+        frame.spectral_flux = Some(0.0001);
+        frame.rms = 0.1;
+    }
+    evidence.frames[20].spectral_flux = Some(0.0006);
+    evidence.frames[20].rms = 0.12;
+    evidence.frames[21].spectral_flux = Some(0.00055);
+    evidence.frames[21].rms = 0.13;
+    let constraints = context_boundary_constraints(&[], &[], "rmvpe", None, Some(&evidence));
+    let attacks = constraints
+        .iter()
+        .filter(|event| event.kind == BoundaryConstraintKind::AcousticArticulation)
+        .collect::<Vec<_>>();
+    assert_eq!(attacks.len(), 1);
+    assert_eq!(attacks[0].time, 200_000);
+    assert_eq!(
+        attacks[0].source_local_strength,
+        acoustic_attack_score(&evidence.frames[19], &evidence.frames[20])
+    );
+
+    evidence.frames[20].rms = 0.1;
+    let constraints = context_boundary_constraints(&[], &[], "rmvpe", None, Some(&evidence));
+    assert!(
+        constraints
+            .iter()
+            .all(|event| event.kind != BoundaryConstraintKind::AcousticArticulation),
+        "flux alone does not become independent attack evidence"
+    );
+}

@@ -457,15 +457,30 @@ fn summarize_acoustic(
     let preceding_flux = onset_index
         .checked_sub(1)
         .and_then(|index| evidence.frames[index].spectral_flux);
-    // Spectral flux alone is too sensitive on vocals: consonants, vibrato and
-    // tiny spectral redraws can double a very small previous value. Require a
-    // second attack cue before this local boundary receives onset support.
-    let onset_supported = onset_index.checked_sub(1).and_then(|previous| {
-        onset_flux.zip(preceding_flux).map(|_| {
-            acoustic_attack_score(&evidence.frames[previous], &evidence.frames[onset_index])
-                .is_some()
+    // A note proposal and its measured attack can differ by a few frames.
+    // Use the same corroborated events as the onset candidates and context;
+    // the nearest raw flux pair remains available above for inspection.
+    const ONSET_WINDOW: u64 = 60_000;
+    let onset_start = range.start.saturating_sub(ONSET_WINDOW);
+    let onset_end = range.start.saturating_add(ONSET_WINDOW);
+    let first = evidence
+        .frames
+        .partition_point(|frame| frame.start < onset_start)
+        .saturating_sub(1);
+    let end = evidence
+        .frames
+        .partition_point(|frame| frame.start <= onset_end);
+    let onset_supported = evidence.frames[first..end]
+        .windows(2)
+        .filter(|pair| pair[1].start >= onset_start)
+        .filter_map(|pair| {
+            pair[0].spectral_flux.zip(pair[1].spectral_flux).map(|_| {
+                let time = pair[1].start;
+                time.abs_diff(range.start) <= time.abs_diff(range.end)
+                    && acoustic_attack_score(&pair[0], &pair[1]).is_some()
+            })
         })
-    });
+        .reduce(|before, after| before || after);
     Ok(AcousticCandidateFeatures {
         frame_count,
         mean_rms,
@@ -827,7 +842,7 @@ fn f0_transition_challengers(
     )
 }
 
-pub(super) fn acoustic_attack_score(
+pub(crate) fn acoustic_attack_score(
     previous: &AcousticEvidenceFrame,
     current: &AcousticEvidenceFrame,
 ) -> Option<f32> {

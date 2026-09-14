@@ -491,8 +491,11 @@ pub fn attach_boundary_constraints(
             let first = indexed.partition_point(|(_, constraint)| constraint.time < lower);
             let end = indexed.partition_point(|(_, constraint)| constraint.time <= upper);
             matches.extend(indexed[first..end].iter().copied().filter(|(_, event)| {
-                event.kind == BoundaryConstraintKind::BasicPitchOnset
-                    || event.time.abs_diff(edge) <= BOUNDARY_CONTEXT_TOLERANCE
+                matches!(
+                    event.kind,
+                    BoundaryConstraintKind::BasicPitchOnset
+                        | BoundaryConstraintKind::AcousticArticulation
+                ) || event.time.abs_diff(edge) <= BOUNDARY_CONTEXT_TOLERANCE
             }));
         }
         // Preserve the caller's deterministic constraint order and avoid a
