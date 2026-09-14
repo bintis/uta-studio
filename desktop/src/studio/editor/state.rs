@@ -239,6 +239,7 @@ pub(crate) struct NativeEditor {
     pub(crate) artifact_source: Option<app_core::ArtifactRef>,
     pub(crate) source_context: Option<app_core::EditorSourceContext>,
     pub(crate) evidence: app_core::SingingEvidenceBundle,
+    pub(crate) evidence_error: Option<String>,
     pub(crate) visible_evidence: BTreeSet<app_core::EvidenceKind>,
     pub(crate) review_index: Option<usize>,
     /// Flat index into the STARS technique evidence track's points, set by
@@ -464,6 +465,7 @@ impl NativeEditor {
             artifact_source: None,
             source_context: None,
             evidence: app_core::SingingEvidenceBundle::default(),
+            evidence_error: None,
             visible_evidence: [
                 app_core::EvidenceKind::FusionConfidence,
                 app_core::EvidenceKind::FusedF0,

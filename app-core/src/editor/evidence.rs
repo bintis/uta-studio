@@ -159,6 +159,10 @@ struct SingingCandidateWire {
     boundary_calibrated_confidence: Option<f32>,
     target_pitch_source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    continuous_pitch_error_integral: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    continuous_pitch_observed_duration: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     rmvpe_center_hz: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     rmvpe_confidence: Option<f32>,
@@ -695,6 +699,8 @@ fn validate_singing_analysis_wire_shape(value: &serde_json::Value) -> Result<(),
         "boundary_support",
         "boundary_calibrated_confidence",
         "target_pitch_source",
+        "continuous_pitch_error_integral",
+        "continuous_pitch_observed_duration",
         "rmvpe_center_hz",
         "rmvpe_confidence",
         "rmvpe_cents_difference",
@@ -1327,6 +1333,8 @@ mod tests {
             boundary_support: None,
             boundary_calibrated_confidence: None,
             target_pitch_source: "rmvpe".to_string(),
+            continuous_pitch_error_integral: None,
+            continuous_pitch_observed_duration: None,
             rmvpe_center_hz,
             rmvpe_confidence: None,
             rmvpe_cents_difference: None,
@@ -1743,5 +1751,30 @@ mod tests {
                 .unwrap()
                 .contains("raw logit")
         );
+    }
+    #[test]
+    fn singing_analysis_keeps_continuous_pitch_duration_evidence() {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&singing_analysis("selected")).unwrap();
+        value["candidate_evidence"][0]["continuous_pitch_error_integral"] =
+            serde_json::json!(0.0030255304);
+        value["candidate_evidence"][0]["continuous_pitch_observed_duration"] =
+            serde_json::json!(240_000);
+        let decoded: SingingCandidateWire =
+            serde_json::from_value(value["candidate_evidence"][0].clone()).unwrap();
+        let round_trip = serde_json::to_value(decoded).unwrap();
+        assert_eq!(round_trip["continuous_pitch_observed_duration"], 240_000);
+        assert!(
+            round_trip["continuous_pitch_error_integral"]
+                .as_f64()
+                .unwrap()
+                > 0.003
+        );
+        let bundle = singing_analysis_evidence_bundle(
+            &serde_json::to_vec(&value).unwrap(),
+            evidence_source(),
+        )
+        .unwrap();
+        assert!(!bundle.tracks.is_empty());
     }
 }

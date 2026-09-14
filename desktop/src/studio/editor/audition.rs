@@ -182,18 +182,29 @@ fn finish_native_editor_load(
         .iter()
         .filter(|revision| revision.kind == app_core::ArtifactKind::EvidenceBundle)
         .max_by_key(|revision| revision.created_at_ms)
-        && let Ok(bytes) = std::fs::read(&evidence_revision.path)
-        && let Ok(bundle) = project_singing_analysis_for_editor(
-            &bytes,
-            app_core::ArtifactRef {
-                file_hash: evidence_revision.file_hash.clone(),
-                kind: evidence_revision.kind,
-                revision_id: evidence_revision.id.clone(),
-            },
-        )
     {
-        editor.evidence = bundle;
-        editor.review_index = (!editor.evidence.review_regions.is_empty()).then_some(0);
+        let bundle = std::fs::read(&evidence_revision.path)
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| {
+                project_singing_analysis_for_editor(
+                    &bytes,
+                    app_core::ArtifactRef {
+                        file_hash: evidence_revision.file_hash.clone(),
+                        kind: evidence_revision.kind,
+                        revision_id: evidence_revision.id.clone(),
+                    },
+                )
+            });
+        match bundle {
+            Ok(bundle) => {
+                editor.evidence = bundle;
+                editor.review_index = (!editor.evidence.review_regions.is_empty()).then_some(0);
+            }
+            Err(error) => {
+                bevy::log::warn!(%error, "Could not load chart evidence");
+                editor.evidence_error = Some(error);
+            }
+        }
     }
     if let Some(technique_revision) = revisions
         .iter()

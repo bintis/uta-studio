@@ -250,7 +250,9 @@ pub(crate) fn spawn_editor(
                         icons.clone(),
                         theme,
                         UiIcon::Music,
-                        if editor.visible_evidence.contains(&app_core::EvidenceKind::Disagreement) {
+                        if editor.evidence_error.is_some() {
+                            "Evidence unavailable"
+                        } else if editor.visible_evidence.contains(&app_core::EvidenceKind::Disagreement) {
                             "Evidence on"
                         } else {
                             "Evidence off"
