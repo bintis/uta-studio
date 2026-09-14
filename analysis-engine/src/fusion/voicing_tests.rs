@@ -343,3 +343,24 @@ fn an_explicit_unpitched_state_resets_pitch_motion_without_an_onset_bonus() {
         0.0
     );
 }
+
+#[test]
+fn derived_voicing_geometry_keeps_native_ids_and_has_distinct_candidate_ids() {
+    let result = fusion(&[range(0, 1_000_000)], &[range(0, 800_000)], 100);
+    validate_candidate_pool(&result.candidates).unwrap();
+    let native = result
+        .candidates
+        .iter()
+        .find(|state| state.boundary_kind == BoundaryEvidenceKind::Game)
+        .unwrap();
+    assert_eq!(native.id, "game-segment-0");
+    assert!(result.candidates.iter().any(|state| {
+        state.target.is_pitched() && state.boundary_kind == BoundaryEvidenceKind::Voicing
+    }));
+    let ids = result
+        .candidates
+        .iter()
+        .map(|state| state.id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(ids.len(), result.candidates.len());
+}

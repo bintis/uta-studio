@@ -1180,7 +1180,11 @@ fn build_segment_candidate(
     });
 
     Ok(SegmentCandidate {
-        id: format!("{source_expert}-segment-{index}"),
+        id: if boundary_kind == BoundaryEvidenceKind::Voicing {
+            format!("{source_expert}-voicing-segment-{index}")
+        } else {
+            format!("{source_expert}-segment-{index}")
+        },
         range: segment.range,
         target: crate::fusion::CandidateTarget::Pitched {
             midi: target_midi,
