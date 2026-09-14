@@ -394,19 +394,23 @@ pub fn attach_alignment_lyric_units(
     alignment: &AlignmentArtifact,
 ) {
     let lines = lyric_line_by_alignment_item(&track.transcript, &alignment.items);
-    track.lyric_units = alignment.items.iter().map(|item| {
-        let scope = crate::fusion::TimeRange {
-            start: item.start,
-            end: item.start.saturating_add(item.duration),
-        };
-        crate::fusion::CanonicalLyricUnit {
-            id: item.id.clone(),
-            text: item.text.clone(),
-            line_id: lines.get(&item.id).cloned(),
-            measured_range: item.timing_issue.is_none().then_some(scope),
-            audition_range: scope,
-        }
-    }).collect();
+    track.lyric_units = alignment
+        .items
+        .iter()
+        .map(|item| {
+            let scope = crate::fusion::TimeRange {
+                start: item.start,
+                end: item.start.saturating_add(item.duration),
+            };
+            crate::fusion::CanonicalLyricUnit {
+                id: item.id.clone(),
+                text: item.text.clone(),
+                line_id: lines.get(&item.id).cloned(),
+                measured_range: item.timing_issue.is_none().then_some(scope),
+                audition_range: scope,
+            }
+        })
+        .collect();
 }
 
 pub fn fuse_alignment_stage(

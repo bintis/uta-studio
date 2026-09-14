@@ -90,7 +90,7 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
     };
     let track = CanonicalSingingTrack {
         schema_version: 1,
-            lyric_units: Vec::new(),
+        lyric_units: Vec::new(),
         transcript: lyrics,
         words: vec![CanonicalWordBoundary {
             word_id: "word-0".to_string(),

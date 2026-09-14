@@ -12,17 +12,23 @@ pub(super) struct LyricDisplayGroup {
 /// an independent measurement for the missing word.
 pub(super) fn lyric_display_groups(track: &CanonicalSingingTrack) -> Vec<LyricDisplayGroup> {
     if track.lyric_units.is_empty() {
-        return track.words.iter().cloned().map(|boundary| LyricDisplayGroup {
-            boundary,
-            timing_unresolved: false,
-            measured: true,
-        }).collect();
+        return track
+            .words
+            .iter()
+            .cloned()
+            .map(|boundary| LyricDisplayGroup {
+                boundary,
+                timing_unresolved: false,
+                measured: true,
+            })
+            .collect();
     }
     let mut output = Vec::new();
     let mut start = 0;
     while start < track.lyric_units.len() {
         let line = &track.lyric_units[start].line_id;
-        let end = track.lyric_units[start..].iter()
+        let end = track.lyric_units[start..]
+            .iter()
             .position(|unit| &unit.line_id != line)
             .map_or(track.lyric_units.len(), |offset| start + offset);
         append_line_groups(track, &track.lyric_units[start..end], &mut output);
@@ -40,8 +46,10 @@ fn append_line_groups(
     let mut pending = String::new();
     let mut unresolved_prefix = false;
     for unit in units {
-        if let Some(word) = unit.measured_range.and_then(|_| track.words.iter()
-            .find(|word| word.word_id == unit.id)) {
+        if let Some(word) = unit
+            .measured_range
+            .and_then(|_| track.words.iter().find(|word| word.word_id == unit.id))
+        {
             let mut boundary = word.clone();
             append_text(&mut pending, &unit.text);
             boundary.text = std::mem::take(&mut pending);
@@ -63,12 +71,27 @@ fn append_line_groups(
         return;
     }
     let first = &units[0];
-    let line = first.line_id.as_deref().and_then(|id| track.transcript.tokens.iter()
-        .find(|line| line.id.as_deref() == Some(id)));
-    let scope = line.and_then(|line| line.range).unwrap_or_else(|| TimeRange {
-        start: units.iter().map(|unit| unit.audition_range.start).min().unwrap_or(0),
-        end: units.iter().map(|unit| unit.audition_range.end).max().unwrap_or(0),
+    let line = first.line_id.as_deref().and_then(|id| {
+        track
+            .transcript
+            .tokens
+            .iter()
+            .find(|line| line.id.as_deref() == Some(id))
     });
+    let scope = line
+        .and_then(|line| line.range)
+        .unwrap_or_else(|| TimeRange {
+            start: units
+                .iter()
+                .map(|unit| unit.audition_range.start)
+                .min()
+                .unwrap_or(0),
+            end: units
+                .iter()
+                .map(|unit| unit.audition_range.end)
+                .max()
+                .unwrap_or(0),
+        });
     output.push(LyricDisplayGroup {
         boundary: CanonicalWordBoundary {
             word_id: first.id.clone(),
@@ -95,7 +118,10 @@ fn append_text(text: &mut String, next: &str) {
 
 /// Limit an unresolved line's display scope to the available textual neighbours.
 /// This is an audition placement, not a measured timestamp for its characters.
-pub(super) fn lyric_placeholder_scope(groups: &[LyricDisplayGroup], index: usize) -> Option<TimeRange> {
+pub(super) fn lyric_placeholder_scope(
+    groups: &[LyricDisplayGroup],
+    index: usize,
+) -> Option<TimeRange> {
     let group = &groups[index];
     if group.measured {
         return Some(group.boundary.range);

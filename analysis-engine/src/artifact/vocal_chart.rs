@@ -107,28 +107,39 @@ pub fn finalize_candidate_vocal_chart(
             &word.text,
         );
         let spoken_range = if candidates.is_empty() {
-            lyric_placeholder_scope(&lyric_groups, word_index).and_then(|scope|
-                largest_unoccupied_range(scope, emitted_notes.iter().map(|(_, range, _)| *range)))
+            lyric_placeholder_scope(&lyric_groups, word_index).and_then(|scope| {
+                largest_unoccupied_range(scope, emitted_notes.iter().map(|(_, range, _)| *range))
+            })
         } else {
             None
         };
         if candidates.is_empty() && spoken_range.is_none() {
-            let neighbour = (!group.measured).then(|| {
-                emitted_notes.iter().filter(|(_, _, order)| *order < word_index)
-                    .max_by_key(|(_, range, order)| (*order, range.end))
-                    .or_else(|| emitted_notes.iter()
-                        .filter(|(_, _, order)| *order > word_index && *order != usize::MAX)
-                        .min_by_key(|(_, range, order)| (*order, range.start)))
-                    .map(|(id, _, _)| id.clone())
-            }).flatten();
-            let target_id = neighbour.or_else(|| emitted_notes
-                .iter()
-                .filter_map(|(id, range, _)| {
-                    let overlap = range_overlap(word.range, *range);
-                    (overlap > 0).then_some((overlap, id))
+            let neighbour = (!group.measured)
+                .then(|| {
+                    emitted_notes
+                        .iter()
+                        .filter(|(_, _, order)| *order < word_index)
+                        .max_by_key(|(_, range, order)| (*order, range.end))
+                        .or_else(|| {
+                            emitted_notes
+                                .iter()
+                                .filter(|(_, _, order)| *order > word_index && *order != usize::MAX)
+                                .min_by_key(|(_, range, order)| (*order, range.start))
+                        })
+                        .map(|(id, _, _)| id.clone())
                 })
-                .max_by_key(|(overlap, _)| *overlap)
-                .map(|(_, id)| id.clone()))
+                .flatten();
+            let target_id = neighbour
+                .or_else(|| {
+                    emitted_notes
+                        .iter()
+                        .filter_map(|(id, range, _)| {
+                            let overlap = range_overlap(word.range, *range);
+                            (overlap > 0).then_some((overlap, id))
+                        })
+                        .max_by_key(|(overlap, _)| *overlap)
+                        .map(|(_, id)| id.clone())
+                })
                 .ok_or_else(|| invalid(format!("word {} has no lyric interval", word.word_id)))?;
             deferred_lyrics.entry(target_id).or_default().push((
                 word_index,
@@ -209,7 +220,8 @@ fn notes_at_lyric_sentence_boundaries(track: &CanonicalSingingTrack) -> Vec<Cano
         .collect::<std::collections::BTreeSet<_>>();
     let mut output = Vec::new();
     for (index, note) in track.notes.iter().enumerate() {
-        let cuts = track.words
+        let cuts = track
+            .words
             .iter()
             .filter(|word| range_overlap(word.range, note.range) > 0)
             .skip(1)
@@ -462,13 +474,18 @@ fn largest_unoccupied_range(
 
 pub(super) fn lyric_join_between(previous: Option<&str>, current: &str) -> LyricJoin {
     let ascii_word = |text: &str| {
-        text.chars()
-            .all(|character| character.is_ascii_alphanumeric() || character.is_ascii_punctuation() || character.is_whitespace())
+        text.chars().all(|character| {
+            character.is_ascii_alphanumeric()
+                || character.is_ascii_punctuation()
+                || character.is_whitespace()
+        })
     };
     if previous.is_some_and(ascii_word)
-        && current
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || character.is_ascii_punctuation() || character.is_whitespace())
+        && current.chars().all(|character| {
+            character.is_ascii_alphanumeric()
+                || character.is_ascii_punctuation()
+                || character.is_whitespace()
+        })
     {
         LyricJoin::Space
     } else {
@@ -704,7 +721,10 @@ mod tests {
                 if token.text == text && !token.timing_unresolved));
             assert_eq!(note.pitch.unwrap().midi, original.midi_note);
         }
-        assert_eq!(notes.iter().map(|note| note.duration).sum::<u64>(), 2_000_000);
+        assert_eq!(
+            notes.iter().map(|note| note.duration).sum::<u64>(),
+            2_000_000
+        );
         assert_eq!(track.notes[0], original);
     }
 
@@ -1069,13 +1089,23 @@ mod tests {
         track.notes.remove(0);
         track.notes[0].range = TimeRange::new(830_000, 1_200_000).unwrap();
         let original = track.notes[0].clone();
-        assert_eq!(notes_at_lyric_sentence_boundaries(&track), [original.clone()]);
+        assert_eq!(
+            notes_at_lyric_sentence_boundaries(&track),
+            [original.clone()]
+        );
         let chart = finalize_candidate_vocal_chart(&track, "line-leadin", None).unwrap();
-        let pitched = chart.tracks[0].phrases.iter().flat_map(|phrase| &phrase.notes)
-            .filter(|note| note.pitch.is_some()).collect::<Vec<_>>();
+        let pitched = chart.tracks[0]
+            .phrases
+            .iter()
+            .flat_map(|phrase| &phrase.notes)
+            .filter(|note| note.pitch.is_some())
+            .collect::<Vec<_>>();
         assert_eq!(pitched.len(), 1);
         assert_eq!(pitched[0].start, original.range.start);
-        assert_eq!(pitched[0].duration, original.range.end - original.range.start);
+        assert_eq!(
+            pitched[0].duration,
+            original.range.end - original.range.start
+        );
         assert!(matches!(&pitched[0].lyrics[0], LyricToken::Text(token) if token.text == "now"));
     }
 
@@ -1098,21 +1128,33 @@ mod tests {
             ("missing-inner", "覚", None),
             ("word-2", "め", Some(track.words[1].range)),
             ("missing-tail", "る", None),
-        ].into_iter().map(|(id, text, measured_range)| crate::fusion::CanonicalLyricUnit {
-            id: id.to_string(), text: text.to_string(), line_id: None,
-            measured_range, audition_range: TimeRange::new(0, 1_000_000).unwrap(),
-        }).collect();
+        ]
+        .into_iter()
+        .map(
+            |(id, text, measured_range)| crate::fusion::CanonicalLyricUnit {
+                id: id.to_string(),
+                text: text.to_string(),
+                line_id: None,
+                measured_range,
+                audition_range: TimeRange::new(0, 1_000_000).unwrap(),
+            },
+        )
+        .collect();
         let original = track.clone();
         let chart = finalize_candidate_vocal_chart(&track, "missing-kana", None).unwrap();
         let notes = &chart.tracks[0].phrases[0].notes;
         assert_eq!(notes.len(), 2);
-        let text = notes.iter().flat_map(|note| &note.lyrics).filter_map(|token| match token {
-            LyricToken::Text(token) => {
-                assert!(token.timing_unresolved);
-                Some(token.text.as_str())
-            }
-            LyricToken::Continuation { .. } => None,
-        }).collect::<Vec<_>>();
+        let text = notes
+            .iter()
+            .flat_map(|note| &note.lyrics)
+            .filter_map(|token| match token {
+                LyricToken::Text(token) => {
+                    assert!(token.timing_unresolved);
+                    Some(token.text.as_str())
+                }
+                LyricToken::Continuation { .. } => None,
+            })
+            .collect::<Vec<_>>();
         assert_eq!(text, ["目覚", "める"]);
         assert_eq!(text.concat(), track.transcript.text);
         for (note, measured) in notes.iter().zip(&track.notes) {
@@ -1129,11 +1171,17 @@ mod tests {
         track.words.clear();
         track.notes.clear();
         let scope = TimeRange::new(2_000_000, 4_000_000).unwrap();
-        track.lyric_units = ["切", "に"].into_iter().enumerate().map(|(index, text)|
-            crate::fusion::CanonicalLyricUnit {
-                id: format!("unresolved-{index}"), text: text.to_string(), line_id: None,
-                measured_range: None, audition_range: scope,
-            }).collect();
+        track.lyric_units = ["切", "に"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, text)| crate::fusion::CanonicalLyricUnit {
+                id: format!("unresolved-{index}"),
+                text: text.to_string(),
+                line_id: None,
+                measured_range: None,
+                audition_range: scope,
+            })
+            .collect();
         let chart = finalize_candidate_vocal_chart(&track, "unresolved-line", None).unwrap();
         let notes = &chart.tracks[0].phrases[0].notes;
         assert_eq!(notes.len(), 1);
@@ -1146,7 +1194,6 @@ mod tests {
             if token.text == "切に" && token.timing_unresolved));
     }
 
-
     #[test]
     fn unresolved_line_scope_never_moves_its_text_after_the_next_measured_line() {
         for held in [false, true] {
@@ -1156,8 +1203,8 @@ mod tests {
             track.words[0].range = TimeRange::new(1_000_000, 2_000_000).unwrap();
             track.words[1].text = "C".to_string();
             track.words[1].range = TimeRange::new(3_000_000, 4_000_000).unwrap();
-            track.notes[0].range = TimeRange::new(1_000_000,
-                if held { 4_000_000 } else { 2_000_000 }).unwrap();
+            track.notes[0].range =
+                TimeRange::new(1_000_000, if held { 4_000_000 } else { 2_000_000 }).unwrap();
             if !held {
                 let mut later = track.notes[0].clone();
                 later.id = "later-note".to_string();
@@ -1169,20 +1216,38 @@ mod tests {
                 ("word-1", "A", Some(track.words[0].range)),
                 ("middle-line", "B", None),
                 ("word-2", "C", Some(track.words[1].range)),
-            ].into_iter().map(|(id, text, measured_range)| crate::fusion::CanonicalLyricUnit {
-                id: id.to_string(), text: text.to_string(), line_id: Some(id.to_string()),
-                measured_range, audition_range: TimeRange::new(0, 10_000_000).unwrap(),
-            }).collect();
-            let chart = finalize_candidate_vocal_chart(&track, "unresolved-line-order", None).unwrap();
-            let tokens = chart.tracks[0].phrases.iter().flat_map(|phrase| &phrase.notes)
-                .flat_map(|note| &note.lyrics).filter_map(|token| match token {
+            ]
+            .into_iter()
+            .map(
+                |(id, text, measured_range)| crate::fusion::CanonicalLyricUnit {
+                    id: id.to_string(),
+                    text: text.to_string(),
+                    line_id: Some(id.to_string()),
+                    measured_range,
+                    audition_range: TimeRange::new(0, 10_000_000).unwrap(),
+                },
+            )
+            .collect();
+            let chart =
+                finalize_candidate_vocal_chart(&track, "unresolved-line-order", None).unwrap();
+            let tokens = chart.tracks[0]
+                .phrases
+                .iter()
+                .flat_map(|phrase| &phrase.notes)
+                .flat_map(|note| &note.lyrics)
+                .filter_map(|token| match token {
                     LyricToken::Text(token) if !token.text.is_empty() => Some(token),
                     _ => None,
-                }).collect::<Vec<_>>();
-            assert_eq!(tokens.iter().map(|token| token.text.as_str()).collect::<Vec<_>>(),
-                ["A", "B", "C"]);
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                tokens
+                    .iter()
+                    .map(|token| token.text.as_str())
+                    .collect::<Vec<_>>(),
+                ["A", "B", "C"]
+            );
             assert!(tokens[1].timing_unresolved);
         }
     }
-
 }
