@@ -37,6 +37,32 @@ fn geometry(document: &EditorDocument) -> Vec<(u64, u64, Option<NotePitch>)> {
 }
 
 #[test]
+fn independent_unresolved_point_survives_reload_and_explicit_resize() {
+    let mut document = independent_document();
+    document.token_mut(word(1)).unwrap().timing = Some(utz::LyricTiming {
+        start: 1_000_000,
+        duration: 0,
+    });
+    let before = geometry(&document);
+    let chart = document.to_chart();
+    chart.validate().unwrap();
+    let bytes = serde_json::to_vec(&chart).unwrap();
+    let mut restored = EditorDocument::new(serde_json::from_slice(&bytes).unwrap());
+    let point = &restored.lyrics()[1];
+    assert_eq!((point.start, point.end), (1.0, 1.0));
+    assert!(point.timing_unresolved);
+    assert_eq!(geometry(&restored), before);
+    assert!(restored.shift_lyric(word(1), 0.2));
+    let point = &restored.lyrics()[1];
+    assert_eq!((point.start, point.end), (1.2, 1.2));
+    assert!(point.timing_unresolved);
+    restored.to_chart().validate().unwrap();
+    assert!(restored.set_lyric_timing(word(1), 1.1, 1.3));
+    assert!(!restored.lyrics()[1].timing_unresolved);
+    assert_eq!(geometry(&restored), before);
+    restored.to_chart().validate().unwrap();
+}
+#[test]
 fn independent_timing_projects_each_word_and_tab_visits_shared_note_tokens() {
     let mut document = independent_document();
     let lyrics = document.lyrics();
