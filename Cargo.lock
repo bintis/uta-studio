@@ -6367,6 +6367,7 @@ name = "uta-analysis-engine"
 version = "0.8.4"
 dependencies = [
  "hex",
+ "icu_segmenter",
  "libc",
  "serde",
  "serde_json",

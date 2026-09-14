@@ -70,7 +70,6 @@ pub(super) fn qwen_alignment_words(
         .next()
         .unwrap_or("und")
         .to_ascii_lowercase();
-    let character_units = matches!(language.as_str(), "zh" | "yue" | "ja" | "ko");
     let units = if !transcript.tokens.is_empty() {
         // Caller tokens may be entire LRC lines, not alignment words. Keep
         // their canonical identity and timing upstairs, but measure each
@@ -80,13 +79,13 @@ pub(super) fn qwen_alignment_words(
             .tokens
             .iter()
             .flat_map(|token| {
-                alignment_text_units(&token.text, character_units)
+                alignment_text_units(&token.text, &language)
                     .into_iter()
                     .map(move |text| (text, token.range))
             })
             .collect::<Vec<_>>()
     } else {
-        alignment_text_units(&transcript.text, character_units)
+        alignment_text_units(&transcript.text, &language)
             .into_iter()
             .map(|text| (text, None))
             .collect()
@@ -128,8 +127,24 @@ pub(super) fn qwen_alignment_words(
         .collect())
 }
 
-fn alignment_text_units(text: &str, character_units: bool) -> Vec<String> {
-    let raw = if character_units {
+fn alignment_text_units(text: &str, language: &str) -> Vec<String> {
+    let character_units = matches!(language, "zh" | "yue" | "ko");
+    let raw = if language == "ja" {
+        // Japanese word timing requires lexical units, not a timestamp pair
+        // for every kanji/kana. Slice the unchanged caller text at native
+        // dictionary boundaries; no normalization or character time division
+        // is performed. Every resulting word keeps its caller line scope.
+        let segmenter = icu_segmenter::WordSegmenter::new_dictionary(
+            icu_segmenter::options::WordBreakInvariantOptions::default(),
+        );
+        let boundaries = segmenter.segment_str(text).collect::<Vec<_>>();
+        boundaries
+            .windows(2)
+            .map(|range| &text[range[0]..range[1]])
+            .filter(|unit| !unit.chars().all(char::is_whitespace))
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    } else if character_units {
         text.chars()
             .filter(|character| !character.is_whitespace())
             .map(|character| character.to_string())
@@ -142,7 +157,7 @@ fn alignment_text_units(text: &str, character_units: bool) -> Vec<String> {
     for unit in raw {
         // Punctuation is text, not a separate sung onset. Attach it to the
         // adjacent lexical unit so it cannot manufacture a zero-time word.
-        let modifier = character_units
+        let modifier = (character_units || language == "ja")
             && unit.chars().all(|character| {
                 matches!(
                     character,

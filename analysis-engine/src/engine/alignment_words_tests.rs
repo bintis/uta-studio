@@ -36,7 +36,7 @@ fn caller(language: &str, lines: &[(&str, u64, u64)]) -> CanonicalLyrics {
 }
 
 #[test]
-fn caller_japanese_lines_expand_into_characters_inside_each_real_line_scope() {
+fn caller_japanese_lines_expand_into_words_inside_each_real_line_scope() {
     let transcript = caller(
         "ja-JP",
         &[
@@ -49,18 +49,28 @@ fn caller_japanese_lines_expand_into_characters_inside_each_real_line_scope() {
     let words = qwen_alignment_words(&transcript, &[]).unwrap();
     let mut cursor = 0;
     for token in &transcript.tokens {
-        for character in token.text.chars() {
-            assert_eq!(words[cursor]["text"], character.to_string());
-            assert_eq!(
-                words[cursor]["audio_range"],
-                serde_json::to_value(token.range).unwrap()
-            );
-            assert!(
-                words[cursor].get("start").is_none(),
-                "a scope is not a measured word time"
-            );
-            cursor += 1;
-        }
+        let scope = serde_json::to_value(token.range).unwrap();
+        let line_words = words[cursor..]
+            .iter()
+            .take_while(|word| word["audio_range"] == scope)
+            .collect::<Vec<_>>();
+        assert!(!line_words.is_empty());
+        assert!(
+            line_words.len() < token.text.chars().count(),
+            "Japanese words must not become a timestamp pair per character"
+        );
+        assert_eq!(
+            line_words
+                .iter()
+                .map(|word| word["text"].as_str().unwrap())
+                .collect::<String>(),
+            token.text
+        );
+        assert!(line_words.iter().all(|word| word.get("start").is_none()
+            && word.get("end").is_none()),
+            "caller line scopes do not measure word or character times"
+        );
+        cursor += line_words.len();
     }
     assert_eq!(words.len(), cursor);
     let ids = words
@@ -76,6 +86,27 @@ fn caller_japanese_lines_expand_into_characters_inside_each_real_line_scope() {
         transcript, original,
         "canonical line text and ranges remain intact"
     );
+}
+
+#[test]
+fn japanese_dictionary_boundaries_preserve_source_spelling_and_punctuation() {
+    let text = "「眩しさ！」一人目覚める。 ＡＢＣ ｶﾅ e\u{301} 東京へ";
+    let transcript = caller("ja", &[(text, 48_180_000, 53_700_000)]);
+    let words = qwen_alignment_words(&transcript, &[]).unwrap();
+    let joined = words
+        .iter()
+        .map(|word| word["text"].as_str().unwrap())
+        .collect::<String>();
+    assert_eq!(
+        joined,
+        text.chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>()
+    );
+    assert!(words.iter().all(|word| word["audio_range"]
+        == serde_json::json!({"start": 48_180_000, "end": 53_700_000})));
+    assert!(words.iter().any(|word| word["text"] == "一人"));
+    assert!(words.iter().any(|word| word["text"] == "目覚める。"));
 }
 
 #[test]
@@ -370,6 +401,11 @@ fn prepare_alignment_words_from_explicit_lyrics() {
     let transcript: CanonicalLyrics =
         serde_json::from_slice(&std::fs::read(input).unwrap()).unwrap();
     let words = qwen_alignment_words(&transcript, &[]).unwrap();
+    assert_eq!(
+        words.iter().map(|word| word["text"].as_str().unwrap()).collect::<String>(),
+        transcript.text.chars()
+            .filter(|character| !character.is_whitespace()).collect::<String>()
+    );
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -378,8 +414,9 @@ fn prepare_alignment_words_from_explicit_lyrics() {
     serde_json::to_writer_pretty(&mut file, &words).unwrap();
     file.sync_all().unwrap();
     println!(
-        "caller tokens: {}; lexical alignment requests: {}",
+        "caller tokens: {}; lexical alignment requests: {}; input scopes only, no measured times",
         transcript.tokens.len(),
         words.len()
     );
 }
+
