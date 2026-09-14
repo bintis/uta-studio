@@ -1007,6 +1007,7 @@ fn octave_disagreement_is_reviewed_without_quantizing_rmvpe_to_a_target() {
     .unwrap();
     assert_eq!(output.track.notes[0].midi_note, 69);
     assert_eq!(output.track.notes[0].alternatives[0].center_hz, 880.0);
+    assert_eq!(output.track.f0_curve, project_rmvpe_f0(&pitch).unwrap());
     assert!(
         output
             .review_regions

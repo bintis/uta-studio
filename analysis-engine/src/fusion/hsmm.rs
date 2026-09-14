@@ -239,8 +239,8 @@ pub struct SegmentCandidate {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_pitch_calibrated_confidence: Option<f32>,
     pub center_pitch_hz: f32,
-    /// Time integral of target error outside the 50-cent pitch band, measured
-    /// from the request's fixed continuous-pitch owner in semitone-seconds.
+    /// Target error outside the 50-cent band, in semitone-seconds, from
+    /// absolute-time primary F0 and reliable independent DSP observations.
     /// Repartitioning one target must preserve the sum of this observation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continuous_pitch_error_integral: Option<f32>,
@@ -677,8 +677,8 @@ impl SegmentCandidate {
         // does not gain semantic authority merely because its expert also
         // supplied the boundary object.
         // A segment median can hide a shorter real pitch plateau inside a
-        // long note. Integrate target error over the fixed owner's observed
-        // frame time instead. The scale is a decoder utility weight, not a
+        // long note. Integrate target error over fixed absolute-time
+        // observations instead. The scale is a decoder utility weight, not a
         // calibrated model confidence: a two-semitone mismatch held for 160 ms
         // costs 0.72, enough to compete with an extra state and transition.
         const PITCH_ERROR_WEIGHT: f32 = 3.0;

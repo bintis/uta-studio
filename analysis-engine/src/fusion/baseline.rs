@@ -273,16 +273,31 @@ struct ContinuousPitchFit {
     observed_duration: u64,
 }
 
-/// Integrate the declared pitch owner's measurements on their absolute grid.
-/// The deadband tolerates intonation/vibrato; linear excess error limits the
-/// influence of isolated outliers. Missing or untrusted frames provide no fit
-/// evidence and never extend across an unobserved gap.
-fn continuous_pitch_fit(
+struct ContinuousPitchObservation {
     range: TimeRange,
-    target_hz: f32,
+    primary_hz: f32,
+    acoustic_hz: Option<f32>,
+}
+
+fn trustworthy_acoustic_pitch(frame: &crate::artifact::AcousticEvidenceFrame) -> Option<f32> {
+    // Source-local evidence quality, not calibrated confidence. A periodic
+    // fundamental with at least ten times the residual-noise power can retain
+    // an independent pitch hypothesis when the primary tracker misses an octave.
+    // These decoder parameters remain subject to annotated-data evaluation.
+    (frame.periodicity >= 0.6 && frame.snr_db >= 10.0)
+        .then_some(frame.fundamental_hz)
+        .flatten()
+        .filter(|hz| hz.is_finite() && *hz > 0.0)
+}
+
+/// Construct observations once, before evaluating any candidate target. Split
+/// at the primary and DSP frame edges so candidate cuts cannot select a more
+/// favorable observation interval or extend DSP evidence across a missing frame.
+fn continuous_pitch_observations(
     curve: &[F0Point],
     grid: Option<PitchGrid>,
-) -> Result<Option<ContinuousPitchFit>, String> {
+    acoustic: Option<&AcousticEvidence>,
+) -> Result<Option<Vec<ContinuousPitchObservation>>, String> {
     let Some(grid) = grid else {
         return Ok(None);
     };
@@ -294,12 +309,8 @@ fn continuous_pitch_fit(
         .start
         .checked_add(grid_duration)
         .ok_or_else(|| "continuous pitch fit grid end overflows".to_string())?;
-    let first = curve.partition_point(|point| point.time.saturating_add(grid.hop) <= range.start);
-    let end = curve.partition_point(|point| point.time < range.end);
-    let mut error_integral = 0.0_f64;
-    let mut observed_duration = 0_u64;
-    for index in first..end {
-        let point = &curve[index];
+    let mut observations = Vec::with_capacity(curve.len());
+    for (index, point) in curve.iter().enumerate() {
         if !trustworthy_f0_point(point) {
             continue;
         }
@@ -308,20 +319,68 @@ fn continuous_pitch_fit(
             .saturating_add(grid.hop)
             .min(curve.get(index + 1).map_or(grid_end, |next| next.time))
             .min(grid_end);
-        let overlap = frame_end
-            .min(range.end)
-            .saturating_sub(point.time.max(grid.start).max(range.start));
-        // Clip both sides of every frame. In particular, a cut between grid
-        // points divides one observation instead of dropping/duplicating it.
-        let cents = 1_200.0_f64 * (f64::from(point.hz) / f64::from(target_hz)).log2();
-        let excess_semitones = (cents.abs() - 50.0).max(0.0) / 100.0;
+        let mut cursor = point.time.max(grid.start);
+        while cursor < frame_end {
+            let mut interval_end = frame_end;
+            let acoustic_hz = acoustic.and_then(|evidence| {
+                let after = evidence
+                    .frames
+                    .partition_point(|frame| frame.start <= cursor);
+                let current = after
+                    .checked_sub(1)
+                    .and_then(|index| evidence.frames.get(index))
+                    .filter(|frame| cursor < frame.start.saturating_add(evidence.hop));
+                if let Some(frame) = current {
+                    interval_end = interval_end.min(frame.start.saturating_add(evidence.hop));
+                    trustworthy_acoustic_pitch(frame)
+                } else {
+                    if let Some(next) = evidence.frames.get(after) {
+                        interval_end = interval_end.min(next.start);
+                    }
+                    None
+                }
+            });
+            observations.push(ContinuousPitchObservation {
+                range: TimeRange::new(cursor, interval_end)?,
+                primary_hz: point.hz,
+                acoustic_hz,
+            });
+            cursor = interval_end;
+        }
+    }
+    Ok(Some(observations))
+}
+
+fn continuous_pitch_fit(
+    range: TimeRange,
+    target_hz: f32,
+    observations: Option<&[ContinuousPitchObservation]>,
+) -> Option<ContinuousPitchFit> {
+    let observations = observations?;
+    let first = observations.partition_point(|observation| observation.range.end <= range.start);
+    let end = observations.partition_point(|observation| observation.range.start < range.end);
+    let error_rate = |hz: f32| {
+        let cents = 1_200.0_f64 * (f64::from(hz) / f64::from(target_hz)).log2();
+        (cents.abs() - 50.0).max(0.0) / 100.0
+    };
+    let mut error_integral = 0.0_f64;
+    let mut observed_duration = 0_u64;
+    for observation in &observations[first..end] {
+        let overlap = overlap_duration(range, observation.range);
+        let primary_error = error_rate(observation.primary_hz);
+        // Independent, reliable DSP may explain an alternative target at this
+        // instant. Taking this minimum before time integration stays additive;
+        // taking a minimum of two whole-candidate integrals would not.
+        let excess_semitones = observation
+            .acoustic_hz
+            .map_or(primary_error, |hz| primary_error.min(error_rate(hz)));
         error_integral += excess_semitones * overlap as f64 / 1_000_000.0;
         observed_duration += overlap;
     }
-    Ok(Some(ContinuousPitchFit {
+    Some(ContinuousPitchFit {
         error_integral: error_integral as f32,
         observed_duration,
-    }))
+    })
 }
 
 fn summarize_acoustic(
@@ -1520,15 +1579,15 @@ pub(crate) fn fuse_singing_evidence_with_challengers(
         "fcpe" => fcpe_grid,
         _ => unreachable!("primary pitch owner checked above"),
     };
-    // Pitch expansion changes the target. Recompute after expansion against
-    // one declared owner, never choose whichever expert favors each segment.
+    let observations = continuous_pitch_observations(selected_f0, selected_grid, acoustic)?;
+    // Pitch expansion changes the target. Recompute every proposal against
+    // the same absolute-time observations, never candidate-level expert minima.
     for candidate in &mut candidates {
         let fit = continuous_pitch_fit(
             candidate.range,
             candidate.center_pitch_hz,
-            selected_f0,
-            selected_grid,
-        )?;
+            observations.as_deref(),
+        );
         candidate.continuous_pitch_error_integral = fit.as_ref().map(|fit| fit.error_integral);
         candidate.continuous_pitch_observed_duration = fit.map(|fit| fit.observed_duration);
     }
