@@ -1127,8 +1127,8 @@ mod tests {
         track.notes[0].range = TimeRange::new(830_000, 1_200_000).unwrap();
         let original = track.notes[0].clone();
         assert_eq!(
-            notes_at_lyric_sentence_boundaries(&track),
-            [original.clone()]
+            notes_at_lyric_sentence_boundaries(&track).as_slice(),
+            std::slice::from_ref(&original)
         );
         let chart = finalize_candidate_vocal_chart(&track, "line-leadin", None).unwrap();
         let pitched = chart.tracks[0]
