@@ -471,24 +471,34 @@ fn linux_process_state_is_running(stat: &str) -> bool {
 #[test]
 fn force_stop_process_probe_recognizes_exit_states_without_accepting_stopped_tasks() {
     for state in ["R", "S", "D", "T", "t", "I"] {
-        assert!(linux_process_state_is_running(&format!("123 (worker (child)) {state} 1")));
+        assert!(linux_process_state_is_running(&format!(
+            "123 (worker (child)) {state} 1"
+        )));
     }
     for state in ["Z", "X", "x"] {
-        assert!(!linux_process_state_is_running(&format!("123 (worker (child)) {state} 1")));
+        assert!(!linux_process_state_is_running(&format!(
+            "123 (worker (child)) {state} 1"
+        )));
     }
 }
 
 #[cfg(target_os = "linux")]
 #[test]
 fn force_stop_process_probe_observes_an_owned_child_after_reaping() {
-    let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+    let mut child = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
     let pid = child.id();
     let running = unix_process_is_running(pid);
     // Only this test's own child is signalled and reaped.
     child.kill().unwrap();
     child.wait().unwrap();
     assert!(running, "a running child must not be treated as terminated");
-    assert!(!unix_process_is_running(pid), "a reaped child must remain terminated");
+    assert!(
+        !unix_process_is_running(pid),
+        "a reaped child must remain terminated"
+    );
 }
 
 #[cfg(unix)]
