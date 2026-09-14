@@ -9,9 +9,8 @@
 use std::collections::BTreeMap;
 
 use super::{
-    ATTACK_CONTEXT_TOLERANCE, BoundaryConstraintKind, BoundaryEvidenceKind, SegmentCandidate,
-    TimeRange, acoustic_fundamental_support_for_target, belongs_to_start,
-    sustained_pitch_support_for_target,
+    ATTACK_CONTEXT_TOLERANCE, BoundaryEvidenceKind, SegmentCandidate, TimeRange,
+    acoustic_fundamental_support_for_target, belongs_to_start, sustained_pitch_support_for_target,
 };
 
 /// A decoder utility scale chosen on the documented calibration recordings;
@@ -62,18 +61,6 @@ fn unsupported_at(ranges: &[TimeRange], time: u64) -> Option<TimeRange> {
         .filter(|range| range.start <= time)
 }
 
-/// Neural note onset plus independently measured word onset can describe a
-/// consonant before periodic voicing begins. Retain the observed attack rather
-/// than silently relocating both observations to the later vowel. This creates
-/// no new event, pitch frame or interval and does not promote a word end.
-fn lexical_onset_support(candidate: &SegmentCandidate) -> bool {
-    candidate.boundary_constraints.iter().any(|constraint| {
-        constraint.kind == BoundaryConstraintKind::WordStart
-            && constraint.time.abs_diff(candidate.range.start) < ATTACK_CONTEXT_TOLERANCE
-            && belongs_to_start(candidate, constraint.time)
-    })
-}
-
 pub(super) struct NativeNoteEvents {
     credits: Vec<Vec<OnsetCredit>>,
 }
@@ -100,15 +87,12 @@ impl NativeNoteEvents {
             let support = sustained_pitch_support_for_target(candidate, target_hz).max(
                 acoustic_fundamental_support_for_target(candidate, target_hz),
             );
-            // An unsupported attack without lexical corroboration remains a
-            // recovery observation. A corroborated consonantal attack retains
-            // the native time; its lexical measurement does not add a vote.
-            let onset = if lexical_onset_support(candidate) {
-                candidate.range.start
-            } else {
-                unsupported_at(&unsupported, candidate.range.start)
-                    .map_or(candidate.range.start, |range| range.end)
-            };
+            // Keep the native range on the candidate. For onset credit only,
+            // an observation inside an unsupported interval refers to its
+            // recovery. Several same-source observations at that recovery
+            // remain one vote, even when their original starts differ.
+            let onset = unsupported_at(&unsupported, candidate.range.start)
+                .map_or(candidate.range.start, |range| range.end);
             observations
                 .entry(&candidate.boundary_source)
                 .or_default()
@@ -128,11 +112,12 @@ impl NativeNoteEvents {
         let credits = candidates
             .iter()
             .map(|candidate| {
-                // Unvoiced prefixes need an independently measured lexical
-                // attack to receive a native onset vote at their original time.
+                // A pitched candidate remains eligible in the graph, but
+                // an onset inside explicitly unsupported time earns no
+                // native event credit. A recovery proposal can receive the
+                // original observation instead.
                 if !candidate.target.is_pitched()
-                    || (unsupported_at(&unsupported, candidate.range.start).is_some()
-                        && !lexical_onset_support(candidate))
+                    || unsupported_at(&unsupported, candidate.range.start).is_some()
                 {
                     return Vec::new();
                 }
@@ -390,44 +375,5 @@ mod tests {
                 .abs()
                 < 0.000001
         );
-    }
-
-    #[test]
-    fn a_native_consonantal_attack_keeps_its_independent_lexical_onset() {
-        let mut native = note("note-expert", 420_000, 1_000_000);
-        native.voicing_evidence = rest("consonantal-prefix", 420_000, 500_000).voicing_evidence;
-        native.boundary_constraints.push(
-            serde_json::from_value(serde_json::json!({
-                "source_expert": "forced_alignment", "kind": "word_start", "time": 420_000,
-                "depends_on": []
-            }))
-            .unwrap(),
-        );
-        let mut recovery = native.clone();
-        recovery.id = "vowel-recovery".into();
-        recovery.range.start = 500_000;
-        recovery.boundary_kind = BoundaryEvidenceKind::Voicing;
-        recovery.voicing_evidence = None;
-        let index =
-            NativeNoteEvents::new(&[native.clone(), recovery, rest("prefix", 400_000, 500_000)]);
-        assert!(index.reward(0) > 0.0);
-        assert_eq!(index.reward(1), 0.0);
-        assert_eq!(native.range.start, 420_000);
-        native.boundary_constraints[0].kind = BoundaryConstraintKind::WordEnd;
-        assert_eq!(NativeNoteEvents::new(&[native]).reward(0), 0.0);
-    }
-
-    #[test]
-    fn a_lexical_constraint_cannot_invent_a_native_event_in_silence() {
-        let mut derived = note("alignment", 420_000, 1_000_000);
-        derived.boundary_kind = BoundaryEvidenceKind::Alignment;
-        derived.boundary_constraints.push(
-            serde_json::from_value(serde_json::json!({
-                "source_expert": "forced_alignment", "kind": "word_start", "time": 420_000,
-                "depends_on": []
-            }))
-            .unwrap(),
-        );
-        assert_eq!(NativeNoteEvents::new(&[derived]).reward(0), 0.0);
     }
 }
