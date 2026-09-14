@@ -287,19 +287,45 @@ fn conditioned_segments(
     Ok(segments)
 }
 
-/// Each measured word onset is a condition, including the first onset after
-/// actual leading silence. Context-window starts are not word boundaries.
+/// Condition on the complete measured lexical partition, including transitions
+/// into uncovered audio between words and after the final word. Omitting these
+/// ends pools a final sung word with trailing silence in the note pitch head.
+/// Touching ranges share one boundary; an end covered by another word is not a
+/// pause. These are model-produced transcript times, never reference-note times.
 fn segment_word_boundaries(
     segment: &Segment,
     source_start_micros: u64,
 ) -> Result<Vec<i32>, String> {
     let mut boundaries = vec![0_i32; segment.padded()];
     let timeline_start = frame_to_micros(segment.start).saturating_add(source_start_micros);
-    for word in &segment.words {
-        let local = word.start_micros.saturating_sub(timeline_start);
-        let frame = canonical_to_frame(local)?.min(segment.valid.saturating_sub(1));
-        if frame > 0 {
-            boundaries[frame] = 1;
+    let mut spans = segment
+        .words
+        .iter()
+        .map(|word| {
+            (
+                word.start_micros,
+                word.start_micros.saturating_add(word.duration_micros),
+            )
+        })
+        .collect::<Vec<_>>();
+    spans.sort_unstable();
+    let mut edges = spans.iter().map(|span| span.0).collect::<Vec<_>>();
+    let mut covered_end = None;
+    for (start, end) in spans {
+        if let Some(previous) = covered_end
+            && start > previous
+        {
+            edges.push(previous);
+        }
+        covered_end = Some(covered_end.map_or(end, |previous: u64| previous.max(end)));
+    }
+    edges.extend(covered_end);
+    for edge in edges {
+        if let Some(local) = edge.checked_sub(timeline_start) {
+            let frame = canonical_to_frame(local)?;
+            if frame > 0 && frame < segment.valid.saturating_sub(1) {
+                boundaries[frame] = 1;
+            }
         }
     }
     Ok(boundaries)
@@ -379,16 +405,17 @@ mod tests {
     }
 
     #[test]
-    fn transcript_boundaries_skip_the_first_word() {
+    fn transcript_boundaries_keep_touching_words_and_the_trailing_pause() {
         let segment = Segment {
             start: 0,
             valid: 100,
             words: vec![word(0), word(100_000), word(200_000)],
         };
         let actual = segment_word_boundaries(&segment, 0).unwrap();
-        assert_eq!(actual.iter().sum::<i32>(), 2);
+        assert_eq!(actual.iter().sum::<i32>(), 3);
         assert_eq!(actual[canonical_to_frame(100_000).unwrap()], 1);
         assert_eq!(actual[canonical_to_frame(200_000).unwrap()], 1);
+        assert_eq!(actual[canonical_to_frame(300_000).unwrap()], 1);
     }
 
     #[test]
@@ -421,7 +448,7 @@ mod tests {
         assert_eq!(segment.padded() % 16, 0);
         assert!(segment.padded() - segment.valid < 16);
         let boundaries = segment_word_boundaries(segment, 0).unwrap();
-        assert_eq!(boundaries.iter().sum::<i32>(), words.len() as i32);
+        assert_eq!(boundaries.iter().sum::<i32>(), words.len() as i32 + 1);
         let values = (0..frames * MEL_BINS)
             .map(|index| index as f32)
             .collect::<Vec<_>>();
@@ -435,6 +462,38 @@ mod tests {
                 .iter()
                 .all(|value| *value == 0.0)
         );
+    }
+
+    #[test]
+    fn measured_pauses_and_overlapping_words_form_distinct_partition_edges() {
+        let segment = Segment {
+            start: 0,
+            valid: canonical_to_frame(1_000_000).unwrap(),
+            words: vec![word(100_000), word(500_000), word(550_000)],
+        };
+        let actual = segment_word_boundaries(&segment, 0).unwrap();
+        let expected = [100_000, 200_000, 500_000, 550_000, 650_000]
+            .map(|time| canonical_to_frame(time).unwrap());
+        assert_eq!(boundary_indices(&actual, segment.valid), expected);
+        assert_eq!(actual[canonical_to_frame(600_000).unwrap()], 0);
+        assert!(actual[segment.valid..].iter().all(|value| *value == 0));
+    }
+
+    #[test]
+    fn partition_projection_does_not_clamp_external_edges_into_the_last_frame() {
+        let source_start = 2_000_000;
+        let segment = Segment {
+            start: canonical_to_frame(1_000_000).unwrap(),
+            valid: canonical_to_frame(400_000).unwrap(),
+            words: vec![TranscriptWord {
+                id: "cropped-word".into(),
+                text: "la".into(),
+                start_micros: source_start + 900_000,
+                duration_micros: 600_000,
+            }],
+        };
+        let actual = segment_word_boundaries(&segment, source_start).unwrap();
+        assert!(actual.iter().all(|value| *value == 0));
     }
 
     #[test]
