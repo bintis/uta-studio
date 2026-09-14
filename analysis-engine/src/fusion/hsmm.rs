@@ -284,6 +284,7 @@ pub struct SegmentCandidate {
 }
 
 const BOUNDARY_CONTEXT_TOLERANCE: u64 = 50_000;
+const ATTACK_CONTEXT_TOLERANCE: u64 = 60_000;
 
 fn constraint_group(constraint: &BoundaryConstraintEvidence) -> &str {
     match constraint.kind {
@@ -317,13 +318,12 @@ fn belongs_to_start(candidate: &SegmentCandidate, time: u64) -> bool {
 }
 
 fn attack_belongs_to_start(candidate: &SegmentCandidate, kind: BoundaryConstraintKind) -> bool {
-    const ONSET_WINDOW: u64 = 60_000;
     candidate
         .boundary_constraints
         .iter()
         .filter(|constraint| {
             constraint.kind == kind
-                && constraint.time.abs_diff(candidate.range.start) <= ONSET_WINDOW
+                && constraint.time.abs_diff(candidate.range.start) <= ATTACK_CONTEXT_TOLERANCE
         })
         .min_by_key(|constraint| constraint.time.abs_diff(candidate.range.start))
         .is_none_or(|constraint| belongs_to_start(candidate, constraint.time))
@@ -338,7 +338,9 @@ struct BoundaryEventScore {
 /// A boundary proposal, an attack feature and a context annotation can all be
 /// views of the same model observation. Credit its strongest contribution once,
 /// using the existing feature weights. Only independent source groups add.
-fn boundary_event_score(candidate: &SegmentCandidate) -> BoundaryEventScore {
+fn boundary_event_groups(
+    candidate: &SegmentCandidate,
+) -> std::collections::BTreeMap<&str, BoundaryEventScore> {
     let mut groups = std::collections::BTreeMap::<&str, BoundaryEventScore>::new();
     let mut add = |group, strength: f32, reward: f32| {
         let entry = groups.entry(group).or_default();
@@ -389,12 +391,75 @@ fn boundary_event_score(candidate: &SegmentCandidate) -> BoundaryEventScore {
         add("acoustic", 0.8, 0.7 * 0.8 / 1.5);
     }
     groups
-        .values()
-        .fold(BoundaryEventScore::default(), |mut combined, group| {
+}
+
+fn boundary_event_score(candidate: &SegmentCandidate) -> BoundaryEventScore {
+    boundary_event_groups(candidate).values().fold(
+        BoundaryEventScore::default(),
+        |mut combined, group| {
             combined.strength += group.strength;
             combined.reward += group.reward;
             combined
-        })
+        },
+    )
+}
+
+fn shares_start_attack(
+    previous: &SegmentCandidate,
+    next: &SegmentCandidate,
+    kind: BoundaryConstraintKind,
+) -> bool {
+    next.boundary_constraints.iter().any(|event| {
+        event.kind == kind
+            && event.time.abs_diff(next.range.start) <= ATTACK_CONTEXT_TOLERANCE
+            && belongs_to_start(next, event.time)
+            && previous.boundary_constraints.iter().any(|prior| {
+                prior.kind == kind
+                    && prior.time == event.time
+                    && prior.time.abs_diff(previous.range.start) <= ATTACK_CONTEXT_TOLERANCE
+                    && belongs_to_start(previous, prior.time)
+            })
+    })
+}
+
+/// A path can observe the same peak from two neighboring state windows.
+/// Their total reward is the maximum contribution of that observation, not
+/// the sum; a different measured peak remains an independent note event.
+fn repeated_attack_reward(previous: &SegmentCandidate, next: &SegmentCandidate) -> f32 {
+    let shared = [
+        (BoundaryConstraintKind::BasicPitchOnset, "basic_pitch"),
+        (BoundaryConstraintKind::AcousticArticulation, "acoustic"),
+    ];
+    let shared = shared
+        .into_iter()
+        .filter(|(kind, _)| shares_start_attack(previous, next, *kind))
+        .collect::<Vec<_>>();
+    if shared.is_empty() {
+        return 0.0;
+    }
+    let before = boundary_event_groups(previous);
+    let after = boundary_event_groups(next);
+    shared
+        .into_iter()
+        .filter_map(|(_, group)| before.get(group).zip(after.get(group)))
+        .map(|(before, after)| before.reward.min(after.reward))
+        .sum()
+}
+
+fn distinct_onset_supported(previous: &SegmentCandidate, next: &SegmentCandidate) -> bool {
+    let acoustic = next
+        .acoustic
+        .as_ref()
+        .is_some_and(|features| features.onset_supported == Some(true))
+        && attack_belongs_to_start(next, BoundaryConstraintKind::AcousticArticulation)
+        && !shares_start_attack(previous, next, BoundaryConstraintKind::AcousticArticulation);
+    let basic_pitch = next
+        .basic_pitch
+        .as_ref()
+        .is_some_and(|features| features.onset_supported)
+        && attack_belongs_to_start(next, BoundaryConstraintKind::BasicPitchOnset)
+        && !shares_start_attack(previous, next, BoundaryConstraintKind::BasicPitchOnset);
+    acoustic || basic_pitch
 }
 
 /// Attaches only boundary-local contextual evidence to each duration state.
@@ -412,11 +477,14 @@ pub fn attach_boundary_constraints(
     for candidate in candidates {
         let mut matches = Vec::<(usize, &BoundaryConstraintEvidence)>::new();
         for edge in [candidate.range.start, candidate.range.end] {
-            let lower = edge.saturating_sub(BOUNDARY_CONTEXT_TOLERANCE);
-            let upper = edge.saturating_add(BOUNDARY_CONTEXT_TOLERANCE);
+            let lower = edge.saturating_sub(ATTACK_CONTEXT_TOLERANCE);
+            let upper = edge.saturating_add(ATTACK_CONTEXT_TOLERANCE);
             let first = indexed.partition_point(|(_, constraint)| constraint.time < lower);
             let end = indexed.partition_point(|(_, constraint)| constraint.time <= upper);
-            matches.extend_from_slice(&indexed[first..end]);
+            matches.extend(indexed[first..end].iter().copied().filter(|(_, event)| {
+                event.kind == BoundaryConstraintKind::BasicPitchOnset
+                    || event.time.abs_diff(edge) <= BOUNDARY_CONTEXT_TOLERANCE
+            }));
         }
         // Preserve the caller's deterministic constraint order and avoid a
         // duplicate when one event is local to both edges of a short state.
@@ -813,7 +881,8 @@ fn transition_utility_indexed(
     }
 
     let duration = next.range.end.saturating_sub(next.range.start);
-    let onset = onset_supported(next) && (duration > 100_000 || note_event_support(next) >= 0.85);
+    let onset = distinct_onset_supported(previous, next)
+        && (duration > 100_000 || note_event_support(next) >= 0.85);
     let contextual_boundary = matches!(
         next.boundary_kind,
         BoundaryEvidenceKind::Alignment | BoundaryEvidenceKind::F0Transition
@@ -849,7 +918,7 @@ fn transition_utility_indexed(
         * 0.45
         * (1.0 - 0.55 * pitch_support)
         * (1.0 - phrase_relaxation);
-    -(event_cost + melody_cost)
+    -(event_cost + melody_cost + repeated_attack_reward(previous, next))
 }
 
 #[cfg(test)]

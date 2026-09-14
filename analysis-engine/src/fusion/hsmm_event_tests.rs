@@ -152,3 +152,28 @@ fn short_independent_reattacks_remain_valid_segmentation_states() {
     );
     assert_eq!(selected[1].range.end - selected[1].range.start, 50_000);
 }
+
+#[test]
+fn a_single_peak_before_two_neighboring_starts_is_not_a_second_attack() {
+    let mut first = sustain("first", 500_000, 530_000);
+    let mut second = sustain("second", 530_000, 1_000_000);
+    for note in [&mut first, &mut second] {
+        add_basic_pitch_attack(note);
+        note.boundary_constraints.push(onset_constraint(490_000));
+    }
+    assert!(onset_supported(&first));
+    assert!(onset_supported(&second));
+    assert!(!distinct_onset_supported(&first, &second));
+    assert!(repeated_attack_reward(&first, &second) > 0.0);
+
+    second.boundary_constraints = vec![onset_constraint(550_000)];
+    assert!(distinct_onset_supported(&first, &second));
+    assert_eq!(repeated_attack_reward(&first, &second), 0.0);
+}
+
+#[test]
+fn full_attack_window_keeps_the_event_identity_for_path_deduplication() {
+    let mut notes = vec![sustain("first", 500_000, 540_000)];
+    attach_boundary_constraints(&mut notes, &[onset_constraint(445_000)]).unwrap();
+    assert_eq!(notes[0].boundary_constraints.len(), 1);
+}
