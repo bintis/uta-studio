@@ -12,17 +12,35 @@
 ## Imported lyrics and word timing
 
 Imported text is preserved independently from successful word-timing measurements.
-Unresolved characters remain editable in explicitly marked text groups; measured
-words retain distinct timing in the chart, with nearby existing note edges reused
-inside the established 60 ms evidence tolerance. LRC search scopes do not create
-empty first-word slices. Basic Pitch onset extraction now treats a continuous
-activation response as one event.
+Unresolved characters remain editable and marked. Measured words retain their
+original timestamps; ordered lyric ownership reuses an existing local touching
+note edge without recutting a correctly divided note. Genuine word boundaries
+inside held notes still split, and LRC scopes do not create empty prefixes.
 
-The latest Asphodelos retained-pool replay preserves all 361 characters, versus
-180 in the reported chart. This proves text/projection repair, not fresh alignment
-accuracy or fewer real-song fragments. Final Engine/core/UTZ and targeted desktop
-tests pass; debug binaries build. Current verification and the remaining 21J
-quality review are recorded in [the task follow-up](../tasks/final-features/followups/21J_MELODY_PATH_SCORE_COHERENCE.md#imported-lyrics-and-short-note-repair--2026-09-14-jst).
+Fusion now uses resolved Basic Pitch peaks, one reward per physical attack,
+shared nearby acoustic attack evidence, and duration-additive continuous pitch
+fit. All selected experts remain available. A resampling overhang repair clips
+only unresolved search scopes to the actual source, preserving measured-time
+validation.
+
+Five public recordings ran the seven native models. On the three recordings
+with annotation scores withheld during tuning, false internal cuts fall
+**308 → 35**, onset/pitch F1 **61.0% → 85.2%**, offset F1 **35.0% → 59.4%** and
+recall **87.5% → 89.6%**. The original Asphodelos same-evidence replay reduces
+notes below 100 ms **52 → 20** while retaining **361/361 characters**, all
+measured words and raw continuous pitch. Its 179 unresolved timing units remain
+explicit. Long tails and displaced expert boundaries still need work: GAME
+alone has higher onset/pitch F1 on the two calibration recordings.
+
+The final Engine suite passes 364 tests with two ignored; strict all-target
+Engine Clippy and the debug CLI/example build pass. The final Vocadito chart
+exports successfully to UTZ and UltraStar with all 68 notes and 129 characters;
+both FLAC streams decode fully. Public sources, independent
+annotation definitions, calibration/validation split and limitations are in
+[the measurement report](NOTE_TRANSCRIPTION_EVALUATION.md#public-singing-measurements--2026-09-14).
+See [21J's current review](../tasks/final-features/followups/21J_MELODY_PATH_SCORE_COHERENCE.md#public-data-fusion-repair--2026-09-14-jst)
+for evidence and remaining work. This is scoped algorithm verification; installed
+charts and model readiness are unchanged.
 
 ## Lyric sentences and Workflow quantization
 

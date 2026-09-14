@@ -1,12 +1,83 @@
 # 21J — Melody Path and Score Coherence
 
-**State:** `NEEDS_REVIEW` — imported-text and word-boundary repair passes real retained-pool replay and focused tests; fresh alignment, overall fragmentation reduction and listening quality remain unqualified.
+**State:** `NEEDS_REVIEW` — fresh native runs and heldout human annotations demonstrate fewer false cuts; unresolved lyrics, remaining note/offset errors and listening quality need review.
 
 **Parent:** Card 21 final design-parity audit
 
 **Task class:** Analysis Engine algorithm-quality convergence; no new user-facing tuning surface required
 
+## Public-data fusion repair — 2026-09-14 JST
+
+Fresh native model runs and independent human note annotations now demonstrate
+fewer false cuts. The tested source is `d5d1df49103eaafa4641d108b55ce5a6bcd26a69`.
+Five public recordings (383.671 seconds, 642 annotated notes) ran RMVPE, FCPE,
+Basic Pitch, GAME, JBM, ROSVOT and Qwen. Two CSD recordings informed calibration;
+two further CSD recordings and one Vocadito recording were scored only after
+final source selection. Human pitches/timestamps were not model inputs.
+
+Compared with control `ad9af564` on identical fresh raw evidence, the three
+validation recordings reduce extra internal cuts **308 → 35**. Onset/pitch
+precision is **46.8% → 81.3%**, recall **87.5% → 89.6%**, F1 **61.0% → 85.2%**,
+and F1 including offsets **35.0% → 59.4%**. Missing reference coverage is unchanged;
+each validation recording improves both F1 measures and recall. The final
+calibration F1 is 84.8%, but its recall drops from 88.6% to 87.2%. This does not
+qualify every melody or boundary.
+
+The changes combine source-local Basic Pitch peak detection, shared acoustic
+attack matching, physical-event reward deduplication, duration-additive continuous
+pitch fit, and ordered lyric ownership projected onto existing local note edges.
+No expert is disabled or substituted as an unconditional winner. Original text
+and measured timing remain authoritative; unresolved timing remains visible.
+Vocadito also exposed a 5 microsecond resampling overhang: unresolved search
+scopes are intersected with the actual source interval without relaxing measured
+timestamp validation.
+
+Asphodelos fresh inference is recorded at `20260914T023253-887b6ac61b1e`.
+Its same-evidence final replay yields **588 → 505 pitched notes**, **52 → 20 below
+100 ms**, and **185 → 117 touching same-MIDI notes**. All four comparison paths
+cover 176.760 pitched seconds and preserve 361 characters, caller ranges, measured
+words, all lyric units and continuous F0. The final projection changes no
+canonical-note geometry relative to the preceding integrated implementation.
+The historical 575/40 chart is a different-input comparison, not the control.
+
+Evidence and detailed qualifications:
+
+- [Public sources, method, per-recording measurements and operation receipts](../../../docs/NOTE_TRANSCRIPTION_EVALUATION.md#public-singing-measurements--2026-09-14).
+  Raw results: `test-artifacts/public-singing-validation/results-summary.json`.
+- Original-song report:
+  `test-artifacts/lyric-note-model-validation/final-regression-report.md`;
+  final report receipt `20260914T041357-a6d322aaf2fb`.
+- Final Engine **364 passed, two ignored**
+  (`20260914T040704-9875217203fc`), strict all-target Engine Clippy passed
+  (`20260914T040932-4c58bc3a5b4c`), debug CLI and replay example built
+  (`20260914T040807-085a585c3214`).
+
+- Actual final Vocadito chart exports to UTZ and UltraStar in an isolated library:
+  both retain 68 notes and 129 caller characters; UTZ's embedded chart is
+  semantically identical. Both full FLAC streams decode successfully.
+  UltraStar's 50 ms grid causes at most 24.921 ms displacement and its format
+  omits cents and unresolved-timing flags. Existing UltraStar 10/10 and UTZ
+  full-text round-trip 1/1 tests pass. Receipts and exact format differences are
+  in the public measurement report and
+  `test-artifacts/public-singing-validation/export-final/verification/summary.json`.
+
+Next quality work is concrete: reduce long note tails and preserve correct
+expert boundaries that fusion currently displaces. On the two calibration
+recordings, standalone GAME still has higher onset/pitch F1 (90.6% versus 84.8%);
+fusion has slightly higher offset F1 (51.2% versus 50.4%). Asphodelos still has
+179 unresolved alignment units. Its local F0/target differences near 105.43 and
+149.09 seconds require musical review, not automatic relabeling of ornaments.
+The earlier Wayland smoke verified retained text and registered actions; it is
+not final-code continuous audition or final visual acceptance.
+
+No user source/cache/library or installed binary was replaced. Model
+`integration_ready` / `production_ready` status is unchanged; 21J remains
+`NEEDS_REVIEW` for timing, remaining transcription errors and listening quality.
+
 ## Imported lyrics and short-note repair — 2026-09-14 JST
+
+Historical stage before the fresh-inference measurements above; its counts and
+next actions describe that earlier retained-pool verification.
 
 The reported song is **Asphodelos / Rena**, latest run
 `studio-auto-356563-1789347980852467641-1`. Its retained caller text has 26 lines

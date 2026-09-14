@@ -962,22 +962,31 @@ with the OpenCL loader unresolved, and a 32-bit OpenCL loader); each fix is a se
 
 ## Imported lyric fidelity and note boundaries — 2026-09-14
 
-Asphodelos source repair preserves all imported text even when alignment timing is
-unresolved, separates measured word intervals, and removes the reported 170 ms
-LRC-induced empty prefix. The editor marks unconfirmed timing without dropping
-text; UTZ/UltraStar retain it. Sustained Basic Pitch activation now contributes one
-onset event rather than repeated 100 ms cuts. Existing pitch, gap and boundary
-protections remain.
+Fresh seven-model native inference plus same-evidence fusion/projection replay
+now verifies reduced fragmentation. Five public recordings total 383.671 seconds
+and 642 human notes; two are calibration and three were scored only after final
+source selection. On the three validation recordings, extra internal cuts fall
+**308 → 35**, onset/pitch F1 **61.0% → 85.2%**, offset F1 **35.0% → 59.4%**, and
+recall **87.5% → 89.6%**, with missing coverage unchanged.
 
-The retained real candidate-pool replay preserves 361/361 characters (previously
-180), with 78 marked groups. Current projection has 588 pitched notes, 52 under
-100 ms, versus 575/40 previously: complete word timing adds explicit boundaries,
-and this replay cannot prove the new onset detector reduces real-song fragments.
-No new model inference occurred. Engine 325, core 495, UTZ 14 and the desktop
-lyric-command test pass; debug executables build and isolated Wayland renders the
-repaired text. Engine strict Clippy passes; unchanged core warnings block the
-combined check. 21J remains `NEEDS_REVIEW`, and readiness is unchanged.
-See [current repair and evidence](../final-features/followups/21J_MELODY_PATH_SCORE_COHERENCE.md#imported-lyrics-and-short-note-repair--2026-09-14-jst).
+The source combines resolved Basic Pitch peaks, shared acoustic attacks,
+physical-event reward deduplication, continuous-pitch duration scoring and
+ordered lyric ownership projected onto existing local note edges. Imported text
+remains intact even when timing fails; the reported held-note word split and
+empty LRC prefix are repaired. Asphodelos now has **505 pitched notes / 20 below
+100 ms**, versus **588 / 52** for the same fresh evidence under the control.
+All 361 characters, word measurements, caller scopes and raw F0 remain intact;
+179 alignment units are still marked unresolved.
+
+At source `d5d1df49`, Engine **364 tests pass, two ignored**, strict Engine Clippy
+passes, and debug CLI/example builds. The final Vocadito chart exports to both
+UTZ and UltraStar with all 68 notes and 129 characters; both full FLAC decodes
+and focused export regressions pass. Long tails, some displaced expert onsets,
+Japanese unresolved timing and final continuous audition remain open. Standalone
+GAME is still stronger on calibration onset/pitch F1. 21J stays `NEEDS_REVIEW`;
+model integration/production readiness and installed user charts are unchanged.
+See [current fusion evidence](../final-features/followups/21J_MELODY_PATH_SCORE_COHERENCE.md#public-data-fusion-repair--2026-09-14-jst)
+and [public-data measurements](../../docs/NOTE_TRANSCRIPTION_EVALUATION.md#public-singing-measurements--2026-09-14).
 
 ## Note-fusion regression — source repaired, real-song quality review open (2026-09-11)
 
