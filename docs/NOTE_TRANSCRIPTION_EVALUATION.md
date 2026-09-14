@@ -42,7 +42,9 @@ Every match includes signed onset, offset and pitch errors. Each score includes
 their mean and median absolute error, 90th and 95th absolute percentiles and
 maximum error. When multiple maximum matchings exist, deterministic local
 edge ordering resolves ties; the error distribution does not claim globally
-minimum matching error.
+minimum matching error. The overlap ratio uses mir_eval's signed
+intersection/span formula: a very short pair that passes the timing tolerances
+without actually overlapping can have a negative ratio.
 
 Additional per-reference diagnostics are deliberately separate from mir_eval:
 

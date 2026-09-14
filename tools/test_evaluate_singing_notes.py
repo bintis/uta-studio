@@ -64,6 +64,11 @@ class SingingNoteEvaluationTests(unittest.TestCase):
         matching = EVALUATION.maximum_matching([[0, 1], [0]], 2)
         self.assertEqual(matching, [(0, 1), (1, 0)])
 
+    def test_overlap_ratio_follows_official_expression_for_short_disjoint_matches(self):
+        result = EVALUATION.evaluate([note(0, 10_000)], [note(20_000, 30_000)])
+        self.assertEqual(result["onset_pitch_offset"]["matched_notes"], 1)
+        self.assertAlmostEqual(result["onset_pitch_offset"]["average_overlap_ratio"], -1.0 / 3.0)
+
     def test_tolerance_boundaries_are_inclusive_and_configurable(self):
         reference = [note(0, 1_000_000)]
         prediction = [note(50_000, 1_200_000, 60.5)]

@@ -204,7 +204,10 @@ def matching_metrics(reference, prediction, matching):
             "pitch_error_cents": (actual["midi"] - expected["midi"]) * 100.0,
         })
         union = max(expected["end"], actual["end"]) - min(expected["start"], actual["start"])
-        overlaps.append(overlap_duration(expected, actual) / union)
+        # Match mir_eval's signed intersection/span expression exactly.
+        # A very short pair can pass onset/offset tolerances without overlap.
+        intersection = min(expected["end"], actual["end"]) - max(expected["start"], actual["start"])
+        overlaps.append(intersection / union)
     return {
         "matched_notes": matched_count,
         "false_positive_notes": len(prediction) - matched_count,
