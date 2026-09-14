@@ -39,4 +39,28 @@ for the missing word. `lyric_timing` consequently fell back to the unbounded
 original search scope. Textual ownership order was correct, timeline order was
 not. The unresolved scope is not evidence of when the word was sung.
 
-Implementation and measured outcomes will be recorded below after execution.
+## First implemented repair
+
+Commit `e8f8f78` replaces whole-line fallback with a linear two-pass projection
+bounded by preceding/following measured words. A missing word with no available
+positive interval keeps an explicitly unresolved point marker; it is not counted
+as correct timing and does not create a zero-length or synthetic pitched note.
+UTZ permits duration zero only on unresolved lyric timing, not resolved words or
+notes. Engine artifact tests: 76 passed (`20260914T084649-088797d89ce3`); UTZ:
+17 passed (`20260914T084701-5d50a23ab3db`). Real-evidence replays are recorded
+separately; these unit tests do not establish acoustic accuracy.
+
+## Ordered acoustic timestamp experiment
+
+Before inspecting new validation outputs, CSD kr004a, kr006a, kr007a and kr008a
+were reserved (`20260914T085410-c5eca6fe72af`, `data/selection.json`). Calibration
+remains kr001a/kr003a. The older five recordings are not new holdouts.
+
+The next native experiment replaces interpolation of independent classifier
+peaks with the exact maximum-total-logit nondecreasing timestamp sequence. It
+uses all classifier alternatives, preserves raw independent peaks, allows equal
+timestamps (missing words remain unresolved), and imposes no invented positive
+duration. This is a new decoding algorithm, **not** official Qwen postprocessing
+parity. Both native GGML and LibTorch routes use the same Rust implementation.
+Exhaustive small-state tests check its optimum independently. Changes in resolved
+coverage alone will not be reported as accuracy improvements.

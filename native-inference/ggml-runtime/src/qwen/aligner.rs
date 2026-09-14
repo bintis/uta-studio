@@ -6,7 +6,7 @@ use std::time::Instant;
 pub use super::alignment_windows::{AlignmentWindowTrace, AudioScope};
 use super::frontend::Frontend;
 use super::model::ModelKind;
-use super::timestamps::correct_timestamp_ms;
+use super::timestamps::ordered_timestamp_ms;
 use super::weights::Qwen;
 
 const MAX_ALIGNMENT_SAMPLES: usize = 4 * 60 * 60 * super::frontend::SAMPLE_RATE;
@@ -152,7 +152,10 @@ impl Qwen {
                     .ok_or_else(|| "Qwen timestamp multiplication overflow".to_string())
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let corrected_timestamp_ms = correct_timestamp_ms(&raw_timestamp_ms);
+        // Decode the joint ordered hypothesis from acoustic logits, rather
+        // than discarding their alternatives and interpolating independent peaks.
+        let corrected_timestamp_ms =
+            ordered_timestamp_ms(&logits.values, logits.classes, period_ms)?;
         let aligned = words
             .iter()
             .enumerate()

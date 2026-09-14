@@ -38,9 +38,9 @@ fn unresolved(word: &str, scope: AudioScope, reason: &str) -> AlignedWord {
     }
 }
 
-/// Keep classifier output and its official correction, but never turn a
-/// collapsed/reversed range into a fabricated positive-duration word. An
-/// unresolved word carries the audio search scope, explicitly not a word time.
+/// Keep independent classifier peaks and the ordered acoustic hypothesis.
+/// A collapsed hypothesis remains unresolved; positive intervals come from
+/// classifier evidence, never interpolation or a minimum-duration rule.
 pub(super) fn resolve_local_timing(alignment: &mut Alignment, sample_count: usize, period_ms: u64) {
     let source_ms = millis(sample_count);
     let scope = AudioScope {
@@ -49,18 +49,14 @@ pub(super) fn resolve_local_timing(alignment: &mut Alignment, sample_count: usiz
     };
     let mut previous_end = 0;
     for (index, word) in alignment.words.iter_mut().enumerate() {
-        let raw_start = alignment.raw_timestamp_ms[index * 2];
-        let raw_end = alignment.raw_timestamp_ms[index * 2 + 1];
         let start = alignment.corrected_timestamp_ms[index * 2];
         let end = alignment.corrected_timestamp_ms[index * 2 + 1];
         let reason = if !word.text.chars().any(char::is_alphanumeric) {
             Some("nonlexical_unit")
-        } else if raw_end <= raw_start || end <= start {
+        } else if end <= start {
             Some("collapsed_timestamp")
         } else if start >= source_ms || end > source_ms.saturating_add(period_ms) {
             Some("outside_audio_window")
-        } else if start.abs_diff(raw_start) > period_ms || end.abs_diff(raw_end) > period_ms {
-            Some("large_timestamp_correction")
         } else if start < previous_end {
             Some("nonmonotonic_timestamp")
         } else {
@@ -332,6 +328,23 @@ mod tests {
         assert_eq!(alignment.words[1].end_seconds, 1.0);
         assert!(alignment.words[2].timing_issue.is_none());
         assert_eq!(&alignment.raw_timestamp_ms[2..4], &[240, 240]);
+    }
+
+    #[test]
+    fn ordered_acoustic_alternative_can_resolve_reversed_independent_peaks() {
+        let words = vec!["first".to_string(), "second".to_string()];
+        let mut alignment = prediction(&words, &[(80, 160), (160, 240)], SAMPLE_RATE);
+        alignment.raw_timestamp_ms = vec![80, 240, 80, 240];
+        resolve_local_timing(&mut alignment, SAMPLE_RATE, 80);
+        assert!(
+            alignment
+                .words
+                .iter()
+                .all(|word| word.timing_issue.is_none())
+        );
+        assert_eq!(alignment.words[0].end_seconds, 0.16);
+        assert_eq!(alignment.words[1].start_seconds, 0.16);
+        assert_eq!(alignment.raw_timestamp_ms, [80, 240, 80, 240]);
     }
 
     #[test]
