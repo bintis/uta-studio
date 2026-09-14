@@ -1,6 +1,6 @@
 # Remaining Models + Final Feature Closure — State
 
-**Updated:** 2026-09-11 (after Super scheduling, note fusion and caller word-alignment regression verification)
+**Updated:** 2026-09-14 (fusion activity, independent lyric timing and measured regression follow-up)
 **Owner:** Rust + upstream-GGML migration
 
 This file stores current effective state only. Historical execution evidence remains in its original records; current source and focused tests override stale historical conclusions. Durable cross-cutting conclusions live in `docs/KEY_CONCLUSIONS.md`.
@@ -960,7 +960,54 @@ diagnostic operations preceded the pass (missing `libz.so.1`, a compute-runtime 
 with the OpenCL loader unresolved, and a 32-bit OpenCL loader); each fix is a separate commit
 (`f0062fc`, `e6884b2`, `ccaacee`). Details: `summary.json` in the evidence root.
 
+## Fusion activity and lyric timing follow-up — 2026-09-14
+
+Current evidence supersedes the historical `d5d1df49` snapshot below. The same
+two CSD recordings remain calibration; the three previously scored recordings
+are regression checks, **not a new heldout sample**. Native note-expert credit
+is deduplicated and located at observed vocal recovery; explicit unpitched
+states represent unsupported time without weakening exact path coverage.
+Independent `LyricTiming` keeps successive words on their selected melody note
+without fabricating attacks at word boundaries. Short notes are not filtered,
+all model candidates remain available, and installed runtimes are unchanged.
+
+Versus `d5`, calibration extra cuts fall **13 → 9**, onset/pitch F1
+**84.79% → 85.92%**, and F1 with offsets **51.15% → 58.69%**. Prior-validation
+regressions fall **35 → 25** cuts, with F1 **85.21% → 85.68%** and offset F1
+**59.38% → 64.43%**. Matched onsets decline 184 → 183 and 386 → 383,
+respectively. Standalone GAME still leads calibration onset/pitch F1 at
+**90.56%**. Vocadito A1 declines to **64.62% / 30.77%** onset/offset F1, with
+9 → 11 cuts and 0.160 → 0.359 seconds uncovered. Aggregate improvement does
+not mean every recording improves. Calibration-only utility simulation supports
+retaining 0.6; no regression annotation selected parameters.
+
+The original Japanese song preserves **26 original timed LRC scopes and all
+361 characters**. Lexical segmentation changes 357 character units to 236 word
+units; unresolved units 179 → 98 are not comparable denominators. The fair
+unresolved-character comparison is **181 → 144**. Long repeated-vowel Korean
+alignment still regresses **169 → 186** unresolved units. The reviewed timestamp
+postprocessor agrees with the official implementation; long-context numerical
+and singing-quality equivalence remain unestablished.
+
+Retaining the prior six non-alignment outputs with new Qwen evidence produces
+**499 pitched notes / 12 below 100 ms**, versus `d5` **505 / 20**. A separate
+fresh **B580 seven-model** execution produces **493 / 11**; all 361 characters
+and original caller scopes remain. Evidence:
+`test-artifacts/singing-boundary-alignment-followup/results-summary.json`,
+`fresh-execution-summary.json`, and the Qwen context reports in that root.
+
+The current kr002a chart retains all 231 characters but fails ordered-text
+preservation; its finalizer correction and replay are still being verified.
+Two original-song B580 Wayland chart captures are available; public-chart UI
+and continuous audio verification remain in progress. No final UI/audio pass is
+claimed. 21J remains `NEEDS_REVIEW`, and model integration/production readiness
+is unchanged. See [current fusion follow-up](../final-features/followups/21J_MELODY_PATH_SCORE_COHERENCE.md#fusion-activity-and-independent-lyric-timing--2026-09-14-jst)
+and [measurement method](../../docs/NOTE_TRANSCRIPTION_EVALUATION.md).
+
 ## Imported lyric fidelity and note boundaries — 2026-09-14
+
+**Historical d5 snapshot.** The current follow-up above supersedes these
+measurements and next actions; this section retains the earlier evidence.
 
 Fresh seven-model native inference plus same-evidence fusion/projection replay
 now verifies reduced fragmentation. Five public recordings total 383.671 seconds

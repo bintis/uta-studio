@@ -1,12 +1,116 @@
 # 21J — Melody Path and Score Coherence
 
-**State:** `NEEDS_REVIEW` — fresh native runs and heldout human annotations demonstrate fewer false cuts; unresolved lyrics, remaining note/offset errors and listening quality need review.
+**State:** `NEEDS_REVIEW` — current native measurements reduce false cuts and improve aggregate offsets; lyric order, alignment and per-recording regressions remain under review.
 
 **Parent:** Card 21 final design-parity audit
 
 **Task class:** Analysis Engine algorithm-quality convergence; no new user-facing tuning surface required
 
+## Fusion activity and independent lyric timing — 2026-09-14 JST
+
+This follow-up supersedes the `d5d1df49` quality snapshot below. It reuses the
+same two CSD calibration recordings. The three previously scored validation
+recordings are now **regressions, not a new heldout sample**; their annotations
+did not select the new parameters. Human note times and pitches remain evaluation
+inputs only.
+
+The decoder now represents unsupported vocal intervals as explicit unpitched
+states while retaining exact path coverage. Native note-expert onset observations
+receive source-local credit once; observations inside unsupported time refer to
+the recovery of vocal activity instead of paying for an early pitched fragment.
+Continuous F0, independent acoustic support and all expert candidates remain
+available. No short-note filter or unconditional GAME winner was introduced.
+
+A separate finalizer defect was still creating pitch attacks at word boundaries.
+`LyricTiming` now carries each text token's absolute interval independently of
+the hosting note. Successive words such as `切` / `に` can keep distinct times
+on one measured note. Finalization preserves selected pitched IDs and geometry,
+including real reattacks; unresolved words retain explicit audition scopes.
+Editor lyric edits, note edits and multi-token clipboard operations preserve this
+distinction. UTZ stores these intervals; UltraStar joins the words on their note
+because that export format cannot retain independent word events.
+
+Measured results against the previous `d5d1df49` output:
+
+| Recordings | Extra internal cuts | Onset/pitch F1 | F1 including offsets | Matched onsets |
+|---|---:|---:|---:|---:|
+| Two calibration recordings | 13 → **9** | 84.79% → **85.92%** | 51.15% → **58.69%** | 184 → 183 |
+| Three prior-validation regressions | 35 → **25** | 85.21% → **85.68%** | 59.38% → **64.43%** | 386 → 383 |
+
+These aggregate gains do not establish uniform improvement. Standalone GAME
+still has **90.56%** onset/pitch F1 on calibration, above fusion's 85.92%.
+Vocadito A1 declines from 66.14% to **64.62%** onset/pitch F1 and from 31.50% to
+**30.77%** with offsets; its extra cuts increase 9 → 11 and uncovered reference
+time 0.160 → 0.359 seconds. Regression-group uncovered time increases
+1.433 → 1.631 seconds. Calibration uncovered time stays 0.219 seconds, while
+time covered only by wrong pitch rises 1.582 → 1.621 seconds.
+
+The native onset utility remains **0.6**. A calibration-only Python scan of
+0.4, 0.6, 0.8, 1.0 and 1.2 found no stable joint improvement in onset/offset F1,
+cuts and coverage. At 0.8, three additional matched onsets cost nine additional
+predicted notes and aggregate F1 declines. Current 0.6 simulation reproduces all
+published note geometry and cents; selected pitched IDs match 97/97 and 117/118,
+with the remaining proposal differing by one F0 ULP. Alternative weights were
+not replayed in Rust, and selected rest IDs are not exposed by that replay
+artifact. This scan explains retaining the measured current setting; it does not
+qualify the alternatives as native results.
+
+Qwen context and Japanese segmentation were rerun natively. The original song's
+**26 timed LRC scopes, exact caller text and 361 non-whitespace characters remain
+unchanged**. Character units change from 357 to 236 lexical units, so comparing
+179 unresolved character units directly with 98 unresolved lexical units would
+overstate the gain. The comparable count is unresolved characters:
+**181 → 144**. Keeping character segmentation while changing context alone gives
+181 → 170 unresolved characters. Positive-duration output is not an independent
+word-timing accuracy annotation.
+
+The longer repeated-vowel Korean recording remains a counterexample:
+unresolved units increase **169 → 186**. Read-only comparison reproduces the
+official timestamp postprocessor exactly for all five new public outputs, but
+does not establish native-versus-official tensor/logit parity. Its 138-second
+duration does not exceed the reviewed duration ranges; the timestamp head's
+400-second span is representational capacity, not a demonstrated singing-quality
+range. No new threshold was tuned on this regression.
+
+The original-song evidence separates two comparisons:
+
+- Retaining the prior six non-alignment model outputs and using new Qwen evidence
+  gives **499 pitched notes / 12 below 100 ms**, versus historical `d5`
+  **505 / 20**. The changed alignment input is explicit; this is not identical
+  raw evidence across all seven models.
+- A new B580 execution of RMVPE, Qwen alignment, FCPE, Basic Pitch, GAME large,
+  JBM and ROSVOT gives **493 pitched notes / 11 below 100 ms**, with 175.870
+  pitched seconds. It preserves all 361 characters and the 26 caller scopes.
+  These are fresh model measurements, not proof that every surviving short note
+  or musical boundary is correct.
+
+Evidence root: `test-artifacts/singing-boundary-alignment-followup/`.
+The current measurements are in `results-summary.json` and
+`fresh-execution-summary.json`; original-song replay summaries are
+`replays/original/{words,fresh}/summary.json`. Alignment evidence is in
+`qwen-public-context-coverage.json`,
+`qwen-full-context/japanese-context-and-tokenization-comparison.json` and
+`qwen-full-context/context-limit-review.json`. The retained utility decision
+and simulation limitations are in `calibration-native-utility-comparison.json`.
+See also the [evaluation method and results](../../../docs/NOTE_TRANSCRIPTION_EVALUATION.md).
+
+One current artifact still fails ordered lyric preservation: `csd-kr002a`
+contains all 231 characters but reports `original_text_in_order: false`.
+The finalizer repair and its replay verification are in progress; complete
+ordered-text acceptance is therefore not claimed. Two original-song charts have
+been opened and captured in the B580 Wayland editor; public-chart visual checks
+and continuous audio verification are still in progress. No final UI/audio pass
+or new release qualification is recorded here.
+
+Installed runtimes and user source media remain unchanged. Card 21J stays
+`NEEDS_REVIEW`; no model's `integration_ready` or `production_ready` status is
+promoted. Remaining work is ordered-text verification, long/repeated-word
+alignment, displaced expert onsets, Vocadito's regression and musical audition.
+
 ## Public-data fusion repair — 2026-09-14 JST
+
+**Historical d5 snapshot.** Superseded by the follow-up above; the counts,
+verification and next actions in this section describe that earlier source.
 
 Fresh native model runs and independent human note annotations now demonstrate
 fewer false cuts. The tested source is `d5d1df49103eaafa4641d108b55ce5a6bcd26a69`.
