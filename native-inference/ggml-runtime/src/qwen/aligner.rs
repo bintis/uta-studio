@@ -63,15 +63,19 @@ impl Qwen {
         if samples.len() > MAX_ALIGNMENT_SAMPLES {
             return Err("Qwen alignment input exceeds the four-hour contract limit".to_string());
         }
-        let maximum = self
-            .config
-            .encoder_window_mel
-            .checked_mul(super::frontend::HOP)
-            .ok_or("Qwen alignment window size overflow")?;
         let period = self
             .config
             .timestamp_millis
             .ok_or("Qwen timestamp period is missing")?;
+        // Encoder attention windows partition acoustic visibility, not the
+        // transcript. Keep each caller scope together while the timestamp head
+        // can represent it; its class count and period supply the actual range.
+        let maximum = timestamp_context_samples(
+            self.config
+                .timestamp_classes
+                .ok_or("Qwen timestamp classifier width is missing")?,
+            period,
+        )?;
         super::alignment_windows::align_scoped(
             samples,
             words,
@@ -174,6 +178,15 @@ impl Qwen {
     }
 }
 
+fn timestamp_context_samples(classes: usize, period_ms: usize) -> Result<usize, String> {
+    classes
+        .checked_mul(period_ms)
+        .and_then(|millis| millis.checked_mul(super::frontend::SAMPLE_RATE))
+        .map(|samples| samples / 1_000)
+        .filter(|samples| *samples > 0)
+        .ok_or_else(|| "Qwen timestamp context geometry overflows or is empty".to_string())
+}
+
 fn argmax(row: &[f32]) -> Result<u32, String> {
     let index = row
         .iter()
@@ -192,5 +205,63 @@ mod tests {
     fn argmax_is_deterministic_and_rejects_empty_rows() {
         assert_eq!(argmax(&[1.0, 4.0, 4.0, 2.0]).unwrap(), 2);
         assert!(argmax(&[]).is_err());
+    }
+
+    #[test]
+    fn a_whole_song_scope_reaches_the_decoder_with_its_complete_transcript() {
+        let maximum = timestamp_context_samples(5_000, 80).unwrap();
+        assert_eq!(maximum, 400 * super::super::frontend::SAMPLE_RATE);
+        let samples = vec![0.0; 55 * super::super::frontend::SAMPLE_RATE];
+        let words = vec!["unit".to_string(); 108];
+        let scopes = vec![None; words.len()];
+        let mut calls = 0;
+        let aligned = super::super::alignment_windows::align_scoped(
+            &samples,
+            &words,
+            &scopes,
+            maximum,
+            80,
+            |audio, units| {
+                calls += 1;
+                assert_eq!(audio.len(), samples.len());
+                assert_eq!(units, words.as_slice());
+                let raw_timestamp_ms = (0..units.len())
+                    .flat_map(|index| [index as u64 * 480, index as u64 * 480 + 400])
+                    .collect::<Vec<_>>();
+                Ok(Alignment {
+                    words: units
+                        .iter()
+                        .enumerate()
+                        .map(|(index, word)| AlignedWord {
+                            text: word.clone(),
+                            start_seconds: index as f64 * 0.48,
+                            end_seconds: index as f64 * 0.48 + 0.4,
+                            timing_issue: None,
+                        })
+                        .collect(),
+                    raw_classes: raw_timestamp_ms
+                        .iter()
+                        .map(|value| (value / 80) as u32)
+                        .collect(),
+                    corrected_timestamp_ms: raw_timestamp_ms.clone(),
+                    raw_timestamp_ms,
+                    windows: Vec::new(),
+                    prompt_tokens: units.len() * 3,
+                    encoder_seconds: 0.0,
+                    decoder_seconds: 0.0,
+                })
+            },
+            &mut |_, _| {},
+        )
+        .unwrap();
+        assert_eq!(calls, 1);
+        assert_eq!(aligned.words.len(), words.len());
+        assert!(aligned.words.iter().all(|word| word.timing_issue.is_none()));
+    }
+
+    #[test]
+    fn timestamp_context_tracks_the_loaded_head_geometry() {
+        assert_eq!(timestamp_context_samples(1_000, 40).unwrap(), 40 * 16_000);
+        assert!(timestamp_context_samples(usize::MAX, 80).is_err());
     }
 }
