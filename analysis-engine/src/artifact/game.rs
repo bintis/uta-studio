@@ -108,6 +108,10 @@ pub fn parse_game_evidence(
     let source_end = source_start
         .checked_add(source_duration)
         .ok_or_else(|| invalid("GAME source timeline overflows"))?;
+    // Resampling may round up the final partial source sample. The worker
+    // reports its own sample clock; canonical notes must stay on the original
+    // source. This is a sub-sample projection, not a note-boundary tolerance.
+    let sample_micros = u64::from(CANONICAL_TIMEBASE).div_ceil(raw.sample_rate as u64);
     let mut previous_end = source_start;
     let mut notes = Vec::with_capacity(raw.notes.len());
     for note in raw.notes {
@@ -128,11 +132,16 @@ pub fn parse_game_evidence(
         let end = start
             .checked_add(local_duration)
             .ok_or_else(|| invalid("GAME note end overflows"))?;
-        if start < previous_end || end <= start || end > source_end.saturating_add(1) {
+        if start < previous_end
+            || end <= start
+            || end > source_end.saturating_add(sample_micros)
+            || start >= source_end
+        {
             return Err(invalid(
                 "GAME notes overlap or exceed the decoded source timeline",
             ));
         }
+        let end = end.min(source_end);
         previous_end = end;
         notes.push(GameNoteEvidence {
             range: TimeRange { start, end },
@@ -332,6 +341,37 @@ mod tests {
         assert_eq!(evidence.notes.len(), 721);
         assert_eq!(evidence.notes[0].range.start, 0);
         assert_eq!(evidence.notes.last().unwrap().range.end, cursor);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn resampled_last_sample_stays_inside_original_source_without_losing_the_note() {
+        let path = write_game_notes(serde_json::json!([
+            {"start":0.0,"duration":7.5,"midi":60.25,"voiced":true},
+            {"start":7.5,"duration":0.09,"midi":62.5,"voiced":true}
+        ]));
+        for source_start in [0, 100_000_000] {
+            let evidence = parse_game_evidence(&path, source_start, 7_589_979).unwrap();
+            assert_eq!(evidence.notes.len(), 2);
+            assert_eq!(evidence.notes[0].range.end, source_start + 7_500_000);
+            assert_eq!(evidence.notes[1].range.start, source_start + 7_500_000);
+            assert_eq!(evidence.notes[1].range.end, source_start + 7_589_979);
+            assert_eq!(evidence.notes[1].midi, 62.5);
+        }
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn endpoint_projection_does_not_hide_a_real_source_overrun_or_empty_note() {
+        let path = write_game_notes(serde_json::json!([
+            {"start":0.0,"duration":7.59,"midi":60.0,"voiced":true}
+        ]));
+        assert!(parse_game_evidence(&path, 0, 7_589_900).is_err());
+        std::fs::remove_file(path).unwrap();
+        let path = write_game_notes(serde_json::json!([
+            {"start":7.59,"duration":0.00001,"midi":60.0,"voiced":true}
+        ]));
+        assert!(parse_game_evidence(&path, 0, 7_590_000).is_err());
         std::fs::remove_file(path).unwrap();
     }
 
