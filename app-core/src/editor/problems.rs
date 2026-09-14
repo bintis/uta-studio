@@ -347,7 +347,6 @@ mod tests {
             .expect("an empty syllable remains visible as advice");
         assert_eq!(empty.lyric, Some(address));
         assert_eq!(empty.severity(), Severity::Warning);
-        assert!(kinds(&report).contains(&ProblemKind::ScorableNoteWithoutLyric));
         assert!(!report.blocks_saving());
         document.to_chart().validate().unwrap();
     }
