@@ -6446,6 +6446,7 @@ dependencies = [
  "serde_json",
  "unicode-normalization",
  "uta-ggml-runtime",
+ "uta-model-settings",
 ]
 
 [[package]]

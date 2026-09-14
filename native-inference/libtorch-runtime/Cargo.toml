@@ -15,5 +15,6 @@ unicode-normalization = "0.1"
 # Shared canonical host DSP/decoding and evidence types only. These callbacks
 # never construct a GGML runtime or invoke its learned model graphs.
 uta-ggml-runtime = { path = "../ggml-runtime" }
+uta-model-settings = { path = "../../model-settings" }
 
 [dev-dependencies]
