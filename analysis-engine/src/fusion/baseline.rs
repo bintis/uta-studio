@@ -361,7 +361,12 @@ fn continuous_pitch_fit(
     let end = observations.partition_point(|observation| observation.range.start < range.end);
     let error_rate = |hz: f32| {
         let cents = 1_200.0_f64 * (f64::from(hz) / f64::from(target_hz)).log2();
-        (cents.abs() - 50.0).max(0.0) / 100.0
+        // A transient glide or tracker octave excursion is not an arbitrarily
+        // strong reason to invent a new musical note. Bound each observation's
+        // influence before integration; long disagreements still accumulate,
+        // and splitting the same observations cannot change their total cost.
+        // This robust-loss scale is not the evaluation pitch tolerance.
+        ((cents.abs() - 50.0).max(0.0) / 100.0).min(1.5)
     };
     let mut error_integral = 0.0_f64;
     let mut observed_duration = 0_u64;

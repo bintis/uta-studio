@@ -301,3 +301,37 @@ fn pitch_fit_stays_additive_across_offset_dsp_frames_and_subframe_cuts() {
     assert_eq!(covered_sum, whole.observed_duration);
     assert_eq!(covered_sum, 30_000);
 }
+
+#[test]
+fn isolated_large_pitch_excursions_have_bounded_but_additive_influence() {
+    let curve = measured_curve([69.0, 93.0, 69.0]);
+    let grid = Some(PitchGrid::new(100_000, 10_000, 3).unwrap());
+    let whole = fit_curve(
+        TimeRange::new(100_000, 130_000).unwrap(),
+        midi_hz(69.0),
+        &curve,
+        grid,
+    )
+    .unwrap()
+    .unwrap();
+    let left = fit_curve(
+        TimeRange::new(100_000, 115_000).unwrap(),
+        midi_hz(69.0),
+        &curve,
+        grid,
+    )
+    .unwrap()
+    .unwrap();
+    let right = fit_curve(
+        TimeRange::new(115_000, 130_000).unwrap(),
+        midi_hz(69.0),
+        &curve,
+        grid,
+    )
+    .unwrap()
+    .unwrap();
+    assert!((whole.error_integral - 0.015).abs() < 0.000001);
+    assert!((whole.error_integral - left.error_integral - right.error_integral).abs() < 0.000001);
+    assert_eq!(whole.observed_duration, 30_000);
+    assert_eq!(curve[1].hz, midi_hz(93.0));
+}
