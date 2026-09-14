@@ -780,7 +780,7 @@ mod tests {
         let mut chart = chart("ja", &[&[(0.0, 1.0, 60, "切れ", "normal")]]);
         let timebase = chart.timebase;
         let note = &mut chart.tracks[0].phrases[0].notes[0];
-        let LyricToken::Text(first) = &mut note.lyrics[0] else {
+        let utz::LyricToken::Text(first) = &mut note.lyrics[0] else {
             panic!("fixture lyric");
         };
         first.timing = Some(utz::LyricTiming {
@@ -790,12 +790,12 @@ mod tests {
         let mut second = first.clone();
         second.id = "independent-next-word".into();
         second.text = "に".into();
-        second.join_before = LyricJoin::None;
+        second.join_before = utz::LyricJoin::None;
         second.timing = Some(utz::LyricTiming {
             start: timebase * 6 / 10,
             duration: timebase * 3 / 10,
         });
-        note.lyrics.push(LyricToken::Text(second));
+        note.lyrics.push(utz::LyricToken::Text(second));
         chart.validate().expect("independent word ranges are valid");
         let before = chart.clone();
         let text = build_ultrastar_text(
