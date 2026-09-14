@@ -79,7 +79,17 @@ fn replay_published_lyrics_and_candidate_pool() {
         utz::LyricToken::Continuation { .. } => None,
     }).collect::<Vec<_>>();
     let text = tokens.iter().map(|token| token.text.as_str()).collect::<String>();
+    let reported_words = notes.iter().flat_map(|note| note.lyrics.iter().filter_map(move |token| {
+        let utz::LyricToken::Text(token) = token else { return None; };
+        (note.start >= 48_000_000 && note.start < 54_000_000
+            || note.start >= 103_000_000 && note.start < 107_000_000)
+            .then(|| serde_json::json!({
+                "id": token.id, "text": token.text, "start": note.start,
+                "duration": note.duration, "timing_unresolved": token.timing_unresolved,
+            }))
+    })).collect::<Vec<_>>();
     let summary = serde_json::json!({
+        "reported_words": reported_words,
         "scope": "existing candidate pool decoded and chart reprojected; no new candidate construction, alignment or model execution",
         "caller_nonspace_chars": compact(&singing.track.transcript.text).chars().count(),
         "chart_nonspace_chars": compact(&text).chars().count(),
@@ -102,6 +112,12 @@ fn replay_published_lyrics_and_candidate_pool() {
     }
     assert_eq!(compact(&text), compact(&singing.track.transcript.text),
         "all imported text must survive in original order");
+    let word_start = |id: &str| notes.iter().find_map(|note|
+        note.lyrics.iter().any(|token| matches!(token,
+            utz::LyricToken::Text(text) if text.id == id)).then_some(note.start));
+    assert_eq!(word_start("aligned-word-89"), Some(104_640_000),
+        "ni must retain its measured onset instead of sharing the preceding cut");
+    assert!(word_start("aligned-word-87").unwrap() < word_start("aligned-word-89").unwrap());
     assert!(!notes.iter().any(|note| note.start == 103_110_000 && note.duration == 170_000
         && note.lyrics.iter().all(|token| matches!(token, utz::LyricToken::Text(text) if text.text.is_empty()))),
         "caller line scope must not create the reported empty prefix");
