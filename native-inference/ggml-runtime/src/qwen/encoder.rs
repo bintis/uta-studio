@@ -278,13 +278,8 @@ impl Qwen {
         let attention_mask = ggml!(api, ggml_cast(context, attention_mask_input, GGML_TYPE_F16));
         let mut block_first = std::ptr::null_mut();
         for layer in 0..self.config.encoder_layers {
-            hidden = self.encoder_block(
-                context,
-                hidden,
-                geometry.valid_rows,
-                attention_mask,
-                layer,
-            )?;
+            hidden =
+                self.encoder_block(context, hidden, geometry.valid_rows, attention_mask, layer)?;
             if layer == 0 {
                 block_first = hidden;
             }
@@ -681,8 +676,18 @@ mod tests {
 
     #[test]
     fn a_single_encoder_block_remains_fully_bidirectional() {
-        assert!(encoder_attention_mask(13, 104).unwrap().iter().all(|value| *value == 0.0));
-        assert!(encoder_attention_mask(104, 104).unwrap().iter().all(|value| *value == 0.0));
+        assert!(
+            encoder_attention_mask(13, 104)
+                .unwrap()
+                .iter()
+                .all(|value| *value == 0.0)
+        );
+        assert!(
+            encoder_attention_mask(104, 104)
+                .unwrap()
+                .iter()
+                .all(|value| *value == 0.0)
+        );
     }
 
     fn read_f32(path: impl AsRef<std::path::Path>) -> Vec<f32> {
