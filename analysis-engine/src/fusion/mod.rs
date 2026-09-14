@@ -11,7 +11,7 @@ mod transcript_fusion;
 mod types;
 
 pub use alignment_fusion::{CanonicalWordBoundary, WordBoundaryEvidence, fuse_word_boundaries};
-pub(crate) use baseline::fuse_singing_evidence_with_challengers;
+pub(crate) use baseline::{basic_pitch_onsets, fuse_singing_evidence_with_challengers};
 pub use baseline::{
     BoundaryEvidenceSet, BoundarySegmentEvidence, PitchGrid, SingingFusionEvidence,
     fuse_singing_evidence,

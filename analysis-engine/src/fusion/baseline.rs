@@ -393,7 +393,7 @@ fn validate_basic_pitch_evidence(evidence: &BasicPitchEvidence) -> Result<(), St
 /// A sustained above-threshold activation is one onset event. Select its
 /// strongest measured frame before looking inside individual note regions, so
 /// cropping a long response cannot turn its tail into repeated attacks.
-pub(super) fn basic_pitch_onsets(evidence: &BasicPitchEvidence) -> Vec<(u64, f32)> {
+pub(crate) fn basic_pitch_onsets(evidence: &BasicPitchEvidence) -> Vec<(u64, f32)> {
     const ONSET_THRESHOLD: f32 = 0.5;
     const MIN_ONSET_DISTANCE: u64 = 100_000;
     let mut regions = Vec::new();

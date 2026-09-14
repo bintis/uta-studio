@@ -16,7 +16,7 @@ use crate::fusion::{
     CanonicalWordBoundary, EvidenceProvenance, ExpertTask, F0Point, HardBoundarySet,
     HarmonyMetadata, LyricsAuthority, PitchGrid, SingingFusionEvidence, SingingReviewReason,
     SingingReviewRegion, TranscriptHypothesis, TranscriptTokenEvidence, WordBoundaryEvidence,
-    attach_boundary_constraints, build_canonical_singing_track, build_review_regions,
+    attach_boundary_constraints, basic_pitch_onsets, build_canonical_singing_track, build_review_regions,
     decode_candidate_graph_with_boundaries, fuse_singing_evidence_with_challengers,
     fuse_transcripts, fuse_word_boundaries, persistent_f0_shifts, trustworthy_f0_point,
     validate_candidate_path_with_boundaries, validate_candidate_pool,
@@ -964,15 +964,13 @@ fn context_boundary_constraints(
 
     if let Some(basic_pitch) = basic_pitch {
         constraints.extend(
-            basic_pitch
-                .frames
-                .iter()
-                .filter(|frame| frame.onset_activation.is_finite() && frame.onset_activation >= 0.5)
-                .map(|frame| BoundaryConstraintEvidence {
+            basic_pitch_onsets(basic_pitch)
+                .into_iter()
+                .map(|(time, strength)| BoundaryConstraintEvidence {
                     source_expert: "basic_pitch".to_string(),
                     kind: BoundaryConstraintKind::BasicPitchOnset,
-                    time: frame.time,
-                    source_local_strength: Some(frame.onset_activation),
+                    time,
+                    source_local_strength: Some(strength),
                     calibrated_confidence: None,
                     calibration_version: Some("basic-pitch-onset-source-local".to_string()),
                     correlation_group: None,

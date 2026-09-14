@@ -1396,3 +1396,33 @@ fn caller_lyric_lines_own_their_aligned_units_including_unresolved_ones() {
             .all(|word| word.line_id.as_deref() == Some("lyric-line-0"))
     );
 }
+
+#[test]
+fn sustained_basic_pitch_response_cannot_return_as_contextual_reattacks() {
+    let mut evidence = basic_pitch();
+    evidence.frames = (0..90)
+        .map(|index| BasicPitchFrame {
+            time: index * 10_000,
+            note_activation: 0.9,
+            onset_activation: match index {
+                11 => 0.95,
+                10..=39 => 0.7,
+                51 => 0.9,
+                50..=54 => 0.6,
+                _ => 0.1,
+            },
+            contour_class: 42,
+            contour_activation: 0.8,
+        })
+        .collect();
+    let constraints =
+        context_boundary_constraints(&[], &[], "rmvpe", Some(&evidence), None);
+    let attacks = constraints
+        .iter()
+        .filter(|constraint| constraint.kind == BoundaryConstraintKind::BasicPitchOnset)
+        .collect::<Vec<_>>();
+    assert_eq!(attacks.len(), 2, "a long response is one observed attack");
+    assert_eq!(attacks[0].time, 110_000);
+    assert_eq!(attacks[1].time, 510_000, "a separated attack stays available");
+    assert!(attacks.iter().all(|attack| !(200_000..400_000).contains(&attack.time)));
+}
