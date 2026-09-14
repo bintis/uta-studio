@@ -912,6 +912,10 @@ fn has_typed_reset_between(
         || voicing_reset_times.iter().any(|time| {
             *time >= previous.range.end.saturating_sub(CONTEXT_RESET_TOLERANCE)
                 && *time <= next.range.start.saturating_add(CONTEXT_RESET_TOLERANCE)
+                // A recovery near a short state's onset already belongs to
+                // that onset, not to the following transition as well.
+                && time.abs_diff(previous.range.end) < time.abs_diff(previous.range.start)
+                && time.abs_diff(next.range.start) <= time.abs_diff(next.range.end)
         })
 }
 

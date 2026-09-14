@@ -261,3 +261,36 @@ fn nearby_acoustic_attacks_use_the_event_nearest_each_note_start() {
     assert!(!distinct_onset_supported(&first, &second));
     assert!(repeated_attack_reward(&first, &second) > 0.0);
 }
+
+#[test]
+fn a_short_recovery_cannot_reset_the_following_onset_twice() {
+    let recovery = sustain("recovery", 640_000, 660_000);
+    let held = sustain("held", 660_000, 860_000);
+    let boundaries = HardBoundarySet::default();
+    let ordinary = transition_utility(&recovery, &held, &boundaries, &[]);
+    assert!(ordinary < 0.0);
+    assert_eq!(
+        transition_utility(&recovery, &held, &boundaries, &[640_000]),
+        ordinary
+    );
+    assert_eq!(
+        transition_utility(&recovery, &held, &boundaries, &[660_000]),
+        0.0
+    );
+}
+
+#[test]
+fn a_reset_at_a_short_following_states_end_cannot_pay_for_its_start() {
+    let held = sustain("held", 0, 200_000);
+    let short = sustain("short", 200_000, 220_000);
+    let boundaries = HardBoundarySet::default();
+    let ordinary = transition_utility(&held, &short, &boundaries, &[]);
+    assert_eq!(
+        transition_utility(&held, &short, &boundaries, &[220_000]),
+        ordinary
+    );
+    assert_eq!(
+        transition_utility(&held, &short, &boundaries, &[200_000]),
+        0.0
+    );
+}
