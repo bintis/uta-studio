@@ -672,6 +672,20 @@ impl VocalChart {
                                         token.id
                                     ));
                                 }
+                                if let Some(timing) = token.timing {
+                                    validate_exact_value(timing.start, "lyric start")?;
+                                    validate_time_value(timing.duration, "lyric duration")?;
+                                    timing
+                                        .start
+                                        .checked_add(timing.duration)
+                                        .filter(|end| *end <= MAX_EXACT_INTEGER)
+                                        .ok_or_else(|| {
+                                            UtzError::Invalid(format!(
+                                                "lyric token {} end overflows",
+                                                token.id
+                                            ))
+                                        })?;
+                                }
                             }
                             LyricToken::Continuation { continuation_of } => {
                                 validate_id(continuation_of, "lyric continuation")?;
@@ -805,6 +819,10 @@ pub struct LyricTextToken {
     pub id: String,
     pub text: String,
     pub join_before: LyricJoin,
+    /// Absolute lyric interval in the chart timebase, independent of its
+    /// hosting note. None binds the lyric to the note's timing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing: Option<LyricTiming>,
     /// Original text whose token timing has not been independently resolved.
     #[serde(default, skip_serializing_if = "is_false")]
     pub timing_unresolved: bool,
@@ -812,6 +830,14 @@ pub struct LyricTextToken {
     pub reading: Option<String>,
     #[serde(default)]
     pub phonemes: Option<String>,
+}
+
+/// An independent lyric interval in absolute chart-timebase units.
+/// It may extend beyond the hosting note or overlap other lyric intervals.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LyricTiming {
+    pub start: u64,
+    pub duration: u64,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -1303,6 +1329,7 @@ mod tests {
                 weight: 1.0,
             },
             lyrics: vec![LyricToken::Text(LyricTextToken {
+                timing: None,
                 timing_unresolved: false,
                 id: lyric_id.into(),
                 text: text.into(),
@@ -1393,6 +1420,65 @@ mod tests {
         let package = UtzPackage::build(manifest, files).unwrap();
         let decoded = UtzPackage::from_bytes(&package.to_bytes().unwrap()).unwrap();
         assert_eq!(decoded.vocal_chart().unwrap(), chart);
+    }
+
+    #[test]
+    fn independent_lyric_ranges_survive_package_without_changing_note_geometry() {
+        let mut chart = chart();
+        let bound = serde_json::to_value(&chart).unwrap();
+        assert!(bound["tracks"][0]["phrases"][0]["notes"][0]["lyrics"][0]
+            .get("timing").is_none());
+
+        let note = &mut chart.tracks[0].phrases[0].notes[0];
+        let LyricToken::Text(token) = &mut note.lyrics[0] else {
+            panic!("expected text token");
+        };
+        token.text = "切".to_string();
+        token.timing = Some(LyricTiming { start: 125_000, duration: 600_000 });
+        note.lyrics.push(LyricToken::Text(LyricTextToken {
+            id: "next-word".to_string(),
+            text: "に".to_string(),
+            join_before: LyricJoin::None,
+            timing: Some(LyricTiming { start: 725_000, duration: 250_000 }),
+            timing_unresolved: false,
+            reading: None,
+            phonemes: None,
+        }));
+        chart.validate().unwrap();
+        let (manifest, mut files) = sample_v03();
+        files.insert("charts/vocal.json".into(), serde_json::to_vec(&chart).unwrap());
+        let package = UtzPackage::build(manifest, files).unwrap();
+        let decoded = UtzPackage::from_bytes(&package.to_bytes().unwrap()).unwrap();
+        assert_eq!(decoded.vocal_chart().unwrap(), chart);
+        let notes = &chart.tracks[0].phrases[0].notes;
+        assert_eq!(notes.len(), 1);
+        assert_eq!((notes[0].start, notes[0].duration), (0, 500_000));
+    }
+
+    #[test]
+    fn independent_lyric_ranges_use_existing_exact_time_and_overflow_rules() {
+        let mut chart = chart();
+        for timing in [
+            LyricTiming { start: 0, duration: 0 },
+            LyricTiming { start: MAX_EXACT_INTEGER + 1, duration: 1 },
+            LyricTiming { start: 0, duration: MAX_EXACT_INTEGER + 1 },
+            LyricTiming { start: MAX_EXACT_INTEGER, duration: 1 },
+            LyricTiming { start: u64::MAX, duration: u64::MAX },
+        ] {
+            let LyricToken::Text(token) = &mut chart.tracks[0].phrases[0].notes[0].lyrics[0] else {
+                panic!("expected text token");
+            };
+            token.timing = Some(timing);
+            assert!(chart.validate().is_err(), "{timing:?}");
+        }
+        let LyricToken::Text(token) = &mut chart.tracks[0].phrases[0].notes[0].lyrics[0] else {
+            panic!("expected text token");
+        };
+        token.timing = Some(LyricTiming { start: MAX_EXACT_INTEGER - 1, duration: 1 });
+        token.timing_unresolved = true;
+        // Timing scope validity and unresolved status are independent, and
+        // a lyric's interval need not be contained in its hosting note.
+        chart.validate().unwrap();
     }
 
     #[test]

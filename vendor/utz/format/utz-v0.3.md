@@ -387,12 +387,43 @@ The following remain closed:
 
 This prevents semantic behavior from leaking into unversioned metadata.
 
-## Provisional lyric timing
+## Lyric time ranges
+
+A text token may carry `timing: { "start": 125000, "duration": 600000 }`.
+Both values use absolute VocalChart timebase units: `start` is measured from
+chart time zero, not from the hosting note. The half-open lyric interval is
+`[start, start + duration)`. Its duration is positive; its start, duration,
+and end use the same exact-integer range as note timing.
+
+An omitted or null `timing` binds the lyric to its hosting note. This is an
+authoring choice: moving or resizing that note moves or resizes the bound
+lyric. An explicit `timing` instead gives the lyric an independent interval.
+It does not change the note's onset, duration, pitch, or scoring. Independent
+lyric intervals may extend beyond their hosting notes and may overlap other
+lyric intervals. More than one independently timed text token may be hosted
+by a single note; a producer does not need to split that note at word onsets.
+
+A continuation token still refers to the original text token by
+`continuation_of`. It does not replace or extend that text token's explicit
+`timing`. A multi-character text token with one interval represents a word
+or text-group interval, not independently measured character timestamps.
+
+### Provisional timing
 
 Text tokens may carry `timing_unresolved: true` when original lyrics are
-retained but their individual timing could not be measured. The owning note
-provides an editable provisional interval; the flag is independent of pitch
-guidance. A text edit alone does not resolve timing. An explicitly authored
-lyric interval clears the flag. False is omitted from serialized tokens.
-The original text remains available to both UTZ and UltraStar exports;
-UltraStar has no field for the advisory timing flag.
+retained but their individual timing could not be measured. Their explicit
+`timing`, when present, is an editable provisional scope; otherwise the
+hosting note supplies that scope. This flag is independent of both the
+presence of `timing` and pitch guidance. A text edit alone does not resolve
+timing. An explicitly authored lyric interval clears the flag. False and
+absent independent timing are omitted from serialized tokens.
+
+### UltraStar projection
+
+UltraStar note rows share one time range between pitch and lyric text. They
+cannot preserve the independent UTZ lyric time axis. Uta! Studio's projection
+keeps the selected notes and each note's complete original text-token string,
+using note timing for those rows. It does not split notes to reproduce
+independent lyric intervals. Independent lyric timing and the advisory
+`timing_unresolved` flag are therefore lost in this projection; UTZ retains
+both.
