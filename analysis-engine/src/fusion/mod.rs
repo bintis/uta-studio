@@ -19,7 +19,7 @@ pub use baseline::{
 pub use calibration::{CalibrationMethod, ScoreCalibrator};
 pub(crate) use candidate_states::{persistent_f0_shifts, trustworthy_f0_point};
 pub use canonical::{
-    CanonicalNote, CanonicalNoteEvidence, CanonicalSingingTrack, F0Point, FusionContextSignal,
+    CanonicalLyricUnit, CanonicalNote, CanonicalNoteEvidence, CanonicalSingingTrack, F0Point, FusionContextSignal,
     FusionDecisionTrace, HarmonyMetadata, PitchBendPoint, PitchSelectionReason,
     build_canonical_singing_track, validate_canonical_singing_track,
 };

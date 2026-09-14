@@ -6,6 +6,7 @@ mod firered;
 mod game;
 mod io;
 mod jbm555;
+mod lyric_projection;
 mod pitch;
 mod singing_analysis;
 mod timed_notes;

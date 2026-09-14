@@ -387,6 +387,28 @@ fn lyric_line_by_alignment_item(
     lines
 }
 
+/// Keeps the complete alignment text for chart publication while retaining only
+/// measured units in `track.words`, where candidate segmentation reads them.
+pub fn attach_alignment_lyric_units(
+    track: &mut CanonicalSingingTrack,
+    alignment: &AlignmentArtifact,
+) {
+    let lines = lyric_line_by_alignment_item(&track.transcript, &alignment.items);
+    track.lyric_units = alignment.items.iter().map(|item| {
+        let scope = crate::fusion::TimeRange {
+            start: item.start,
+            end: item.start.saturating_add(item.duration),
+        };
+        crate::fusion::CanonicalLyricUnit {
+            id: item.id.clone(),
+            text: item.text.clone(),
+            line_id: lines.get(&item.id).cloned(),
+            measured_range: item.timing_issue.is_none().then_some(scope),
+            audition_range: scope,
+        }
+    }).collect();
+}
+
 pub fn fuse_alignment_stage(
     transcript: &CanonicalLyrics,
     evidence: &[AlignmentArtifact],
@@ -1000,6 +1022,7 @@ fn context_boundary_constraints(
 
 pub struct SingingFusionStageOutput {
     pub fusion: SingingFusionEvidence,
+    alignment: AlignmentArtifact,
     f0_curve: Vec<F0Point>,
     continuous_f0_source: String,
     provenance: Vec<EvidenceProvenance>,
@@ -1154,6 +1177,7 @@ pub fn execute_singing_fusion_stage_with_timed_notes(
         .map_err(output_error)?;
     Ok(SingingFusionStageOutput {
         fusion,
+        alignment: alignment_artifact.clone(),
         f0_curve,
         continuous_f0_source: pitch_owner.to_string(),
         provenance: provenance(
@@ -1394,7 +1418,7 @@ pub fn execute_candidate_graph_stage(
     )
     .map_err(output_error)?;
     attach_timed_lyric_owners(&mut decoded, &transcript, &words);
-    let track = build_canonical_singing_track(
+    let mut track = build_canonical_singing_track(
         transcript,
         words,
         decoded,
@@ -1404,6 +1428,7 @@ pub fn execute_candidate_graph_stage(
         singing.provenance,
     )
     .map_err(output_error)?;
+    attach_alignment_lyric_units(&mut track, &singing.alignment);
     let review_regions = build_review_regions(&track);
     Ok(SingingStagesOutput {
         fusion: singing.fusion,
@@ -1484,3 +1509,7 @@ pub fn execute_singing_stages(
 #[cfg(test)]
 #[path = "candidate_pipeline_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "candidate_pipeline/published_replay_tests.rs"]
+mod published_replay_tests;

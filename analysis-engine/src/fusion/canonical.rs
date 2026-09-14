@@ -201,12 +201,25 @@ impl CanonicalNoteEvidence {
     }
 }
 
+/// One original alignment unit. A failed timestamp still owns its text; its
+/// audition scope is never a measured word boundary or a note split.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CanonicalLyricUnit {
+    pub id: String,
+    pub text: String,
+    pub line_id: Option<String>,
+    pub measured_range: Option<TimeRange>,
+    pub audition_range: TimeRange,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CanonicalSingingTrack {
     pub schema_version: u32,
     pub transcript: CanonicalLyrics,
     #[serde(default)]
     pub words: Vec<CanonicalWordBoundary>,
+    #[serde(default)]
+    pub lyric_units: Vec<CanonicalLyricUnit>,
     #[serde(default)]
     pub notes: Vec<CanonicalNote>,
     #[serde(default)]
@@ -691,6 +704,7 @@ pub fn build_canonical_singing_track(
         schema_version: 1,
         transcript,
         words,
+        lyric_units: Vec::new(),
         notes,
         f0_curve,
         harmony_metadata,

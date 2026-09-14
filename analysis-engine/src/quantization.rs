@@ -427,6 +427,7 @@ mod tests {
 
     fn track() -> CanonicalSingingTrack {
         CanonicalSingingTrack {
+            lyric_units: Vec::new(),
             schema_version: 1,
             transcript: CanonicalLyrics {
                 text: "sing now".to_string(),
