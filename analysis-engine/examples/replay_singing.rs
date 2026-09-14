@@ -8,16 +8,21 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use uta_analysis_engine::artifact::{
-    AcousticEvidence, Jbm555Evidence, Jbm555ExpectedInputs, TechniqueEvidence,
+    AcousticEvidence, Jbm555Evidence, Jbm555ExpectedInputs, SingingAnalysis, TechniqueEvidence,
     finalize_candidate_vocal_chart, parse_advanced_note_evidence, parse_alignment_artifact,
     parse_basic_pitch_evidence, parse_fcpe_pitch, parse_game_evidence, parse_rmvpe_pitch,
     parse_transcript_artifact, write_json_artifact,
 };
 use uta_analysis_engine::candidate_pipeline::{
-    FusionDecisionMode, attach_caller_lyric_ranges, execute_candidate_graph_stage,
-    execute_singing_fusion_stage_with_timed_notes, fuse_alignment_stage, fuse_transcript_stage,
+    CandidatePathDecision, FusionDecisionMode, attach_caller_lyric_ranges,
+    execute_candidate_graph_stage, execute_singing_fusion_stage_with_timed_notes,
+    fuse_alignment_stage, fuse_transcript_stage,
 };
-use uta_analysis_engine::contract::{BoundaryConstraint, Lyrics, LyricsMode};
+use uta_analysis_engine::contract::{
+    AnalysisReusePolicy, BoundaryConstraint, FusionDecisionProvenance, HSMM_VITERBI_SELECTOR,
+    Lyrics, LyricsMode,
+};
+use uta_analysis_engine::fingerprint::HSMM_VERSION;
 use uta_analysis_engine::fusion::TimeRange;
 
 #[derive(Deserialize)]
@@ -155,6 +160,30 @@ fn main() -> Result<(), Box<dyn Error>> {
     let singing =
         execute_candidate_graph_stage(canonical, words, fusion, FusionDecisionMode::Algorithm)?;
     let chart = finalize_candidate_vocal_chart(&singing.track, "local-evidence-replay", None)?;
+    let decision = match &singing.decision {
+        CandidatePathDecision::Algorithm {
+            candidate_set_digest,
+            selected_candidate_ids,
+        } => FusionDecisionProvenance::Algorithm {
+            selector: HSMM_VITERBI_SELECTOR.to_string(),
+            selector_version: HSMM_VERSION.to_string(),
+            candidate_set_digest: candidate_set_digest.clone(),
+            selected_candidate_ids: selected_candidate_ids.clone(),
+            reuse_policy: AnalysisReusePolicy::Deterministic,
+        },
+        CandidatePathDecision::AiJudgment { .. } => {
+            unreachable!("this replay requests algorithmic fusion")
+        }
+    };
+    let analysis = SingingAnalysis::new(
+        &singing.track,
+        &chart,
+        singing.fusion.candidates.clone(),
+        singing.fusion.hard_boundaries.clone(),
+        singing.review_regions.clone(),
+        "local-evidence-replay",
+        &decision,
+    )?;
     let mut pool_sources = BTreeMap::<String, usize>::new();
     let mut chosen_sources = BTreeMap::<String, usize>::new();
     for candidate in &singing.fusion.candidates {
@@ -300,6 +329,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         Path::new("alignment.json"),
         "application/json",
         &alignment,
+    )?;
+    write_json_artifact(
+        &output,
+        Path::new("singing-analysis.json"),
+        "application/json",
+        &analysis,
     )?;
     println!("{}", serde_json::to_string_pretty(&summary)?);
     Ok(())
