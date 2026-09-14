@@ -274,7 +274,10 @@ fn generated_sentences_reach_chart_phrases_even_when_a_sentence_end_is_unresolve
     assert!(transcript.tokens.iter().all(|token| token.range.is_none()));
     let requests = qwen_alignment_words(&transcript, &artifact.audio_segments).unwrap();
     assert_eq!(
-        requests.iter().map(|word| word["text"].as_str().unwrap()).collect::<Vec<_>>(),
+        requests
+            .iter()
+            .map(|word| word["text"].as_str().unwrap())
+            .collect::<Vec<_>>(),
         ["光る", "歌。", "歌う！", "光る", "歌。"]
     );
     assert!(
@@ -317,9 +320,11 @@ fn generated_sentences_reach_chart_phrases_even_when_a_sentence_end_is_unresolve
         backend: "ggml_cpu".to_string(),
     };
     alignment.validate(0, 2_000_000).unwrap();
-    let (alignment, words) =
-        fuse_alignment_stage(&transcript, &[alignment], 0, 2_000_000).unwrap();
-    assert_eq!((alignment.items[1].start, alignment.items[1].duration), (0, 2_000_000));
+    let (alignment, words) = fuse_alignment_stage(&transcript, &[alignment], 0, 2_000_000).unwrap();
+    assert_eq!(
+        (alignment.items[1].start, alignment.items[1].duration),
+        (0, 2_000_000)
+    );
     assert_eq!(
         words
             .iter()
@@ -373,7 +378,10 @@ fn generated_sentences_reach_chart_phrases_even_when_a_sentence_end_is_unresolve
     crate::candidate_pipeline::attach_alignment_lyric_units(&mut track, &alignment);
     assert_eq!(track.lyric_units.len(), requests.len());
     assert!(track.lyric_units[1].measured_range.is_none());
-    assert_eq!(track.lyric_units[1].audition_range, TimeRange::new(0, 2_000_000).unwrap());
+    assert_eq!(
+        track.lyric_units[1].audition_range,
+        TimeRange::new(0, 2_000_000).unwrap()
+    );
     let chart =
         finalize_candidate_vocal_chart(&track, "generated-sentences-fixture", None).unwrap();
     let phrases = &chart.tracks[0].phrases;
@@ -397,18 +405,58 @@ fn generated_sentences_reach_chart_phrases_even_when_a_sentence_end_is_unresolve
         .iter()
         .flat_map(|phrase| &phrase.notes)
         .collect::<Vec<_>>();
-    let lyrics = notes.iter().flat_map(|note| &note.lyrics)
+    let lyrics = notes
+        .iter()
+        .flat_map(|note| &note.lyrics)
         .filter_map(|token| match token {
             utz::LyricToken::Text(token) if !token.text.is_empty() => Some(token),
             _ => None,
-        }).collect::<Vec<_>>();
+        })
+        .collect::<Vec<_>>();
     assert_eq!(
-        lyrics.iter().map(|token| token.text.as_str()).collect::<String>(),
-        text.chars().filter(|character| !character.is_whitespace()).collect::<String>()
+        lyrics
+            .iter()
+            .map(|token| token.text.as_str())
+            .collect::<String>(),
+        text.chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>()
     );
-    assert_eq!(lyrics[0].text, "光る歌。");
-    assert!(lyrics[0].timing_unresolved, "the preserved final word is not independently timed");
-    assert!(lyrics.iter().skip(1).all(|token| !token.timing_unresolved));
+    assert_eq!(lyrics.len(), requests.len());
+    assert_eq!(lyrics[0].text, "光る");
+    assert!(!lyrics[0].timing_unresolved);
+    assert_eq!(lyrics[1].text, "歌。");
+    assert!(
+        lyrics[1].timing_unresolved,
+        "the preserved final word has an audition scope, not a measured word time"
+    );
+    for (token, unit) in lyrics.iter().zip(&track.lyric_units) {
+        assert_eq!(token.id, unit.id);
+        assert_eq!(token.text, unit.text);
+        assert_eq!(token.timing_unresolved, unit.measured_range.is_none());
+        if let Some(range) = unit.measured_range {
+            assert_eq!(
+                token.timing,
+                Some(utz::LyricTiming {
+                    start: range.start,
+                    duration: range.end - range.start,
+                })
+            );
+        }
+    }
+    // Clip only the unresolved display scope between measured neighbours;
+    // preserve its full original search scope in canonical lyric evidence.
+    assert_eq!(
+        lyrics[1].timing,
+        Some(utz::LyricTiming {
+            start: 250_000,
+            duration: 250_000,
+        })
+    );
+    assert_eq!(
+        track.lyric_units[1].audition_range,
+        TimeRange::new(0, 2_000_000).unwrap()
+    );
     assert_eq!(notes.len(), measured.len());
     for (note, (start, end)) in notes.iter().zip(measured) {
         assert_eq!((note.start, note.duration), (start, end - start));
