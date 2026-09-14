@@ -210,6 +210,30 @@ struct SingingVoicingEvidenceWire {
     unsupported_ranges: Vec<SingingRangeWire>,
 }
 
+impl SingingVoicingEvidenceWire {
+    fn valid_for(&self, range: &SingingRangeWire) -> bool {
+        !self.source_experts.is_empty()
+            && self
+                .source_experts
+                .iter()
+                .all(|source| !source.trim().is_empty())
+            && self.unsupported_ranges.iter().all(|part| {
+                part.start >= range.start && part.end <= range.end && part.end > part.start
+            })
+            && self
+                .unsupported_ranges
+                .windows(2)
+                .all(|pair| pair[0].end <= pair[1].start)
+    }
+
+    fn duration(&self) -> u64 {
+        self.unsupported_ranges
+            .iter()
+            .map(|part| part.end - part.start)
+            .sum()
+    }
+}
+
 /// Independent DTO for the packaged Engine's candidate target.
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -416,6 +440,14 @@ impl SingingCandidateWire {
         if self.id.trim().is_empty()
             || self.range.start >= self.range.end
             || matches!(self.target, SingingCandidateTargetWire::Pitched { midi, center_hz } if midi > 127 || !valid_hz(center_hz))
+            || self
+                .voicing_evidence
+                .as_ref()
+                .is_some_and(|evidence| !evidence.valid_for(&self.range))
+            || (matches!(self.target, SingingCandidateTargetWire::Unpitched)
+                && self.voicing_evidence.as_ref().is_none_or(|evidence| {
+                    evidence.duration() != self.range.end - self.range.start
+                }))
             || self.boundary_source.trim().is_empty()
             || !valid_boundary_kind(&self.boundary_kind)
             || !matches!(self.boundary_role.as_str(), "primary" | "challenger")
@@ -430,6 +462,9 @@ impl SingingCandidateWire {
             || invalid_optional_unit(self.boundary_support)
             || invalid_optional_unit(self.boundary_calibrated_confidence)
             || self.target_pitch_source.trim().is_empty()
+            || invalid_optional_unit(self.target_pitch_source_local_score)
+            || invalid_optional_unit(self.target_pitch_calibrated_confidence)
+            || invalid_optional_non_negative(self.continuous_pitch_error_integral)
             || self.rmvpe_center_hz.is_some_and(|value| !valid_hz(value))
             || invalid_optional_unit(self.rmvpe_confidence)
             || invalid_optional_finite(self.rmvpe_cents_difference)
@@ -461,6 +496,9 @@ impl SingingCandidateWire {
                     .fractional_midi
                     .is_some_and(|value| !value.is_finite() || !(0.0..128.0).contains(&value))
                 || invalid_optional_unit(alternative.source_local_score)
+                || invalid_optional_unit(alternative.source_local_pitch_score)
+                || invalid_optional_unit(alternative.calibrated_boundary_confidence)
+                || invalid_optional_unit(alternative.calibrated_pitch_confidence)
         }) || self.boundary_constraints.iter().any(|constraint| {
             constraint.source_expert.trim().is_empty()
                 || !valid_constraint_kind(&constraint.kind)
@@ -1478,6 +1516,10 @@ mod tests {
         let mut value: serde_json::Value =
             serde_json::from_slice(&singing_analysis("selected")).unwrap();
         value["candidate_evidence"][0]["target"] = serde_json::json!({"kind": "unpitched"});
+        value["candidate_evidence"][0]["voicing_evidence"] = serde_json::json!({
+            "source_experts": ["rmvpe", "fcpe", "acoustic_dsp"],
+            "unsupported_ranges": [{"start": 1_000_000, "end": 2_000_000}]
+        });
         let bundle = singing_analysis_evidence_bundle(
             &serde_json::to_vec(&value).unwrap(),
             evidence_source(),
@@ -1817,5 +1859,104 @@ mod tests {
         )
         .unwrap();
         assert!(!bundle.tracks.is_empty());
+    }
+    #[test]
+    fn singing_analysis_uses_engine_voicing_interval_semantics() {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&singing_analysis("selected")).unwrap();
+        value["candidate_evidence"][0]["target"] = serde_json::json!({"kind":"unpitched"});
+        assert!(
+            singing_analysis_evidence_bundle(
+                &serde_json::to_vec(&value).unwrap(),
+                evidence_source()
+            )
+            .is_err()
+        );
+        for ranges in [
+            serde_json::json!([{"start": 1_000_000, "end": 1_900_000}]),
+            serde_json::json!([{"start": 900_000, "end": 2_000_000}]),
+            serde_json::json!([{"start": 1_000_000, "end": 1_600_000}, {"start": 1_500_000, "end": 2_000_000}]),
+        ] {
+            value["candidate_evidence"][0]["voicing_evidence"] = serde_json::json!({
+                "source_experts": ["rmvpe", "fcpe"], "unsupported_ranges": ranges
+            });
+            assert!(
+                singing_analysis_evidence_bundle(
+                    &serde_json::to_vec(&value).unwrap(),
+                    evidence_source()
+                )
+                .is_err()
+            );
+        }
+        value["candidate_evidence"][0]["voicing_evidence"] = serde_json::json!({
+            "source_experts": ["rmvpe", "fcpe"],
+            "unsupported_ranges": [{"start": 1_000_000, "end": 1_500_000}, {"start": 1_500_000, "end": 2_000_000}]
+        });
+        assert!(
+            singing_analysis_evidence_bundle(
+                &serde_json::to_vec(&value).unwrap(),
+                evidence_source()
+            )
+            .is_ok()
+        );
+        value["candidate_evidence"][0]["voicing_evidence"]["source_experts"] =
+            serde_json::json!([" "]);
+        assert!(
+            singing_analysis_evidence_bundle(
+                &serde_json::to_vec(&value).unwrap(),
+                evidence_source()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn singing_analysis_uses_engine_pitch_audit_score_semantics() {
+        for field in [
+            "target_pitch_source_local_score",
+            "target_pitch_calibrated_confidence",
+        ] {
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&singing_analysis("selected")).unwrap();
+            value["candidate_evidence"][0][field] = serde_json::json!(1.1);
+            assert!(
+                singing_analysis_evidence_bundle(
+                    &serde_json::to_vec(&value).unwrap(),
+                    evidence_source()
+                )
+                .is_err()
+            );
+        }
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&singing_analysis("selected")).unwrap();
+        value["candidate_evidence"][0]["continuous_pitch_error_integral"] = serde_json::json!(-0.1);
+        assert!(
+            singing_analysis_evidence_bundle(
+                &serde_json::to_vec(&value).unwrap(),
+                evidence_source()
+            )
+            .is_err()
+        );
+        for field in [
+            "source_local_pitch_score",
+            "calibrated_boundary_confidence",
+            "calibrated_pitch_confidence",
+        ] {
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&singing_analysis("selected")).unwrap();
+            value["candidate_evidence"][0]["boundary_alternatives"] = serde_json::json!([{
+                "source_expert": "jbm555_cectc_80", "kind": "advanced_note",
+                "range": {"start": 1_000_000, "end": 2_000_000}
+            }]);
+            value["candidate_evidence"][0]["boundary_alternatives"][0][field] =
+                serde_json::json!(1.1);
+            assert!(
+                singing_analysis_evidence_bundle(
+                    &serde_json::to_vec(&value).unwrap(),
+                    evidence_source()
+                )
+                .is_err()
+            );
+        }
     }
 }
