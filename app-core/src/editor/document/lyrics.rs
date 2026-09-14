@@ -132,6 +132,7 @@ impl EditorDocument {
         let id = self.allocate_id("lyric");
         let note = self.note_at_mut(note_index)?;
         note.lyrics.push(LyricToken::Text(LyricTextToken {
+            timing_unresolved: false,
             id,
             text: "New lyric".into(),
             join_before: join,
@@ -156,6 +157,7 @@ impl EditorDocument {
         let id = self.allocate_id("lyric");
         let note = self.note_at_mut(note_index)?;
         note.lyrics.push(LyricToken::Text(LyricTextToken {
+            timing_unresolved: false,
             id,
             text: "New lyric".into(),
             join_before: join,
@@ -725,6 +727,10 @@ impl EditorDocument {
             .iter()
             .filter_map(|address| self.resolve(*address))
             .collect::<BTreeSet<_>>();
+        let timing_unresolved = addresses.iter().any(|address| {
+            self.token_mut(*address)
+                .is_some_and(|token| token.timing_unresolved)
+        });
         let compact = self.compact_language();
         let text = addresses
             .iter()
@@ -750,6 +756,9 @@ impl EditorDocument {
             word: first.word,
         };
         self.set_lyric_text(address, &text);
+        if let Some(token) = self.token_mut(address) {
+            token.timing_unresolved = timing_unresolved;
+        }
         Some(address)
     }
 
@@ -789,6 +798,9 @@ impl EditorDocument {
             let Some(text) = self.lyric_text(address) else {
                 continue;
             };
+            let timing_unresolved = self
+                .token_mut(address)
+                .is_some_and(|token| token.timing_unresolved);
             let characters = text.chars().collect::<Vec<_>>();
             let cut = (characters.len() / 2).clamp(1, characters.len().saturating_sub(1).max(1));
             let (left_text, right_text) = if characters.len() > 1 {
@@ -813,6 +825,7 @@ impl EditorDocument {
             let id = self.allocate_id("lyric");
             if let Some(note) = self.note_at_mut(right) {
                 note.lyrics = vec![LyricToken::Text(LyricTextToken {
+                    timing_unresolved,
                     id,
                     text: right_text,
                     // Half of a split syllable never takes a leading space.
@@ -945,17 +958,24 @@ impl EditorDocument {
                 .iter()
                 .flat_map(|note| note.lyrics.iter())
                 .filter_map(|token| match token {
-                    LyricToken::Text(token) => Some(token.id.clone()),
+                    LyricToken::Text(token) => Some((token.id.clone(), token.timing_unresolved)),
                     LyricToken::Continuation { .. } => None,
                 })
                 .collect::<Vec<_>>()
         };
+        // Retokenizing text can merge, insert, or remove words. Ordinal
+        // reuse cannot establish which rewritten word inherited a missing
+        // timestamp, so retain that uncertainty throughout the rewritten line.
+        let timing_unresolved = existing.iter().any(|(_, unresolved)| *unresolved);
         let mut ids = existing.into_iter();
         let tokens = parsed
             .into_iter()
             .map(|(text, join)| {
-                let id = ids.next().unwrap_or_else(|| self.allocate_id("lyric"));
+                let (id, _) = ids
+                    .next()
+                    .unwrap_or_else(|| (self.allocate_id("lyric"), false));
                 LyricToken::Text(LyricTextToken {
+                    timing_unresolved,
                     id,
                     text,
                     join_before: join,
@@ -1104,6 +1124,7 @@ impl EditorDocument {
                     cursor,
                     piece_duration,
                     LyricTextToken {
+                        timing_unresolved: token.timing_unresolved,
                         id: token_id,
                         text: piece.text.clone(),
                         // Only the first piece can carry the word's own join;
@@ -1175,7 +1196,15 @@ impl EditorDocument {
         let Some(note) = self.resolve(address) else {
             return false;
         };
-        self.resize_note(note, start, end)
+        if !self.resize_note(note, start, end) {
+            return false;
+        }
+        // A deliberate lyric boundary edit supplies an authored interval.
+        // Text-only edits and automatic syllable splits retain the warning.
+        if let Some(token) = self.token_mut(address) {
+            token.timing_unresolved = false;
+        }
+        true
     }
 
     pub fn adjust_lyric_boundary(
@@ -1194,7 +1223,7 @@ impl EditorDocument {
         let end = self.to_seconds(note.start.saturating_add(note.duration));
         let next_start = (start + start_delta).clamp(0.0, end - MIN_NOTE_SECONDS);
         let next_end = (end + end_delta).max(next_start + MIN_NOTE_SECONDS);
-        self.resize_note(index, next_start, next_end)
+        self.set_lyric_timing(address, next_start, next_end)
     }
 
     /// Joins a syllable with the one after it inside the same phrase.

@@ -226,6 +226,11 @@
             "space"
           ]
         },
+        "timing_unresolved": {
+          "type": "boolean",
+          "default": false,
+          "description": "Original lyric text retained with provisional token timing."
+        },
         "reading": {
           "type": [
             "string",

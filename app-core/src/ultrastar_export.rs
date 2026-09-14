@@ -732,6 +732,47 @@ mod tests {
         assert!(validate_usdx_str(&text).is_ok());
     }
 
+    #[test]
+    fn unresolved_lyric_timing_keeps_original_text_in_ultrastar() {
+        let mut chart = chart(
+            "ja",
+            &[&[
+                (0.0, 0.5, 60, "めさ", "normal"),
+                (0.5, 1.0, 60, "める", "normal"),
+                (1.0, 1.5, 60, "切に", "normal"),
+            ]],
+        );
+        for note in &mut chart.tracks[0].phrases[0].notes {
+            for token in &mut note.lyrics {
+                if let utz::LyricToken::Text(token) = token {
+                    token.timing_unresolved = true;
+                }
+            }
+        }
+        let unmeasured = &mut chart.tracks[0].phrases[0].notes[2];
+        unmeasured.pitch = None;
+        unmeasured.vocal_mode = utz::VocalMode::Freestyle;
+        unmeasured.scoring.mode = utz::ScoringMode::None;
+        let text = build_ultrastar_text(
+            "Title",
+            "Artist",
+            &chart,
+            "song.flac",
+            None,
+            None,
+            None,
+            2.0,
+        );
+        for lyric in ["めさ", "める", "切に"] {
+            assert!(text.lines().any(|line| line.ends_with(lyric)), "{text}");
+        }
+        assert!(
+            text.lines()
+                .any(|line| line.starts_with("F ") && line.ends_with("切に"))
+        );
+        validate_usdx_str(&text).expect("original lyrics remain exportable");
+    }
+
     /// Splits a chart's notes over a second lead track, assigning both
     /// tracks contiguous duet parts the way `EditorDocument` would.
     fn with_duet_track(chart: &mut VocalChart, singer: &str, notes: Vec<utz::VocalNote>) {
@@ -760,6 +801,7 @@ mod tests {
                 note.id = "duet-note".into();
                 note.start += chart.timebase;
                 note.lyrics = vec![utz::LyricToken::Text(utz::LyricTextToken {
+                    timing_unresolved: false,
                     id: "duet-lyric".into(),
                     text: "partner".into(),
                     join_before: utz::LyricJoin::Space,

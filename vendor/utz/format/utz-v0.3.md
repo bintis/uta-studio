@@ -386,3 +386,13 @@ The following remain closed:
 - note pitch/timing/scoring semantics.
 
 This prevents semantic behavior from leaking into unversioned metadata.
+
+## Provisional lyric timing
+
+Text tokens may carry `timing_unresolved: true` when original lyrics are
+retained but their individual timing could not be measured. The owning note
+provides an editable provisional interval; the flag is independent of pitch
+guidance. A text edit alone does not resolve timing. An explicitly authored
+lyric interval clears the flag. False is omitted from serialized tokens.
+The original text remains available to both UTZ and UltraStar exports;
+UltraStar has no field for the advisory timing flag.

@@ -567,6 +567,7 @@ impl EditorDocument {
                         end: self.to_seconds(end),
                         text: token.text.clone(),
                         guided: note.pitch.is_some(),
+                        timing_unresolved: token.timing_unresolved,
                         note: note_index + offset,
                         continuation_notes,
                         reading: token.reading.clone(),
@@ -1079,6 +1080,9 @@ impl EditorDocument {
                 pitch: note.pitch,
                 kind: NoteKind::of(note),
                 weight: note.scoring.weight,
+                timing_unresolved: note.lyrics.iter().any(
+                    |token| matches!(token, LyricToken::Text(token) if token.timing_unresolved),
+                ),
                 text: note.lyrics.iter().find_map(|token| match token {
                     LyricToken::Text(token) => Some(token.text.clone()),
                     LyricToken::Continuation { .. } => None,
@@ -1110,6 +1114,7 @@ impl EditorDocument {
                 Some(text) => {
                     let token = self.allocate_id("lyric");
                     vec![LyricToken::Text(LyricTextToken {
+                        timing_unresolved: entry.timing_unresolved,
                         id: token,
                         text: text.clone(),
                         join_before: join,

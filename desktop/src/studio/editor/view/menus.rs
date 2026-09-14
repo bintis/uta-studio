@@ -138,6 +138,14 @@ pub(crate) fn spawn_editor_lyrics(
                         }),
                     ))
                     .with_children(|lyric_node| {
+                        if lyric.timing_unresolved && editor.word_edit_focus != Some(selection) {
+                            lyric_node.spawn((
+                                Text::new("? "),
+                                ui_text_font(font.clone(), 9.0),
+                                TextColor(theme.editor_warning),
+                                Pickable::IGNORE,
+                            ));
+                        }
                         if !lyric.guided {
                             lyric_node.spawn((
                                 Node {
@@ -272,6 +280,15 @@ pub(crate) fn spawn_editor_lyrics(
                 },
             );
         });
+    if lyrics.iter().any(|lyric| lyric.timing_unresolved) {
+        spawn_wrapped_text(
+            parent,
+            font,
+            "? Timing unconfirmed · Original lyrics preserved. Adjust or split to refine timing.",
+            9.0,
+            theme.muted_foreground,
+        );
+    }
 }
 
 pub(crate) fn spawn_editor_file_menu(
@@ -777,7 +794,13 @@ pub(crate) fn spawn_lyric_context_menu(
         BackgroundColor(Color::NONE),
         ZIndex(40),
     ));
-    let word_count = editor.selected_word_indices().len().max(1);
+    let selected_words = editor.selected_word_indices();
+    let word_count = selected_words.len().max(1);
+    let timing_unresolved = editor
+        .document
+        .lyrics()
+        .iter()
+        .any(|lyric| lyric.timing_unresolved && selected_words.contains(&lyric.address));
     let (left, top) = clamp_menu_position(context.position, window_size, Vec2::new(200.0, 280.0));
     parent
         .spawn((
@@ -809,6 +832,15 @@ pub(crate) fn spawn_lyric_context_menu(
                 8.0,
                 theme.muted_foreground,
             );
+            if timing_unresolved {
+                spawn_wrapped_text(
+                    menu,
+                    font.clone(),
+                    "Timing unconfirmed. Original text is kept together until you refine its timing.",
+                    9.0,
+                    theme.editor_warning,
+                );
+            }
             menu.spawn(Node {
                 height: px(3),
                 ..default()

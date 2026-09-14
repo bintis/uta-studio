@@ -28,6 +28,7 @@ mod tests {
                     weight: 1.0,
                 },
                 lyrics: vec![LyricToken::Text(LyricTextToken {
+                    timing_unresolved: false,
                     id: format!("lyric-{}", index + 1),
                     text: (*text).into(),
                     join_before: LyricJoin::Space,
@@ -146,6 +147,7 @@ mod tests {
         // short to split further during authoring).
         document.chart.tracks[0].phrases[0].notes[0].lyrics = vec![
             LyricToken::Text(LyricTextToken {
+                timing_unresolved: false,
                 id: "lyric-1".into(),
                 text: "me".into(),
                 join_before: LyricJoin::None,
@@ -153,6 +155,7 @@ mod tests {
                 phonemes: None,
             }),
             LyricToken::Text(LyricTextToken {
+                timing_unresolved: false,
                 id: "lyric-2".into(),
                 text: "ru".into(),
                 join_before: LyricJoin::None,
@@ -211,6 +214,7 @@ mod tests {
         // `splitting_a_note_with_two_syllables_keeps_both_instead_of_dropping_the_second`).
         document.chart.tracks[0].phrases[0].notes[0].lyrics = vec![
             LyricToken::Text(LyricTextToken {
+                timing_unresolved: false,
                 id: "lyric-1".into(),
                 text: "me".into(),
                 join_before: LyricJoin::None,
@@ -218,6 +222,7 @@ mod tests {
                 phonemes: None,
             }),
             LyricToken::Text(LyricTextToken {
+                timing_unresolved: false,
                 id: "lyric-2".into(),
                 text: "ru".into(),
                 join_before: LyricJoin::None,
@@ -247,6 +252,7 @@ mod tests {
         let mut document = document(&[(0.0, 1.0, 60, "me")]);
         document.chart.tracks[0].phrases[0].notes[0].lyrics = vec![
             LyricToken::Text(LyricTextToken {
+                timing_unresolved: false,
                 id: "lyric-1".into(),
                 text: "me".into(),
                 join_before: LyricJoin::None,
@@ -254,6 +260,7 @@ mod tests {
                 phonemes: None,
             }),
             LyricToken::Text(LyricTextToken {
+                timing_unresolved: false,
                 id: "lyric-2".into(),
                 text: "ru".into(),
                 join_before: LyricJoin::None,
@@ -1178,7 +1185,11 @@ mod tests {
                 let original = document.notes()[0].midi;
                 document.shift_notes(&selection(&[0]), 0.0, f64::from(semitones), false);
                 document.shift_notes(&selection(&[0]), 0.0, -f64::from(semitones), false);
-                assert_eq!(document.notes()[0].midi, original, "midi={midi}, shift={semitones}");
+                assert_eq!(
+                    document.notes()[0].midi,
+                    original,
+                    "midi={midi}, shift={semitones}"
+                );
                 document.to_chart().validate().unwrap();
             }
         }
@@ -1241,7 +1252,8 @@ mod tests {
         let before_clear = document.revision();
         assert!(document.set_lyric_reading(address, Some("   ".to_string())));
         assert_eq!(
-            document.track_lyrics(0)[0].reading, None,
+            document.track_lyrics(0)[0].reading,
+            None,
             "a blank string normalizes to None"
         );
         assert!(document.revision() > before_clear);
@@ -1277,7 +1289,11 @@ mod tests {
 
     #[test]
     fn advance_lyric_edit_moves_forward_and_backward_within_a_phrase() {
-        let mut document = document(&[(0.0, 1.0, 60, "a"), (1.0, 2.0, 60, "b"), (2.0, 3.0, 60, "c")]);
+        let mut document = document(&[
+            (0.0, 1.0, 60, "a"),
+            (1.0, 2.0, 60, "b"),
+            (2.0, 3.0, 60, "c"),
+        ]);
         let first = LyricAddress {
             segment: 0,
             word: 0,
@@ -1345,5 +1361,91 @@ mod tests {
             word: 9,
         };
         assert_eq!(document.advance_lyric_edit(unresolvable, true), None);
+    }
+
+    #[test]
+    fn unresolved_lyric_timing_survives_text_edits_and_save_until_authored() {
+        let mut document = document(&[(0.0, 1.0, 60, "めさめる")]);
+        let address = document.address_of_note(0).unwrap();
+        document.token_mut(address).unwrap().timing_unresolved = true;
+        assert!(document.lyrics()[0].guided);
+        assert!(document.set_lyric_text(address, "めさめる！"));
+        assert!(document.lyrics()[0].timing_unresolved);
+        let saved = serde_json::to_value(document.to_chart()).unwrap();
+        let mut restored = EditorDocument::new(serde_json::from_value(saved).unwrap());
+        assert_eq!(restored.lyrics()[0].text, "めさめる！");
+        assert!(restored.lyrics()[0].timing_unresolved);
+        assert!(!restored.set_lyric_timing(address, f64::NAN, 0.8));
+        assert!(restored.lyrics()[0].timing_unresolved);
+        assert!(restored.set_lyric_timing(address, 0.1, 0.8));
+        assert!(!restored.lyrics()[0].timing_unresolved);
+        assert_eq!(restored.lyrics()[0].start, 0.1);
+        assert_eq!(restored.lyrics()[0].end, 0.8);
+    }
+
+    #[test]
+    fn unresolved_lyric_timing_survives_syllabizing_and_clipboard() {
+        let mut document = document(&[(0.0, 1.0, 60, "めさめる")]);
+        document.set_language(Some("ja".into()));
+        let address = document.address_of_note(0).unwrap();
+        document.token_mut(address).unwrap().timing_unresolved = true;
+        let clipboard = document.copy_notes(&selection(&[0]));
+        let pasted = document.paste_notes(&clipboard, 2.0);
+        let copied_address = document.address_of_note(*pasted.first().unwrap()).unwrap();
+        assert!(
+            document
+                .lyrics()
+                .iter()
+                .find(|lyric| lyric.address == copied_address)
+                .unwrap()
+                .timing_unresolved
+        );
+        let split = document.syllabize_lyrics(&BTreeSet::from([address]));
+        assert_eq!(split.len(), 4);
+        assert!(
+            document
+                .lyrics()
+                .iter()
+                .all(|lyric| lyric.timing_unresolved)
+        );
+        let original = document
+            .lyrics()
+            .into_iter()
+            .take(4)
+            .map(|lyric| lyric.text)
+            .collect::<String>();
+        assert_eq!(original, "めさめる");
+        assert!(document.adjust_lyric_boundary(split[0], 0.01, 0.0));
+        assert!(!document.lyrics()[0].timing_unresolved);
+        assert!(document.lyrics()[1].timing_unresolved);
+    }
+
+    #[test]
+    fn unresolved_lyric_timing_survives_phrase_text_and_manual_split() {
+        let mut document = document(&[(0.0, 1.0, 60, "切に")]);
+        document.set_language(Some("ja".into()));
+        let address = document.address_of_note(0).unwrap();
+        document.token_mut(address).unwrap().timing_unresolved = true;
+        assert!(document.set_phrase_token_text(0, "切に！"));
+        assert!(document.lyrics()[0].timing_unresolved);
+        let split = document.split_lyrics(&BTreeSet::from([address]), 0.4);
+        assert_eq!(split.len(), 2);
+        assert!(
+            document
+                .lyrics()
+                .iter()
+                .all(|lyric| lyric.timing_unresolved)
+        );
+        assert_eq!(document.phrase_text(0), "切に！");
+    }
+
+    #[test]
+    fn unresolved_lyric_timing_survives_retokenizing_a_line() {
+        let mut document = document(&[(0.0, 0.5, 60, "A"), (0.5, 1.0, 60, "B")]);
+        let last = document.address_of_note(1).unwrap();
+        document.token_mut(last).unwrap().timing_unresolved = true;
+        assert!(document.set_phrase_token_text(0, "AB"));
+        assert_eq!(document.phrase_text(0), "AB");
+        assert!(document.lyrics()[0].timing_unresolved);
     }
 }

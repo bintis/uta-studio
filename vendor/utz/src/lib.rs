@@ -805,10 +805,17 @@ pub struct LyricTextToken {
     pub id: String,
     pub text: String,
     pub join_before: LyricJoin,
+    /// Original text whose token timing has not been independently resolved.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub timing_unresolved: bool,
     #[serde(default)]
     pub reading: Option<String>,
     #[serde(default)]
     pub phonemes: Option<String>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -1296,6 +1303,7 @@ mod tests {
                 weight: 1.0,
             },
             lyrics: vec![LyricToken::Text(LyricTextToken {
+                timing_unresolved: false,
                 id: lyric_id.into(),
                 text: text.into(),
                 join_before: LyricJoin::None,
@@ -1357,6 +1365,34 @@ mod tests {
         let decoded = UtzPackage::from_bytes(&package.to_bytes().unwrap()).unwrap();
         assert_eq!(decoded.manifest().format_version(), FORMAT_VERSION);
         assert_eq!(decoded.vocal_chart().unwrap(), chart());
+    }
+
+    #[test]
+    fn unresolved_lyric_timing_and_full_original_text_survive_package_round_trip() {
+        let mut chart = chart();
+        chart.tracks[0].phrases[0].notes = vec![
+            note("opening", 0, "opening-lyric", "めさ"),
+            note("ending", 500_000, "ending-lyric", "める"),
+            note("unmeasured", 1_000_000, "unmeasured-lyric", "切に"),
+        ];
+        for note in &mut chart.tracks[0].phrases[0].notes {
+            let LyricToken::Text(token) = &mut note.lyrics[0] else {
+                panic!("expected original text");
+            };
+            token.timing_unresolved = true;
+        }
+        let unmeasured = &mut chart.tracks[0].phrases[0].notes[2];
+        unmeasured.pitch = None;
+        unmeasured.vocal_mode = VocalMode::Freestyle;
+        unmeasured.scoring.mode = ScoringMode::None;
+        let (manifest, mut files) = sample_v03();
+        files.insert(
+            "charts/vocal.json".into(),
+            serde_json::to_vec(&chart).unwrap(),
+        );
+        let package = UtzPackage::build(manifest, files).unwrap();
+        let decoded = UtzPackage::from_bytes(&package.to_bytes().unwrap()).unwrap();
+        assert_eq!(decoded.vocal_chart().unwrap(), chart);
     }
 
     #[test]

@@ -205,6 +205,7 @@ mod tests {
                     weight: 1.0,
                 },
                 lyrics: vec![LyricToken::Text(LyricTextToken {
+                    timing_unresolved: false,
                     id: "lyric-1".into(),
                     text: "a".into(),
                     join_before: LyricJoin::Space,

@@ -242,6 +242,7 @@ pub(crate) fn migrate_engine_candidate_chart(
                 deferred_lyrics.entry(target_id).or_default().push((
                     word_index,
                     LyricToken::Text(LyricTextToken {
+                        timing_unresolved: false,
                         id: lyric_id,
                         text,
                         join_before,
@@ -263,6 +264,7 @@ pub(crate) fn migrate_engine_candidate_chart(
                     weight: 1.0,
                 },
                 lyrics: vec![LyricToken::Text(LyricTextToken {
+                    timing_unresolved: false,
                     id: lyric_id,
                     text: text.clone(),
                     join_before,
@@ -289,6 +291,7 @@ pub(crate) fn migrate_engine_candidate_chart(
                 .clamp(-99.0, 99.0) as i8;
             let lyrics = if index == 0 {
                 vec![LyricToken::Text(LyricTextToken {
+                    timing_unresolved: false,
                     id: lyric_id.clone(),
                     text: text.clone(),
                     join_before,
@@ -836,6 +839,7 @@ fn ensure_non_overlapping(notes: &[MigratedNote]) -> Result<(), UtaStudioError> 
 fn text_token(word: &AnalyzerWord) -> LyricTextToken {
     let leading_space = word.text.chars().next().is_some_and(char::is_whitespace);
     LyricTextToken {
+        timing_unresolved: false,
         id: word.id.clone(),
         text: word.text.trim().to_string(),
         join_before: if leading_space {

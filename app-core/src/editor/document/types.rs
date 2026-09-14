@@ -230,6 +230,8 @@ pub struct ChartLyric {
     pub text: String,
     /// A token whose owning note carries a pitch target has note guidance.
     pub guided: bool,
+    /// Preserved text with provisional timing, independent of pitch guidance.
+    pub timing_unresolved: bool,
     /// Flattened index of the note that owns the token.
     pub note: usize,
     /// Flattened indices of the notes (if any) that hold this syllable
@@ -251,6 +253,7 @@ pub struct ClipboardNote {
     pub(crate) kind: NoteKind,
     pub(crate) weight: f64,
     pub(crate) text: Option<String>,
+    pub(crate) timing_unresolved: bool,
 }
 
 pub(crate) struct FlatNote {
