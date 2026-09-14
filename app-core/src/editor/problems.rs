@@ -1,9 +1,9 @@
 //! Typed chart problems.
 //!
-//! Editing deliberately allows a chart to be temporarily wrong: a drag passes
-//! through an overlap, a syllable is briefly empty while it is retyped. The
-//! format does not allow saving that, so problems are reported with a location
-//! the editor can jump to rather than blocking the pointer.
+//! Editing deliberately allows a chart to be temporarily wrong, such as a drag
+//! passing through an overlap. Problems include a location the editor can jump
+//! to rather than blocking the pointer. Empty lyric slots remain valid while
+//! they await text, so they produce authoring advice.
 //!
 //! An [`Severity::Error`] problem is one the format rejects, so it blocks
 //! saving. A warning is authoring advice.
@@ -35,11 +35,11 @@ pub enum ProblemKind {
 impl ProblemKind {
     pub fn severity(self) -> Severity {
         match self {
-            Self::OverlappingNotes
-            | Self::MissingPitchTarget
-            | Self::UnresolvedContinuation
-            | Self::EmptyLyric => Severity::Error,
-            Self::NoteTooShort
+            Self::OverlappingNotes | Self::MissingPitchTarget | Self::UnresolvedContinuation => {
+                Severity::Error
+            }
+            Self::EmptyLyric
+            | Self::NoteTooShort
             | Self::ScorableNoteWithoutLyric
             | Self::LyricWithoutPitch
             | Self::LargeIntervalLeap
@@ -332,7 +332,7 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_syllable_blocks_saving_and_points_at_its_lyric() {
+    fn an_empty_syllable_is_a_located_warning_and_can_be_saved() {
         let mut document = document(&[(0.0, 1.0, 60, "one")]);
         let address = LyricAddress {
             segment: 0,
@@ -344,9 +344,69 @@ mod tests {
             .problems
             .iter()
             .find(|problem| problem.kind == ProblemKind::EmptyLyric)
-            .expect("an empty syllable is an error");
+            .expect("an empty syllable remains visible as advice");
         assert_eq!(empty.lyric, Some(address));
+        assert_eq!(empty.severity(), Severity::Warning);
+        assert!(kinds(&report).contains(&ProblemKind::ScorableNoteWithoutLyric));
+        assert!(!report.blocks_saving());
+        document.to_chart().validate().unwrap();
+    }
+
+    #[test]
+    fn independent_lyrics_across_notes_and_empty_slots_match_format_validity() {
+        let mut chart = document(&[(0.0, 1.0, 60, "held"), (1.0, 2.0, 62, "slot")]).to_chart();
+        let timing = utz::LyricTiming {
+            start: 500_000,
+            duration: 1_000_000,
+        };
+        let utz::LyricToken::Text(held) = &mut chart.tracks[0].phrases[0].notes[0].lyrics[0] else {
+            panic!("text token");
+        };
+        held.timing = Some(timing);
+        let utz::LyricToken::Text(slot) = &mut chart.tracks[0].phrases[0].notes[1].lyrics[0] else {
+            panic!("text token");
+        };
+        slot.text.clear();
+
+        let document = EditorDocument::new(chart);
+        let report = document.problems();
+        assert!(!report.blocks_saving());
+        assert!(kinds(&report).contains(&ProblemKind::EmptyLyric));
+        assert!(kinds(&report).contains(&ProblemKind::ScorableNoteWithoutLyric));
+        let saved = document.to_chart();
+        saved.validate().unwrap();
+        let restored: utz::VocalChart =
+            serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
+        restored.validate().unwrap();
+        assert_eq!(restored.tracks[0].phrases[0].notes.len(), 2);
+        let utz::LyricToken::Text(held) = &restored.tracks[0].phrases[0].notes[0].lyrics[0] else {
+            panic!("text token");
+        };
+        assert_eq!(held.timing, Some(timing));
+    }
+
+    #[test]
+    fn a_missing_pitch_target_remains_a_format_error() {
+        let mut chart = document(&[(0.0, 1.0, 60, "one")]).to_chart();
+        chart.tracks[0].phrases[0].notes[0].pitch = None;
+        let document = EditorDocument::new(chart);
+        let report = document.problems();
+        assert!(kinds(&report).contains(&ProblemKind::MissingPitchTarget));
         assert!(report.blocks_saving());
+        assert!(document.to_chart().validate().is_err());
+    }
+
+    #[test]
+    fn an_unresolved_continuation_remains_a_format_error() {
+        let mut chart = document(&[(0.0, 1.0, 60, "one")]).to_chart();
+        chart.tracks[0].phrases[0].notes[0].lyrics = vec![utz::LyricToken::Continuation {
+            continuation_of: "missing-lyric".into(),
+        }];
+        let document = EditorDocument::new(chart);
+        let report = document.problems();
+        assert!(kinds(&report).contains(&ProblemKind::UnresolvedContinuation));
+        assert!(report.blocks_saving());
+        assert!(document.to_chart().validate().is_err());
     }
 
     #[test]
