@@ -9,8 +9,10 @@ use super::model::{MEL_BINS, PITCH_CLASSES, Stars, TECHNIQUE_CLASSES};
 use super::stage_d::StyleLogits;
 use super::stage_e::aggregate_technique_frames;
 
-pub const FRAME_BUCKET: usize = 256;
-pub const NOTE_BUCKET: usize = 32;
+/// U-Net shape alignment, not a maximum acoustic or musical context.
+pub const FRAME_BUCKET: usize = 16;
+const CONTEXT_TARGET_FRAMES: usize = 30 * frontend::SAMPLE_RATE / frontend::HOP_SIZE;
+const CONTEXT_MARGIN_FRAMES: usize = frontend::SAMPLE_RATE / frontend::HOP_SIZE;
 pub const NOTE_START: usize = 30;
 pub const NOTE_END: usize = 85;
 pub const TECHNIQUE_TAXONOMY: [&str; TECHNIQUE_CLASSES] = [
@@ -86,6 +88,12 @@ struct Segment {
     start: usize,
     valid: usize,
     words: Vec<TranscriptWord>,
+}
+
+impl Segment {
+    fn padded(&self) -> usize {
+        self.valid.div_ceil(FRAME_BUCKET) * FRAME_BUCKET
+    }
 }
 
 /// Builds the shared 24 kHz STARS generation from decoded audio and the raw
@@ -165,7 +173,7 @@ impl Stars {
         P: FnMut(f32, &str),
     {
         validate_shared_inputs(shared)?;
-        let segments = conditioned_segments(words, source_start_micros, shared.frames);
+        let segments = conditioned_segments(words, source_start_micros, shared.frames)?;
         if segments.is_empty() {
             return Err("STARS has no TimedTranscript-conditioned frames".to_string());
         }
@@ -181,13 +189,12 @@ impl Stars {
                 "Running STARS Stage A/B/C segments"
             };
             progress(index as f32 / segments.len() as f32, message);
-            let mel = padded_rows(&shared.mel, shared.frames, MEL_BINS, segment.start);
-            let pitch = padded_i32(&shared.pitch_coarse, segment.start);
-            let uv = padded_i32(&shared.uv, segment.start);
-            let mel_pitch =
-                self.encode_mel_with_pitch(&mel, &pitch, &uv, segment.valid, FRAME_BUCKET)?;
-            let utterance =
-                self.encode_utterance(&mel_pitch.embedded, segment.valid, FRAME_BUCKET)?;
+            let frames = segment.padded();
+            let mel = padded_rows(&shared.mel, MEL_BINS, segment);
+            let pitch = padded_indices(&shared.pitch_coarse, segment);
+            let uv = padded_indices(&shared.uv, segment);
+            let mel_pitch = self.encode_mel_with_pitch(&mel, &pitch, &uv, segment.valid, frames)?;
+            let utterance = self.encode_utterance(&mel_pitch.embedded, segment.valid, frames)?;
             let phone_input = phonemize(
                 &segment
                     .words
@@ -202,12 +209,12 @@ impl Stars {
                 &phone_input.phone_ids,
                 &phone_input.phone_to_word,
             )?;
-            let (mel_to_phoneme, mel_to_word) = padded_alignment(&alignment);
+            let (mel_to_phoneme, mel_to_word) = padded_alignment(&alignment, frames);
             let rhythm = self.encode_rhythm(
                 &mel_pitch.embedded,
                 &utterance.features,
                 segment.valid,
-                FRAME_BUCKET,
+                frames,
                 &mel_to_phoneme,
                 alignment.phoneme_intervals.len(),
                 &mel_to_word,
@@ -223,15 +230,12 @@ impl Stars {
             )?;
             let local_boundaries = boundary_indices(&regulated, segment.valid);
             let ranges = note_ranges(&local_boundaries, segment.valid);
-            if ranges.len() > NOTE_BUCKET {
-                return Err("STARS segment exceeds the note bucket".to_string());
-            }
             let mel_to_note = mapping_from_boundaries(&regulated, segment.valid);
             let pitch = self.encode_pitch(
                 &mel_pitch.embedded,
                 &rhythm.features,
                 segment.valid,
-                FRAME_BUCKET,
+                frames,
                 &mel_to_note,
                 ranges.len(),
                 &regulated,
@@ -250,7 +254,8 @@ impl Stars {
                 )?;
             }
         }
-        stitch_notes(&mut all_notes);
+        // These are complete native note events. Equal pitch alone is not a
+        // continuation: merging it here would erase repeated syllable attacks.
         let all_boundaries = all_notes
             .iter()
             .skip(1)
@@ -280,8 +285,12 @@ fn append_technique_outputs(
     if alignment.phoneme_intervals.is_empty() {
         return Err("STARS has no phoneme intervals for technique inference".to_string());
     }
-    let sentence =
-        model.encode_sentence(mel_embedding, pitch_features, segment.valid, FRAME_BUCKET)?;
+    let sentence = model.encode_sentence(
+        mel_embedding,
+        pitch_features,
+        segment.valid,
+        segment.padded(),
+    )?;
     let intervals = alignment
         .phoneme_intervals
         .iter()
@@ -323,57 +332,96 @@ fn validate_shared_inputs(shared: &SharedInputs) -> Result<(), String> {
     }
 }
 
-fn frame_to_micros(frame: usize) -> u64 {
-    (frame as u128 * frontend::HOP_SIZE as u128 * 1_000_000 / frontend::SAMPLE_RATE as u128) as u64
+fn canonical_to_frame(value: u64) -> Result<usize, String> {
+    usize::try_from(
+        (u128::from(value) * frontend::SAMPLE_RATE as u128 + frontend::HOP_SIZE as u128 * 500_000)
+            / (frontend::HOP_SIZE as u128 * 1_000_000),
+    )
+    .map_err(|_| "STARS transcript frame projection overflows".to_string())
 }
 
 fn conditioned_segments(
     words: &[TranscriptWord],
     source_start_micros: u64,
     frames: usize,
-) -> Vec<Segment> {
-    (0..frames)
-        .step_by(FRAME_BUCKET)
-        .filter_map(|start| {
-            let valid = (frames - start).min(FRAME_BUCKET);
-            let start_micros = frame_to_micros(start).saturating_add(source_start_micros);
-            let end_micros = frame_to_micros(start + valid).saturating_add(source_start_micros);
-            let words = words
-                .iter()
-                .filter(|word| {
-                    word.start_micros < end_micros
-                        && word.start_micros.saturating_add(word.duration_micros) > start_micros
-                })
-                .cloned()
-                .collect::<Vec<_>>();
-            (!words.is_empty()).then_some(Segment {
+) -> Result<Vec<Segment>, String> {
+    let mut spans = Vec::new();
+    for (index, word) in words.iter().enumerate() {
+        let start = canonical_to_frame(word.start_micros.saturating_sub(source_start_micros))?;
+        let end = canonical_to_frame(
+            word.start_micros
+                .saturating_add(word.duration_micros)
+                .saturating_sub(source_start_micros),
+        )?
+        .min(frames);
+        if start < frames && end > start {
+            spans.push((index, start, end));
+        }
+    }
+    if spans.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Audio visibility follows complete lexical contexts, never a fixture
+    // allocation grid. A long held word is not repeated across fixed cuts.
+    let mut groups = Vec::new();
+    let mut first = 0;
+    let mut previous_end = spans[0].2;
+    for index in 1..spans.len() {
+        let start = spans[index].1;
+        if start.saturating_sub(previous_end) > CONTEXT_MARGIN_FRAMES * 2
+            || (start.saturating_sub(spans[first].1) >= CONTEXT_TARGET_FRAMES
+                && start >= previous_end)
+        {
+            groups.push((first, index, previous_end));
+            first = index;
+        }
+        previous_end = previous_end.max(spans[index].2);
+    }
+    groups.push((first, spans.len(), previous_end));
+    let mut segments = Vec::new();
+    for (index, &(first, stop, end)) in groups.iter().enumerate() {
+        let mut start = spans[first].1.saturating_sub(CONTEXT_MARGIN_FRAMES);
+        let mut end = end.saturating_add(CONTEXT_MARGIN_FRAMES).min(frames);
+        if index > 0 {
+            let preceding_end = groups[index - 1].2;
+            start = start.max(preceding_end + spans[first].1.saturating_sub(preceding_end) / 2);
+        }
+        if let Some(next) = groups.get(index + 1) {
+            let measured_end = groups[index].2;
+            end = end.min(measured_end + spans[next.0].1.saturating_sub(measured_end) / 2);
+        }
+        if end > start {
+            segments.push(Segment {
                 start,
-                valid,
-                words,
-            })
-        })
-        .collect()
+                valid: end - start,
+                words: spans[first..stop]
+                    .iter()
+                    .map(|span| words[span.0].clone())
+                    .collect(),
+            });
+        }
+    }
+    Ok(segments)
 }
 
-fn padded_rows(values: &[f32], frames: usize, width: usize, start: usize) -> Vec<f32> {
-    let mut result = vec![0.0_f32; FRAME_BUCKET * width];
-    let count = frames.saturating_sub(start).min(FRAME_BUCKET);
-    result[..count * width].copy_from_slice(&values[start * width..(start + count) * width]);
+fn padded_rows(values: &[f32], width: usize, segment: &Segment) -> Vec<f32> {
+    let mut result = vec![0.0_f32; segment.padded() * width];
+    result[..segment.valid * width]
+        .copy_from_slice(&values[segment.start * width..(segment.start + segment.valid) * width]);
     result
 }
 
-fn padded_i32(values: &[i32], start: usize) -> Vec<i32> {
-    let mut result = vec![0_i32; FRAME_BUCKET];
-    let count = values.len().saturating_sub(start).min(FRAME_BUCKET);
-    result[..count].copy_from_slice(&values[start..start + count]);
+fn padded_indices(values: &[i32], segment: &Segment) -> Vec<i32> {
+    let mut result = vec![0_i32; segment.padded()];
+    result[..segment.valid].copy_from_slice(&values[segment.start..segment.start + segment.valid]);
     result
 }
 
-fn padded_alignment(alignment: &Alignment) -> (Vec<i64>, Vec<i64>) {
+fn padded_alignment(alignment: &Alignment, frames: usize) -> (Vec<i64>, Vec<i64>) {
     let mut phonemes = alignment.mel_to_phoneme.clone();
     let mut words = alignment.mel_to_word.clone();
-    phonemes.resize(FRAME_BUCKET, 0);
-    words.resize(FRAME_BUCKET, 0);
+    phonemes.resize(frames, 0);
+    words.resize(frames, 0);
     (phonemes, words)
 }
 
@@ -407,7 +455,7 @@ fn note_ranges(boundaries: &[usize], valid: usize) -> Vec<Range<usize>> {
 }
 
 fn mapping_from_boundaries(values: &[i64], valid: usize) -> Vec<i64> {
-    let mut mapping = vec![0_i64; FRAME_BUCKET];
+    let mut mapping = vec![0_i64; values.len()];
     let mut note = 0_i64;
     for frame in 0..valid {
         note += values[frame];
@@ -443,29 +491,6 @@ fn append_notes(
     }
 }
 
-fn stitch_notes(notes: &mut Vec<RawNote>) {
-    let mut stitched: Vec<RawNote> = Vec::with_capacity(notes.len());
-    for note in notes.drain(..) {
-        if let Some(previous) = stitched.last_mut()
-            && previous.end_frame == note.start_frame
-            && previous.midi.is_some()
-            && previous.midi == note.midi
-        {
-            let previous_frames = previous.end_frame - previous.start_frame;
-            let note_frames = note.end_frame - note.start_frame;
-            let total_frames = previous_frames + note_frames;
-            previous.end_frame = note.end_frame;
-            for (left, right) in previous.pitch_logits.iter_mut().zip(note.pitch_logits) {
-                *left = (*left * previous_frames as f32 + right * note_frames as f32)
-                    / total_frames as f32;
-            }
-        } else {
-            stitched.push(note);
-        }
-    }
-    *notes = stitched;
-}
-
 fn sigmoid(value: f32) -> f32 {
     1.0 / (1.0 + (-value).exp())
 }
@@ -482,7 +507,7 @@ mod tests {
             start_micros: 2_000_000,
             duration_micros: 200_000,
         }];
-        let segments = conditioned_segments(&words, 2_000_000, 300);
+        let segments = conditioned_segments(&words, 2_000_000, 300).unwrap();
         assert_eq!(segments.len(), 1);
         assert_eq!(segments[0].start, 0);
     }
@@ -498,27 +523,92 @@ mod tests {
     }
 
     #[test]
-    fn adjacent_matching_notes_are_stitched() {
-        let mut first_logits = vec![0.0_f32; PITCH_CLASSES];
-        first_logits[60] = 2.0;
-        let mut notes = vec![
-            RawNote {
-                start_frame: 0,
-                end_frame: 256,
-                pitch_logits: first_logits.clone(),
-                midi: Some(60),
-            },
-            RawNote {
-                start_frame: 256,
-                end_frame: 300,
-                pitch_logits: first_logits,
-                midi: Some(60),
-            },
-        ];
-        stitch_notes(&mut notes);
-        assert_eq!(notes.len(), 1);
-        assert_eq!(notes[0].start_frame, 0);
-        assert_eq!(notes[0].end_frame, 300);
-        assert!((notes[0].pitch_logits[60] - 2.0).abs() < f32::EPSILON);
+    fn native_repeated_notes_and_large_note_counts_survive_without_stitching() {
+        let ranges = (0..48)
+            .map(|index| index * 30..(index + 1) * 30)
+            .collect::<Vec<_>>();
+        let mut logits = vec![-10.0; ranges.len() * PITCH_CLASSES];
+        for row in logits.chunks_exact_mut(PITCH_CLASSES) {
+            row[60] = 10.0;
+        }
+        let mut notes = Vec::new();
+        append_notes(&mut notes, 17, &ranges, &logits);
+        assert_eq!(notes.len(), 48);
+        assert!(notes.iter().all(|note| note.midi == Some(60)));
+        assert!(
+            notes
+                .windows(2)
+                .all(|pair| pair[0].end_frame == pair[1].start_frame)
+        );
+        assert_eq!(notes.last().unwrap().end_frame, 17 + 48 * 30);
+    }
+
+    #[test]
+    fn full_words_are_not_repeated_at_fixture_frame_cuts() {
+        let words = (0..12)
+            .map(|index| TranscriptWord {
+                id: format!("word-{index}"),
+                text: "啦".into(),
+                start_micros: 1_000_000 + index * 500_000,
+                duration_micros: 500_000,
+            })
+            .collect::<Vec<_>>();
+        let frames = canonical_to_frame(8_000_000).unwrap();
+        let segments = conditioned_segments(&words, 0, frames).unwrap();
+        assert_eq!(segments.len(), 1);
+        let segment = &segments[0];
+        assert_eq!(segment.words, words);
+        assert!(segment.valid > 256);
+        assert_eq!(segment.padded() % 16, 0);
+        assert!(segment.padded() - segment.valid < 16);
+        let values = (0..frames * MEL_BINS)
+            .map(|index| index as f32)
+            .collect::<Vec<_>>();
+        let padded = padded_rows(&values, MEL_BINS, segment);
+        assert_eq!(
+            &padded[..segment.valid * MEL_BINS],
+            &values[segment.start * MEL_BINS..(segment.start + segment.valid) * MEL_BINS]
+        );
+        assert!(
+            padded[segment.valid * MEL_BINS..]
+                .iter()
+                .all(|value| *value == 0.0)
+        );
+    }
+
+    #[test]
+    fn long_contexts_preserve_complete_transcript_and_nonoverlapping_audio() {
+        let words = (0..80)
+            .map(|index| TranscriptWord {
+                id: format!("word-{index}"),
+                text: "啦".into(),
+                start_micros: index * 1_000_000,
+                duration_micros: 1_000_000,
+            })
+            .collect::<Vec<_>>();
+        let segments =
+            conditioned_segments(&words, 0, canonical_to_frame(80_000_000).unwrap()).unwrap();
+        assert!(segments.len() > 1);
+        assert!(
+            segments
+                .windows(2)
+                .all(|pair| pair[0].start + pair[0].valid <= pair[1].start)
+        );
+        assert_eq!(
+            segments
+                .iter()
+                .flat_map(|segment| segment.words.clone())
+                .collect::<Vec<_>>(),
+            words
+        );
+        for segment in segments {
+            for word in segment.words {
+                assert!(canonical_to_frame(word.start_micros).unwrap() >= segment.start);
+                assert!(
+                    canonical_to_frame(word.start_micros + word.duration_micros).unwrap()
+                        <= segment.start + segment.valid
+                );
+            }
+        }
     }
 }

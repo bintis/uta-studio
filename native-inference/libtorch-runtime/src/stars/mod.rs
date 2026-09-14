@@ -15,8 +15,8 @@ pub use model::{
     RhythmEncoding, SentenceEncoding, Stars, TECHNIQUE_CLASSES, TENSOR_COUNT, UtteranceEncoding,
 };
 pub use pipeline::{
-    FRAME_BUCKET, GlobalStyle, NOTE_BUCKET, PhonemeInput, RawNote, RawTechnique, SharedInputs,
-    StarsResult, TECHNIQUE_TAXONOMY, TranscriptWord, prepare_inputs, prepare_wav_inputs,
+    FRAME_BUCKET, GlobalStyle, PhonemeInput, RawNote, RawTechnique, SharedInputs, StarsResult,
+    TECHNIQUE_TAXONOMY, TranscriptWord, prepare_inputs, prepare_wav_inputs,
 };
 pub use stage_d::StyleLogits;
 pub use stage_e::{TechniqueAggregation, TechniqueEncoding, aggregate_technique_frames};

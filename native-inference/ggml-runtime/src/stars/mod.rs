@@ -13,8 +13,8 @@ mod utterance;
 
 pub use model::{HIDDEN_DIM, MEL_BINS, PITCH_CLASSES, Stars, TECHNIQUE_CLASSES, TENSOR_COUNT};
 pub use pipeline::{
-    FRAME_BUCKET, GlobalStyle, NOTE_BUCKET, PhonemeInput, RawNote, RawTechnique, SharedInputs,
-    StarsResult, TECHNIQUE_TAXONOMY, TranscriptWord, prepare_inputs, prepare_wav_inputs,
+    FRAME_BUCKET, GlobalStyle, PhonemeInput, RawNote, RawTechnique, SharedInputs, StarsResult,
+    TECHNIQUE_TAXONOMY, TranscriptWord, prepare_inputs, prepare_wav_inputs,
 };
 pub use stage_a::{MelEncoding, MelPitchEncoding};
 pub use stage_b::RhythmEncoding;
