@@ -159,6 +159,10 @@ struct SingingCandidateWire {
     boundary_calibrated_confidence: Option<f32>,
     target_pitch_source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    target_pitch_source_local_score: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target_pitch_calibrated_confidence: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     continuous_pitch_error_integral: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     continuous_pitch_observed_duration: Option<u64>,
@@ -304,6 +308,12 @@ struct SingingBoundaryAlternativeWire {
     fractional_midi: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     source_local_score: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_local_pitch_score: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    calibrated_boundary_confidence: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    calibrated_pitch_confidence: Option<f32>,
     #[serde(default)]
     hard: bool,
 }
@@ -699,6 +709,8 @@ fn validate_singing_analysis_wire_shape(value: &serde_json::Value) -> Result<(),
         "boundary_support",
         "boundary_calibrated_confidence",
         "target_pitch_source",
+        "target_pitch_source_local_score",
+        "target_pitch_calibrated_confidence",
         "continuous_pitch_error_integral",
         "continuous_pitch_observed_duration",
         "rmvpe_center_hz",
@@ -1333,6 +1345,8 @@ mod tests {
             boundary_support: None,
             boundary_calibrated_confidence: None,
             target_pitch_source: "rmvpe".to_string(),
+            target_pitch_source_local_score: None,
+            target_pitch_calibrated_confidence: None,
             continuous_pitch_error_integral: None,
             continuous_pitch_observed_duration: None,
             rmvpe_center_hz,
@@ -1760,10 +1774,37 @@ mod tests {
             serde_json::json!(0.0030255304);
         value["candidate_evidence"][0]["continuous_pitch_observed_duration"] =
             serde_json::json!(240_000);
+        value["candidate_evidence"][0]["target_pitch_source_local_score"] =
+            serde_json::json!(0.008);
+        value["candidate_evidence"][0]["boundary_alternatives"] = serde_json::json!([{
+            "source_expert": "jbm555_cectc_80",
+            "range": {"start": 1_000_000, "end": 2_000_000},
+            "kind": "advanced_note",
+            "source_local_score": 0.3,
+            "source_local_pitch_score": 0.006
+        }]);
         let decoded: SingingCandidateWire =
             serde_json::from_value(value["candidate_evidence"][0].clone()).unwrap();
         let round_trip = serde_json::to_value(decoded).unwrap();
         assert_eq!(round_trip["continuous_pitch_observed_duration"], 240_000);
+        assert!(
+            round_trip["target_pitch_source_local_score"]
+                .as_f64()
+                .unwrap()
+                > 0.007
+        );
+        assert!(
+            round_trip["boundary_alternatives"][0]["source_local_score"]
+                .as_f64()
+                .unwrap()
+                > 0.2
+        );
+        assert!(
+            round_trip["boundary_alternatives"][0]["source_local_pitch_score"]
+                .as_f64()
+                .unwrap()
+                < 0.01
+        );
         assert!(
             round_trip["continuous_pitch_error_integral"]
                 .as_f64()
