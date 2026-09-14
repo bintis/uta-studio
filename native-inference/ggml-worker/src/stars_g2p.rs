@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 use uta_ggml_runtime::stars::PhonemeInput;
 
-pub const PROFILE: &str = "stars-chinese-g2p";
+pub use uta_model_settings::STARS_CHINESE_PRONUNCIATION_PROFILE as PROFILE;
 
 #[derive(Debug, Deserialize)]
 struct RawAsset {

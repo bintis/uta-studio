@@ -26,7 +26,7 @@ const STARS_CONFIG: &str = "01e8a495ba2e47b47b21fccda8db2605c85ec76cdaae258768d1
 #[cfg(test)]
 const ANNOTATION_RMVPE: &str = "19dc1809cf4cdb0a18db93441816bc327e14e5644b72eeaae5220560c6736fe2";
 const FRONTEND_PROFILE: &str = "shared-singing-frontend-24k";
-const G2P_PROFILE: &str = "stars-chinese-g2p-pypinyin-0.55.0";
+use uta_model_settings::STARS_CHINESE_PRONUNCIATION_PROFILE;
 #[cfg(test)]
 const G2P_ASSET_SHA256: &str = "433fcd2a7379cb9554a7a0dfe254746c3c7ee70bfd5de4fa18c1462757b888a5";
 const TECHNIQUE_TAXONOMY: [&str; 9] = [
@@ -418,7 +418,9 @@ pub fn parse_advanced_note_evidence(
             "advanced note evidence identity or frame contract is invalid",
         ));
     }
-    if requires_g2p != (evidence.g2p_profile.as_deref() == Some(G2P_PROFILE)) {
+    if requires_g2p
+        != (evidence.g2p_profile.as_deref() == Some(STARS_CHINESE_PRONUNCIATION_PROFILE))
+    {
         return Err(invalid("advanced note G2P identity is invalid"));
     }
     validate_technique_contract(&evidence)?;
@@ -648,7 +650,7 @@ mod tests {
                 STARS_COMMIT,
                 STARS_CHECKPOINT,
                 STARS_CONFIG,
-                Some(G2P_PROFILE),
+                Some(STARS_CHINESE_PRONUNCIATION_PROFILE),
             )
         };
         let frontend_generation = "c".repeat(64);

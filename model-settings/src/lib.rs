@@ -1,6 +1,9 @@
 //! Backend-neutral model-owned analysis settings. No runtime or model is loaded here.
 use std::collections::BTreeMap;
 
+/// Semantic identity of the native STARS pronunciation asset, shared by its
+/// producer and consumer. This is not a package version or checksum.
+pub const STARS_CHINESE_PRONUNCIATION_PROFILE: &str = "stars-chinese-g2p";
 pub type ModelSettings = BTreeMap<String, BTreeMap<String, serde_json::Value>>;
 
 #[derive(Debug, Clone, Copy)]
