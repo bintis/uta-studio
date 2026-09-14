@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 
 use super::{
-    ATTACK_CONTEXT_TOLERANCE, BoundaryEvidenceKind, SegmentCandidate,
+    ATTACK_CONTEXT_TOLERANCE, BoundaryEvidenceKind, SegmentCandidate, TimeRange,
     acoustic_fundamental_support_for_target, belongs_to_start, sustained_pitch_support_for_target,
 };
 
@@ -30,12 +30,44 @@ struct OnsetCredit {
     reward: f32,
 }
 
+/// Candidate evidence is clipped to each duration. Reunite those pieces
+/// before locating a recovery, so an internal source edge is never mistaken
+/// for the end of an observed unsupported interval.
+fn unsupported_ranges(candidates: &[SegmentCandidate]) -> Vec<TimeRange> {
+    let mut ranges = candidates
+        .iter()
+        .flat_map(|candidate| candidate.voicing_evidence.iter())
+        .flat_map(|evidence| evidence.unsupported_ranges.iter().copied())
+        .collect::<Vec<_>>();
+    ranges.sort_by_key(|range| (range.start, range.end));
+    let mut united: Vec<TimeRange> = Vec::new();
+    for range in ranges {
+        if let Some(previous) = united.last_mut()
+            && range.start <= previous.end
+        {
+            previous.end = previous.end.max(range.end);
+        } else {
+            united.push(range);
+        }
+    }
+    united
+}
+
+fn unsupported_at(ranges: &[TimeRange], time: u64) -> Option<TimeRange> {
+    let next = ranges.partition_point(|range| range.end <= time);
+    ranges
+        .get(next)
+        .copied()
+        .filter(|range| range.start <= time)
+}
+
 pub(super) struct NativeNoteEvents {
     credits: Vec<Vec<OnsetCredit>>,
 }
 
 impl NativeNoteEvents {
     pub(super) fn new(candidates: &[SegmentCandidate]) -> Self {
+        let unsupported = unsupported_ranges(candidates);
         let mut observations = BTreeMap::<&str, BTreeMap<u64, f32>>::new();
         for candidate in candidates {
             if !candidate.target.is_pitched()
@@ -55,10 +87,16 @@ impl NativeNoteEvents {
             let support = sustained_pitch_support_for_target(candidate, target_hz).max(
                 acoustic_fundamental_support_for_target(candidate, target_hz),
             );
+            // Keep the native range on the candidate. For onset credit only,
+            // an observation inside an unsupported interval refers to its
+            // recovery. Several same-source observations at that recovery
+            // remain one vote, even when their original starts differ.
+            let onset = unsupported_at(&unsupported, candidate.range.start)
+                .map_or(candidate.range.start, |range| range.end);
             observations
                 .entry(&candidate.boundary_source)
                 .or_default()
-                .entry(candidate.range.start)
+                .entry(onset)
                 .and_modify(|prior| *prior = prior.max(support))
                 .or_insert(support);
         }
@@ -74,7 +112,13 @@ impl NativeNoteEvents {
         let credits = candidates
             .iter()
             .map(|candidate| {
-                if !candidate.target.is_pitched() {
+                // A pitched candidate remains eligible in the graph, but
+                // an onset inside explicitly unsupported time earns no
+                // native event credit. A recovery proposal can receive the
+                // original observation instead.
+                if !candidate.target.is_pitched()
+                    || unsupported_at(&unsupported, candidate.range.start).is_some()
+                {
                     return Vec::new();
                 }
                 observations
@@ -143,6 +187,23 @@ mod tests {
             "rmvpe_center_hz": 440.0,
             "rmvpe_voiced_ratio": 1.0,
             "rmvpe_pitch_mad_cents": 0.0
+        }))
+        .unwrap()
+    }
+
+    fn rest(id: &str, start: u64, end: u64) -> SegmentCandidate {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "range": { "start": start, "end": end },
+            "target": { "kind": "unpitched" },
+            "boundary_source": "continuous_voicing",
+            "boundary_kind": "voicing",
+            "boundary_role": "challenger",
+            "target_pitch_source": "unpitched",
+            "voicing_evidence": {
+                "source_experts": ["rmvpe", "fcpe", "acoustic_dsp"],
+                "unsupported_ranges": [{ "start": start, "end": end }]
+            }
         }))
         .unwrap()
     }
@@ -228,5 +289,91 @@ mod tests {
         let index = NativeNoteEvents::new(&[pitched, rest]);
         assert_eq!(index.reward(0), expected);
         assert_eq!(index.reward(1), 0.0);
+    }
+
+    #[test]
+    fn a_partial_rest_cannot_repeat_an_onset_or_reward_an_unsupported_start() {
+        let before = note("earlier-expert", 380_000, 400_000);
+        let mut early = note("following-expert", 420_000, 1_000_000);
+        early.voicing_evidence = rest("unsupported-prefix", 420_000, 460_000).voicing_evidence;
+        let mut recovery = early.clone();
+        recovery.id = "supported-recovery".into();
+        recovery.range.start = 460_000;
+        recovery.boundary_kind = BoundaryEvidenceKind::Voicing;
+        recovery.voicing_evidence = None;
+        let pool = vec![
+            before,
+            early,
+            recovery,
+            rest("whole-rest", 400_000, 460_000),
+            rest("partial-rest", 400_000, 420_000),
+        ];
+        let index = NativeNoteEvents::new(&pool);
+        assert!(index.reward(0) > 0.0);
+        assert_eq!(index.reward(1), 0.0);
+        assert!(index.reward(2) > 0.0);
+        assert_eq!(index.repeated_reward(0, 2), 0.0);
+        let selected = crate::fusion::decode_candidate_graph(&pool).unwrap();
+        crate::fusion::validate_candidate_path(&pool, &selected).unwrap();
+        let pitched = selected
+            .iter()
+            .filter(|candidate| candidate.target.is_pitched())
+            .collect::<Vec<_>>();
+        assert_eq!(pitched.len(), 2);
+        assert_eq!(pitched[0].range, pool[0].range);
+        assert_eq!(pitched[1].id, "supported-recovery");
+        assert_eq!(pitched[1].range.start, 460_000);
+        assert_eq!(
+            selected
+                .iter()
+                .filter(|candidate| !candidate.target.is_pitched())
+                .map(|candidate| candidate.range.end - candidate.range.start)
+                .sum::<u64>(),
+            60_000
+        );
+        assert_eq!(
+            pool[1].range.start, 420_000,
+            "the native observation stays intact"
+        );
+    }
+
+    #[test]
+    fn same_source_onsets_inside_one_gap_share_one_recovery_observation() {
+        let mut first = note("singer-expert", 420_000, 1_000_000);
+        first.voicing_evidence = rest("first-prefix", 420_000, 460_000).voicing_evidence;
+        let mut second = note("singer-expert", 430_000, 1_000_000);
+        second.voicing_evidence = rest("second-prefix", 430_000, 460_000).voicing_evidence;
+        let mut recovery = note("derived", 460_000, 1_000_000);
+        recovery.boundary_kind = BoundaryEvidenceKind::Voicing;
+        let mut nearby = recovery.clone();
+        nearby.id = "near-recovery".into();
+        nearby.range.start = 480_000;
+        let pool = vec![
+            first,
+            second,
+            recovery,
+            nearby,
+            rest("rest-before-edge", 400_000, 420_000),
+            rest("rest-after-edge", 420_000, 460_000),
+        ];
+        let index = NativeNoteEvents::new(&pool);
+        assert_eq!(
+            unsupported_ranges(&pool),
+            [TimeRange {
+                start: 400_000,
+                end: 460_000
+            }]
+        );
+        assert_eq!(index.reward(0), 0.0);
+        assert_eq!(index.reward(1), 0.0);
+        assert_eq!(index.reward(2), NATIVE_EVENT_UTILITY);
+        assert!(index.reward(3) > 0.0);
+        assert!(
+            (index.reward(2) + index.reward(3)
+                - index.repeated_reward(2, 3)
+                - NATIVE_EVENT_UTILITY)
+                .abs()
+                < 0.000001
+        );
     }
 }
