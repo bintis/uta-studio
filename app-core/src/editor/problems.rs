@@ -161,7 +161,10 @@ fn report_track(document: &EditorDocument, track: usize, problems: &mut Vec<Char
                 lyric: None,
             });
         }
-        if note.scores && note.lyric.is_none() && !note.continues_lyric {
+        if note.scores
+            && note.lyric.as_ref().is_none_or(|text| text.trim().is_empty())
+            && !note.continues_lyric
+        {
             problems.push(ChartProblem {
                 track,
                 kind: ProblemKind::ScorableNoteWithoutLyric,
@@ -347,6 +350,7 @@ mod tests {
             .expect("an empty syllable remains visible as advice");
         assert_eq!(empty.lyric, Some(address));
         assert_eq!(empty.severity(), Severity::Warning);
+        assert!(kinds(&report).contains(&ProblemKind::ScorableNoteWithoutLyric));
         assert!(!report.blocks_saving());
         document.to_chart().validate().unwrap();
     }
