@@ -2,6 +2,8 @@
 //!
 //! Uta! Studio keeps a second-based authoring model. This adapter quantizes it
 //! to UltraStar note beats and writes the referenced assets beside the chart.
+//! UltraStar has one text event per note; independently timed words are joined
+//! on that note. Export preserves melody geometry instead of cutting it again.
 
 use std::{
     fs::OpenOptions,
@@ -773,6 +775,51 @@ mod tests {
         validate_usdx_str(&text).expect("original lyrics remain exportable");
     }
 
+    #[test]
+    fn independent_word_times_keep_one_melody_note_and_all_text_in_ultrastar() {
+        let mut chart = chart("ja", &[&[(0.0, 1.0, 60, "切れ", "normal")]]);
+        let timebase = chart.timebase;
+        let note = &mut chart.tracks[0].phrases[0].notes[0];
+        let LyricToken::Text(first) = &mut note.lyrics[0] else {
+            panic!("fixture lyric");
+        };
+        first.timing = Some(utz::LyricTiming {
+            start: timebase / 10,
+            duration: timebase * 4 / 10,
+        });
+        let mut second = first.clone();
+        second.id = "independent-next-word".into();
+        second.text = "に".into();
+        second.join_before = LyricJoin::None;
+        second.timing = Some(utz::LyricTiming {
+            start: timebase * 6 / 10,
+            duration: timebase * 3 / 10,
+        });
+        note.lyrics.push(LyricToken::Text(second));
+        chart.validate().expect("independent word ranges are valid");
+        let before = chart.clone();
+        let text = build_ultrastar_text(
+            "Title",
+            "Artist",
+            &chart,
+            "song.flac",
+            None,
+            None,
+            None,
+            2.0,
+        );
+        let sung = text
+            .lines()
+            .filter(|line| line.starts_with(": "))
+            .collect::<Vec<_>>();
+        assert_eq!(sung, [": 0 20 0 切れに"]);
+        assert_eq!(
+            chart, before,
+            "format conversion never rewrites source timing"
+        );
+        validate_usdx_str(&text).expect("independent words retain a valid melody export");
+    }
+
     /// Splits a chart's notes over a second lead track, assigning both
     /// tracks contiguous duet parts the way `EditorDocument` would.
     fn with_duet_track(chart: &mut VocalChart, singer: &str, notes: Vec<utz::VocalNote>) {
@@ -801,6 +848,7 @@ mod tests {
                 note.id = "duet-note".into();
                 note.start += chart.timebase;
                 note.lyrics = vec![utz::LyricToken::Text(utz::LyricTextToken {
+                    timing: None,
                     timing_unresolved: false,
                     id: "duet-lyric".into(),
                     text: "partner".into(),
