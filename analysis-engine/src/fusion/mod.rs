@@ -1,4 +1,5 @@
 mod alignment_fusion;
+mod articulation;
 mod baseline;
 mod calibration;
 mod candidate_states;
