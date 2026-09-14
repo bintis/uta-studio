@@ -1,5 +1,9 @@
 use serde::{Deserialize, Serialize};
 
+#[path = "native_note_events.rs"]
+mod native_note_events;
+use native_note_events::NativeNoteEvents;
+
 use super::candidate_states::{
     validate_candidate_evidence_relation_count, validate_candidate_state_count,
 };
@@ -338,7 +342,10 @@ fn start_attack_event(
                 && constraint.time.abs_diff(candidate.range.start) <= ATTACK_CONTEXT_TOLERANCE
         })
         .min_by_key(|constraint| {
-            (constraint.time.abs_diff(candidate.range.start), constraint.time)
+            (
+                constraint.time.abs_diff(candidate.range.start),
+                constraint.time,
+            )
         })
 }
 
@@ -764,17 +771,21 @@ fn target_relative_expert_support(
 }
 
 pub(super) fn sustained_pitch_support(candidate: &SegmentCandidate) -> f32 {
+    sustained_pitch_support_for_target(candidate, candidate.center_pitch_hz)
+}
+
+fn sustained_pitch_support_for_target(candidate: &SegmentCandidate, target_hz: f32) -> f32 {
     let rmvpe = target_relative_expert_support(
         candidate.rmvpe_center_hz,
         candidate.rmvpe_voiced_ratio,
         candidate.rmvpe_pitch_mad_cents,
-        candidate.center_pitch_hz,
+        target_hz,
     );
     let fcpe = target_relative_expert_support(
         candidate.fcpe_center_hz,
         candidate.fcpe_observed_ratio,
         candidate.fcpe_pitch_mad_cents,
-        candidate.center_pitch_hz,
+        target_hz,
     );
     let peer_agreement = candidate
         .fcpe_cents_from_rmvpe
@@ -784,6 +795,10 @@ pub(super) fn sustained_pitch_support(candidate: &SegmentCandidate) -> f32 {
 }
 
 pub(super) fn acoustic_fundamental_support(candidate: &SegmentCandidate) -> f32 {
+    acoustic_fundamental_support_for_target(candidate, candidate.center_pitch_hz)
+}
+
+fn acoustic_fundamental_support_for_target(candidate: &SegmentCandidate, target_hz: f32) -> f32 {
     let Some(acoustic) = candidate.acoustic.as_ref() else {
         return 0.0;
     };
@@ -796,7 +811,7 @@ pub(super) fn acoustic_fundamental_support(candidate: &SegmentCandidate) -> f32 
     if !acoustic.mean_periodicity.is_finite() || acoustic.mean_periodicity <= 0.0 {
         return 0.0;
     }
-    let cents = (1_200.0_f32 * (fundamental_hz / candidate.center_pitch_hz).log2()).abs();
+    let cents = (1_200.0_f32 * (fundamental_hz / target_hz).log2()).abs();
     if !cents.is_finite() || cents > 50.0 {
         return 0.0;
     }
@@ -1270,6 +1285,7 @@ fn decode_component(
     members: &[usize],
     hard_boundaries: &HardBoundaryTimeIndex,
     voicing_reset_times: &[u64],
+    native_events: &NativeNoteEvents,
     budget: &mut DecodeWorkBudget,
 ) -> Result<Vec<usize>, String> {
     let mut members_by_end = std::collections::BTreeMap::<u64, Vec<usize>>::new();
@@ -1296,7 +1312,7 @@ fn decode_component(
                 &ordered[next],
                 hard_boundaries,
                 voicing_reset_times,
-            );
+            ) - native_events.repeated_reward(previous, next);
             let mut best = (ordered[previous].range.start == component.start).then(|| PairState {
                 score: emissions[previous] + transition + emissions[next],
                 previous_previous: None,
@@ -1412,13 +1428,17 @@ pub fn decode_candidate_graph_with_boundaries(
             .then_with(|| left.id.cmp(&right.id))
     });
     let voicing_reset_times = voicing_reset_times(&ordered);
+    let native_events = NativeNoteEvents::new(&ordered);
     let emissions = ordered
         .iter()
-        .map(|candidate| {
+        .enumerate()
+        .map(|(index, candidate)| {
             if candidate_crosses_hard_boundary(candidate, &hard_boundary_times) {
                 Ok(f32::NEG_INFINITY)
             } else {
-                candidate.emission_utility()
+                candidate
+                    .emission_utility()
+                    .map(|utility| utility + native_events.reward(index))
             }
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -1448,6 +1468,7 @@ pub fn decode_candidate_graph_with_boundaries(
             &members,
             &hard_boundary_times,
             &voicing_reset_times,
+            &native_events,
             &mut budget,
         )?);
     }
