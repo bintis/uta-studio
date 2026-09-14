@@ -1,5 +1,6 @@
 //! Shared-upstream-GGML Qwen audio encoder.
-//! Convolution is chunk-local; transformer attention spans all compacted rows.
+//! Convolution is chunk-local; encoder attention stays inside the model's
+//! acoustic windows while the output retains the complete ordered timeline.
 
 use std::ffi::c_void;
 use std::sync::Arc;
@@ -82,6 +83,12 @@ impl Qwen {
             return Err("Qwen encoder received no mel frames".to_string());
         }
         let packed = pack_mel(mel, &geometry)?;
+        let window_rows = geometry
+            .rows_per_chunk
+            .checked_mul(self.config.encoder_window_mel / self.config.mel_per_chunk)
+            .filter(|rows| *rows > 0)
+            .ok_or("Qwen encoder attention window is invalid")?;
+        let attention_mask = encoder_attention_mask(geometry.valid_rows, window_rows)?;
         let position = sinusoid_repeated(
             self.config.encoder_dim,
             geometry.valid_rows,
@@ -109,9 +116,25 @@ impl Qwen {
                 geometry.valid_rows as i64
             )
         );
+        let attention_mask_input = ggml!(
+            api,
+            ggml_new_tensor_2d(
+                run.context,
+                GGML_TYPE_F32,
+                geometry.valid_rows as i64,
+                geometry.valid_rows as i64
+            )
+        );
         ggml!(api, ggml_set_input(input));
         ggml!(api, ggml_set_input(positions));
-        let graph = self.build_encoder_graph(run.context, input, positions, &geometry)?;
+        ggml!(api, ggml_set_input(attention_mask_input));
+        let graph = self.build_encoder_graph(
+            run.context,
+            input,
+            positions,
+            attention_mask_input,
+            &geometry,
+        )?;
         let observed = graph.observed();
         ggml!(api, ggml_set_output(graph.output));
         if observe {
@@ -123,6 +146,7 @@ impl Qwen {
         run.allocate(&self.backend)?;
         set_f32(api, input, &packed)?;
         set_f32(api, positions, &position)?;
+        set_f32(api, attention_mask_input, &attention_mask)?;
         run.compute(&self.backend)?;
         let expected = geometry
             .valid_rows
@@ -183,6 +207,7 @@ impl Qwen {
         context: ContextPtr,
         input: TensorPtr,
         positions: TensorPtr,
+        attention_mask_input: TensorPtr,
         geometry: &ChunkGeometry,
     ) -> Result<EncoderGraph, String> {
         let api = self.api();
@@ -250,9 +275,16 @@ impl Qwen {
         )?;
         let positioned = ggml!(api, ggml_add(context, subsample, positions));
         hidden = positioned;
+        let attention_mask = ggml!(api, ggml_cast(context, attention_mask_input, GGML_TYPE_F16));
         let mut block_first = std::ptr::null_mut();
         for layer in 0..self.config.encoder_layers {
-            hidden = self.encoder_block(context, hidden, geometry.valid_rows, layer)?;
+            hidden = self.encoder_block(
+                context,
+                hidden,
+                geometry.valid_rows,
+                attention_mask,
+                layer,
+            )?;
             if layer == 0 {
                 block_first = hidden;
             }
@@ -292,6 +324,7 @@ impl Qwen {
         context: ContextPtr,
         input: TensorPtr,
         rows: usize,
+        attention_mask: TensorPtr,
         index: usize,
     ) -> Result<TensorPtr, String> {
         let api = self.api();
@@ -330,7 +363,7 @@ impl Qwen {
                 query,
                 key,
                 value,
-                std::ptr::null_mut(),
+                attention_mask,
                 1.0 / ((self.config.encoder_dim / self.config.encoder_heads) as f32).sqrt(),
                 0.0,
                 0.0
@@ -404,6 +437,25 @@ impl Qwen {
             ggml_add(context, scaled, self.weight(&format!("{prefix}.bias"))?)
         ))
     }
+}
+
+/// Query-major [query, key], matching the native ATen boolean mask and GGML's
+/// [key, query] tensor storage. Each official encoder window is bidirectional;
+/// subsequent windows remain present in the output but cannot leak into it.
+fn encoder_attention_mask(rows: usize, window_rows: usize) -> Result<Vec<f32>, String> {
+    if window_rows == 0 {
+        return Err("Qwen encoder attention window has no rows".to_string());
+    }
+    let count = rows
+        .checked_mul(rows)
+        .ok_or("Qwen encoder attention mask size overflow")?;
+    let mut mask = vec![-1.0e8_f32; count];
+    for (query, row) in mask.chunks_mut(rows).enumerate() {
+        let start = query / window_rows * window_rows;
+        let end = start.saturating_add(window_rows).min(rows);
+        row[start..end].fill(0.0);
+    }
+    Ok(mask)
 }
 
 fn pack_mel(mel: &Mel, geometry: &ChunkGeometry) -> Result<Vec<f32>, String> {
@@ -601,6 +653,36 @@ mod tests {
         assert_eq!(&position[12..16], &[0., 0., 1., 1.]);
         assert_eq!(&position[16..20], &position[4..8]);
         assert!(sinusoid(3, 2).is_err());
+    }
+
+    #[test]
+    fn encoder_attention_preserves_acoustic_blocks_and_the_incomplete_tail() {
+        let rows = 210;
+        let mask = encoder_attention_mask(rows, 104).unwrap();
+        let visible_mean = |query: usize| {
+            let values = mask[query * rows..(query + 1) * rows]
+                .iter()
+                .enumerate()
+                .filter_map(|(key, value)| (*value == 0.0).then_some(key as f32))
+                .collect::<Vec<_>>();
+            values.iter().sum::<f32>() / values.len() as f32
+        };
+        assert_eq!(visible_mean(0), 51.5);
+        assert_eq!(visible_mean(103), 51.5);
+        assert_eq!(visible_mean(104), 155.5);
+        assert_eq!(visible_mean(207), 155.5);
+        assert_eq!(visible_mean(208), 208.5);
+        assert_eq!(visible_mean(209), 208.5);
+        assert!(mask[103 * rows + 104] < -1.0e4);
+        assert!(mask[104 * rows + 103] < -1.0e4);
+        assert_eq!(mask[104 * rows + 207], 0.0);
+        assert!(mask[208 * rows + 207] < -1.0e4);
+    }
+
+    #[test]
+    fn a_single_encoder_block_remains_fully_bidirectional() {
+        assert!(encoder_attention_mask(13, 104).unwrap().iter().all(|value| *value == 0.0));
+        assert!(encoder_attention_mask(104, 104).unwrap().iter().all(|value| *value == 0.0));
     }
 
     fn read_f32(path: impl AsRef<std::path::Path>) -> Vec<f32> {

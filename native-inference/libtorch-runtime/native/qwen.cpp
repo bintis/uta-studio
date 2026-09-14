@@ -23,6 +23,7 @@ public:
         encoder_heads = read("stt.qwen3_asr.encoder.n_heads", "qwen3-asr.audio.encoder.attention.head_count");
         mel_bins = read("stt.qwen3_asr.encoder.num_mel_bins", "qwen3-asr.audio.num_mel_bins");
         chunk_frames = aligner ? 100 : metadata.meta("stt.qwen3_asr.encoder.n_window").integer() * 2;
+        attention_window_frames = aligner ? 800 : metadata.meta("stt.qwen3_asr.encoder.n_window_infer").integer();
         decoder_layers = read("stt.qwen3_asr.decoder.n_layers", "qwen3-asr.block_count");
         heads = read("stt.qwen3_asr.decoder.n_heads", "qwen3-asr.attention.head_count");
         kv_heads = read("stt.qwen3_asr.decoder.n_kv_heads", "qwen3-asr.attention.head_count_kv");
@@ -33,7 +34,7 @@ public:
         embedding_name = aligner ? "token_embd.weight" : "dec.token_embd.weight";
         output_norm = aligner ? "output_norm.weight" : "dec.output_norm.weight";
         head_name = aligner ? "output.weight" : embedding_name;
-        if (encoder_heads <= 0 || encoder_dimension % encoder_heads || heads <= 0 || kv_heads <= 0 || heads % kv_heads || head_dimension <= 0 || chunk_frames <= 0)
+        if (encoder_heads <= 0 || encoder_dimension % encoder_heads || heads <= 0 || kv_heads <= 0 || heads % kv_heads || head_dimension <= 0 || chunk_frames <= 0 || attention_window_frames < chunk_frames)
             throw std::invalid_argument("Qwen native attention or chunk dimensions are invalid");
         cache.resize(decoder_layers);
     }
@@ -75,7 +76,7 @@ public:
     }
 private:
     bool aligner = false;
-    int64_t encoder_layers = 0, encoder_dimension = 0, encoder_heads = 0, mel_bins = 0, chunk_frames = 0;
+    int64_t encoder_layers = 0, encoder_dimension = 0, encoder_heads = 0, mel_bins = 0, chunk_frames = 0, attention_window_frames = 0;
     int64_t decoder_layers = 0, heads = 0, kv_heads = 0, head_dimension = 0, capacity = 0, past = -1;
     double epsilon = 0.0, theta = 0.0;
     std::string encoder_prefix, embedding_name, output_norm, head_name;
@@ -141,6 +142,12 @@ private:
         value = value.permute({0, 3, 1, 2}).contiguous().reshape({chunks * chunk_rows, -1}).narrow(0, 0, valid_rows);
         value = at::linear(value, weights->get(encoder_prefix + ".conv_out.weight")) + position_encoding(valid_rows, chunk_rows);
         runtime->checkpoint(encoder_prefix + ".positioned");
+        // Official encoder attention is bidirectional inside acoustic windows.
+        // Keep the complete mel/embedding timeline; only visibility is blocked.
+        const auto window_rows = chunk_rows * (attention_window_frames / chunk_frames);
+        auto row_indices = at::arange(valid_rows, value.options().dtype(at::kLong));
+        auto window_indices = at::floor_divide(row_indices, window_rows);
+        auto attention_mask = window_indices.unsqueeze(1) == window_indices.unsqueeze(0);
         const std::array<std::string, 8> names = aligner
             ? std::array<std::string, 8>{"attn_norm", "attn_q", "attn_k", "attn_v", "attn_out", "ffn_norm", "ffn_up", "ffn_down"}
             : std::array<std::string, 8>{"norm_attn", "attn.q", "attn.k", "attn.v", "attn.out", "norm_ffn", "ffn.fc1", "ffn.fc2"};
@@ -155,7 +162,7 @@ private:
             auto key = layout(weights->linear(normalized, prefix + names[2]));
             auto values = layout(weights->linear(normalized, prefix + names[3]));
             runtime->checkpoint(prefix + "qkv");
-            auto attended = attention(query, key, values).transpose(1, 2).reshape({valid_rows, encoder_dimension});
+            auto attended = attention(query, key, values, attention_mask).transpose(1, 2).reshape({valid_rows, encoder_dimension});
             runtime->checkpoint(prefix + "attention");
             value = value + weights->linear(attended, prefix + names[4]);
             normalized = weights->norm(value, prefix + names[5]);
