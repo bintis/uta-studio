@@ -270,6 +270,11 @@ fn notes_at_lyric_sentence_boundaries(track: &CanonicalSingingTrack) -> Vec<Cano
 /// word when the aligner onset lies just inside the next note; requiring that
 /// owner to be correct first would manufacture a short prefix at every seam.
 ///
+/// Agreement of both existing note owners with the adjacent words allows an
+/// onset to reuse their edge within half the shorter note. Missing or stale
+/// ownership keeps the ordinary evidence tolerance. This expresses local
+/// lyric association; it does not change measured note offsets or rest gaps.
+///
 /// These are temporary display ranges. The original words and selected note
 /// geometry remain unchanged. Each edge belongs to at most one word onset,
 /// associations remain in text order, and no word range can collapse. A gap
@@ -296,8 +301,19 @@ fn projection_word_boundaries(
             .filter_map(|(note_index, pair)| {
                 let time = pair[1].range.start;
                 let distance = time.abs_diff(measured.range.start);
+                let owners_agree = pair[0].word_id.as_deref()
+                    == Some(previous_word.word_id.as_str())
+                    && pair[1].word_id.as_deref() == Some(measured.word_id.as_str());
+                let tolerance = if owners_agree {
+                    let before_duration = pair[0].range.end - pair[0].range.start;
+                    let after_duration = pair[1].range.end - pair[1].range.start;
+                    crate::fusion::BOUNDARY_EVIDENCE_TOLERANCE
+                        .max(before_duration.min(after_duration) / 2)
+                } else {
+                    crate::fusion::BOUNDARY_EVIDENCE_TOLERANCE
+                };
                 if pair[0].range.end != time
-                    || distance > crate::fusion::BOUNDARY_EVIDENCE_TOLERANCE
+                    || distance > tolerance
                     || used_edges.contains(&time)
                     || previous_edge.is_some_and(|previous| time <= previous)
                     || time <= words[word_index - 1].range.start
@@ -1376,7 +1392,7 @@ mod tests {
     }
 
     #[test]
-    fn separate_gaps_and_distant_word_onsets_do_not_reuse_note_edges() {
+    fn separate_gaps_and_distant_unassociated_words_do_not_reuse_note_edges() {
         for (onset, gap) in [(960_000, 10_000), (920_000, 0)] {
             let mut track = cross_word_track(1_000_000);
             track.words[0].range = TimeRange::new(0, onset).unwrap();
@@ -1385,7 +1401,11 @@ mod tests {
             let mut next = track.notes[0].clone();
             next.id = "separate-note".to_string();
             next.range = TimeRange::new(1_000_000 + gap, 2_000_000).unwrap();
-            next.word_id = Some(track.words[1].word_id.clone());
+            next.word_id = Some(if gap == 0 {
+                track.words[0].word_id.clone()
+            } else {
+                track.words[1].word_id.clone()
+            });
             track.notes.push(next);
             let notes = notes_at_lyric_sentence_boundaries(&track);
             assert_eq!(notes.len(), 3);
@@ -1394,6 +1414,59 @@ mod tests {
             assert_eq!(notes[2].range, track.notes[1].range);
         }
     }
+    #[test]
+    fn agreeing_word_owners_reuse_their_local_note_edge() {
+        let mut track = cross_word_track(2_900_000);
+        track.words[0].range = TimeRange::new(2_640_000, 2_800_000).unwrap();
+        track.words[1].range = TimeRange::new(2_800_000, 3_180_000).unwrap();
+        track.notes[0].range = TimeRange::new(2_640_000, 2_900_000).unwrap();
+        let mut after = track.notes[0].clone();
+        after.id = "after-edge".to_string();
+        after.range = TimeRange::new(2_900_000, 3_180_000).unwrap();
+        after.word_id = Some(track.words[1].word_id.clone());
+        track.notes.push(after);
+        let original = track.clone();
+        let projected = notes_at_lyric_sentence_boundaries(&track);
+        assert_eq!(projected, track.notes);
+        let chart = finalize_candidate_vocal_chart(&track, "local-word-edge", None).unwrap();
+        let notes = &chart.tracks[0].phrases[0].notes;
+        assert_eq!(notes.len(), 2);
+        assert_eq!(notes[0].duration, 260_000);
+        assert_eq!(notes[1].start, 2_900_000);
+        assert!(matches!(&notes[0].lyrics[0], LyricToken::Text(token) if token.text == "sing"));
+        assert!(matches!(&notes[1].lyrics[0], LyricToken::Text(token) if token.text == "now"));
+        assert_eq!(track, original);
+    }
+
+    #[test]
+    fn internal_syllable_stays_when_the_next_note_has_no_word_overlap() {
+        let mut track = cross_word_track(1_000_000);
+        track.transcript.text = "切に".to_string();
+        track.words[0].text = "切".to_string();
+        track.words[0].range = TimeRange::new(0, 860_000).unwrap();
+        track.words[1].text = "に".to_string();
+        track.words[1].range = TimeRange::new(860_000, 960_000).unwrap();
+        track.notes[0].range = TimeRange::new(0, 1_000_000).unwrap();
+        let mut after = track.notes[0].clone();
+        after.id = "after-word".to_string();
+        after.range = TimeRange::new(1_000_000, 2_000_000).unwrap();
+        after.word_id = Some(track.words[1].word_id.clone());
+        track.notes.push(after);
+        let original = track.clone();
+        let projected = notes_at_lyric_sentence_boundaries(&track);
+        assert_eq!(projected.len(), 3);
+        assert_eq!(projected[1].range.start, 860_000);
+        assert_eq!(projected[1].word_id.as_deref(), Some("word-2"));
+        assert!(projected[2].word_id.is_none());
+        assert_eq!(projected[2].range, track.notes[1].range);
+        let chart = finalize_candidate_vocal_chart(&track, "internal-syllable", None).unwrap();
+        let notes = &chart.tracks[0].phrases[0].notes;
+        assert_eq!(notes.len(), 3);
+        assert!(matches!(&notes[0].lyrics[0], LyricToken::Text(token) if token.text == "切"));
+        assert!(matches!(&notes[1].lyrics[0], LyricToken::Text(token) if token.text == "に"));
+        assert_eq!(track, original);
+    }
+
     #[test]
     fn nearby_word_edge_corrects_stale_overlap_ownership_without_a_prefix() {
         let edge = 1_000_000;
