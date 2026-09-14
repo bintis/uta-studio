@@ -439,20 +439,56 @@ fn analysis_force_stop_terminates_the_worker_process_tree() {
 
 #[cfg(unix)]
 fn unix_process_is_running(pid: u32) -> bool {
-    // SAFETY: signal 0 performs existence/permission checking only.
-    if unsafe { libc::kill(pid as i32, 0) } != 0 {
-        return false;
-    }
     #[cfg(target_os = "linux")]
-    if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat"))
-        && stat
-            .rsplit_once(')')
-            .and_then(|(_, fields)| fields.split_ascii_whitespace().next())
-            == Some("Z")
     {
-        return false;
+        // Observe existence and state together. A successful kill(pid, 0)
+        // followed by a vanished stat file is an exited child, not a live one.
+        let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => stat,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return false,
+            Err(error) => panic!("could not observe descendant process {pid}: {error}"),
+        };
+        linux_process_state_is_running(&stat)
     }
-    true
+    #[cfg(not(target_os = "linux"))]
+    {
+        // SAFETY: signal 0 performs existence/permission checking only.
+        unsafe { libc::kill(pid as i32, 0) == 0 }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_process_state_is_running(stat: &str) -> bool {
+    let state = stat
+        .rsplit_once(')')
+        .and_then(|(_, fields)| fields.split_ascii_whitespace().next())
+        .expect("process stat contains a state");
+    // A zombie may become dead while its proc entry is being removed.
+    !matches!(state, "Z" | "X" | "x")
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn force_stop_process_probe_recognizes_exit_states_without_accepting_stopped_tasks() {
+    for state in ["R", "S", "D", "T", "t", "I"] {
+        assert!(linux_process_state_is_running(&format!("123 (worker (child)) {state} 1")));
+    }
+    for state in ["Z", "X", "x"] {
+        assert!(!linux_process_state_is_running(&format!("123 (worker (child)) {state} 1")));
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn force_stop_process_probe_observes_an_owned_child_after_reaping() {
+    let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+    let pid = child.id();
+    let running = unix_process_is_running(pid);
+    // Only this test's own child is signalled and reaped.
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert!(running, "a running child must not be treated as terminated");
+    assert!(!unix_process_is_running(pid), "a reaped child must remain terminated");
 }
 
 #[cfg(unix)]
