@@ -441,7 +441,7 @@ fn basic_pitch_is_source_local_onset_support_not_note_authority() {
 }
 
 #[test]
-fn basic_pitch_onset_creates_a_real_contextual_split_path() {
+fn basic_pitch_onset_proposes_a_split_without_forcing_it() {
     let evidence = BasicPitchEvidence {
         frames: vec![
             BasicPitchFrame {
@@ -510,14 +510,11 @@ fn basic_pitch_onset_creates_a_real_contextual_split_path() {
     let selected = crate::fusion::decode_candidate_graph(&fused.candidates).unwrap();
     assert_eq!(
         selected.len(),
-        2,
-        "selected candidates: {selected:#?}; onset candidates: {onset_candidates:#?}"
+        1,
+        "one onset observation must not earn separate rewards at both candidate edges"
     );
-    assert!(
-        selected
-            .iter()
-            .all(|candidate| candidate.boundary_kind == BoundaryEvidenceKind::BasicPitchOnset)
-    );
+    assert_eq!(selected[0].range, TimeRange::new(100_000, 500_000).unwrap());
+    assert_eq!(selected[0].boundary_kind, BoundaryEvidenceKind::Game);
 }
 
 #[test]

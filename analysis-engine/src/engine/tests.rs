@@ -181,6 +181,8 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
                 target_pitch_source_local_score: None,
                 target_pitch_calibrated_confidence: None,
                 center_pitch_hz: 440.0,
+                continuous_pitch_error_integral: None,
+                continuous_pitch_observed_duration: None,
                 rmvpe_center_hz: None,
                 rmvpe_confidence: None,
                 rmvpe_cents_difference: None,

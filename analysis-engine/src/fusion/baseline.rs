@@ -268,6 +268,62 @@ fn summarize_f0(
     })
 }
 
+struct ContinuousPitchFit {
+    error_integral: f32,
+    observed_duration: u64,
+}
+
+/// Integrate the declared pitch owner's measurements on their absolute grid.
+/// The deadband tolerates intonation/vibrato; linear excess error limits the
+/// influence of isolated outliers. Missing or untrusted frames provide no fit
+/// evidence and never extend across an unobserved gap.
+fn continuous_pitch_fit(
+    range: TimeRange,
+    target_hz: f32,
+    curve: &[F0Point],
+    grid: Option<PitchGrid>,
+) -> Result<Option<ContinuousPitchFit>, String> {
+    let Some(grid) = grid else {
+        return Ok(None);
+    };
+    let grid_duration = u64::try_from(grid.frame_count)
+        .ok()
+        .and_then(|count| count.checked_mul(grid.hop))
+        .ok_or_else(|| "continuous pitch fit grid duration overflows".to_string())?;
+    let grid_end = grid
+        .start
+        .checked_add(grid_duration)
+        .ok_or_else(|| "continuous pitch fit grid end overflows".to_string())?;
+    let first = curve.partition_point(|point| point.time.saturating_add(grid.hop) <= range.start);
+    let end = curve.partition_point(|point| point.time < range.end);
+    let mut error_integral = 0.0_f64;
+    let mut observed_duration = 0_u64;
+    for index in first..end {
+        let point = &curve[index];
+        if !trustworthy_f0_point(point) {
+            continue;
+        }
+        let frame_end = point
+            .time
+            .saturating_add(grid.hop)
+            .min(curve.get(index + 1).map_or(grid_end, |next| next.time))
+            .min(grid_end);
+        let overlap = frame_end
+            .min(range.end)
+            .saturating_sub(point.time.max(grid.start).max(range.start));
+        // Clip both sides of every frame. In particular, a cut between grid
+        // points divides one observation instead of dropping/duplicating it.
+        let cents = 1_200.0_f64 * (f64::from(point.hz) / f64::from(target_hz)).log2();
+        let excess_semitones = (cents.abs() - 50.0).max(0.0) / 100.0;
+        error_integral += excess_semitones * overlap as f64 / 1_000_000.0;
+        observed_duration += overlap;
+    }
+    Ok(Some(ContinuousPitchFit {
+        error_integral: error_integral as f32,
+        observed_duration,
+    }))
+}
+
 fn summarize_acoustic(
     range: TimeRange,
     evidence: &AcousticEvidence,
@@ -1048,6 +1104,8 @@ fn build_segment_candidate(
             .and_then(|alternative| alternative.calibrated_pitch_confidence),
         target_pitch_source,
         center_pitch_hz,
+        continuous_pitch_error_integral: None,
+        continuous_pitch_observed_duration: None,
         rmvpe_center_hz: rmvpe.center_hz,
         rmvpe_confidence: rmvpe.confidence,
         rmvpe_cents_difference: rmvpe.cents_difference,
@@ -1456,9 +1514,27 @@ pub(crate) fn fuse_singing_evidence_with_challengers(
             Err(error) => return Err(error),
         }
     }
+    let mut candidates = expand_pitch_alternative_states(candidates)?;
+    let selected_grid = match primary_pitch_owner {
+        "rmvpe" => rmvpe_grid,
+        "fcpe" => fcpe_grid,
+        _ => unreachable!("primary pitch owner checked above"),
+    };
+    // Pitch expansion changes the target. Recompute after expansion against
+    // one declared owner, never choose whichever expert favors each segment.
+    for candidate in &mut candidates {
+        let fit = continuous_pitch_fit(
+            candidate.range,
+            candidate.center_pitch_hz,
+            selected_f0,
+            selected_grid,
+        )?;
+        candidate.continuous_pitch_error_integral = fit.as_ref().map(|fit| fit.error_integral);
+        candidate.continuous_pitch_observed_duration = fit.map(|fit| fit.observed_duration);
+    }
     Ok(SingingFusionEvidence {
         schema_version: 1,
-        candidates: expand_pitch_alternative_states(candidates)?,
+        candidates,
         hard_boundaries: HardBoundarySet::default(),
     })
 }
@@ -1470,3 +1546,7 @@ mod tests;
 #[cfg(test)]
 #[path = "segmentation_tests.rs"]
 mod segmentation_tests;
+
+#[cfg(test)]
+#[path = "continuous_pitch_tests.rs"]
+mod continuous_pitch_tests;
