@@ -239,6 +239,15 @@ pub struct SegmentCandidate {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_pitch_calibrated_confidence: Option<f32>,
     pub center_pitch_hz: f32,
+    /// Time integral of target error outside the 50-cent pitch band, measured
+    /// from the request's fixed continuous-pitch owner in semitone-seconds.
+    /// Repartitioning one target must preserve the sum of this observation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuous_pitch_error_integral: Option<f32>,
+    /// Trustworthy observed time in microseconds. Zero observed time is not
+    /// evidence of a perfectly fitting target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuous_pitch_observed_duration: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rmvpe_center_hz: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -547,6 +556,9 @@ impl SegmentCandidate {
             || !self.center_pitch_hz.is_finite()
             || self.center_pitch_hz <= 0.0
             || self
+                .continuous_pitch_error_integral
+                .is_some_and(|value| !value.is_finite() || value < 0.0)
+            || self
                 .boundary_support
                 .is_some_and(|value| !value.is_finite() || !(0.0..=1.0).contains(&value))
             || [
@@ -664,21 +676,13 @@ impl SegmentCandidate {
         // Pitch proposals for the same duration geometry remain peers. A pitch
         // does not gain semantic authority merely because its expert also
         // supplied the boundary object.
-        let fcpe_cents_from_target = self
-            .fcpe_center_hz
-            .map(|center| 1_200.0 * (center / self.center_pitch_hz).log2());
-        let best_f0_agreement = [self.rmvpe_cents_difference, fcpe_cents_from_target]
-            .into_iter()
-            .flatten()
-            .min_by(|left, right| left.abs().total_cmp(&right.abs()));
-        if let Some(cents) = best_f0_agreement {
-            let absolute = cents.abs();
-            if absolute <= 50.0 {
-                utility += duration_seconds * 0.15;
-            } else if absolute >= 600.0 {
-                utility -= duration_seconds * 0.1;
-            }
-        }
+        // A segment median can hide a shorter real pitch plateau inside a
+        // long note. Integrate target error over the fixed owner's observed
+        // frame time instead. The scale is a decoder utility weight, not a
+        // calibrated model confidence: a two-semitone mismatch held for 160 ms
+        // costs 0.72, enough to compete with an extra state and transition.
+        const PITCH_ERROR_WEIGHT: f32 = 3.0;
+        utility -= self.continuous_pitch_error_integral.unwrap_or(0.0) * PITCH_ERROR_WEIGHT;
         let event = boundary_event_score(self);
         utility += event.reward;
         let event_quality = (event.strength / 1.5).clamp(0.0, 1.0);

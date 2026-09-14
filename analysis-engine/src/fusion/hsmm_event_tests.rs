@@ -177,3 +177,43 @@ fn full_attack_window_keeps_the_event_identity_for_path_deduplication() {
     attach_boundary_constraints(&mut notes, &[onset_constraint(445_000)]).unwrap();
     assert_eq!(notes[0].boundary_constraints.len(), 1);
 }
+
+#[test]
+fn real_pitch_change_can_defeat_a_long_note_whose_median_hides_the_shorter_pitch() {
+    let mut wide = sustain("wide", 0, 580_000);
+    wide.continuous_pitch_error_integral = Some(0.24);
+    wide.continuous_pitch_observed_duration = Some(580_000);
+    let mut before = sustain("lower", 0, 160_000);
+    let mut after = sustain("upper", 160_000, 580_000);
+    for note in [&mut before, &mut after] {
+        note.boundary_kind = BoundaryEvidenceKind::F0Transition;
+        note.boundary_source = "rmvpe.transition".to_string();
+        note.boundary_role = BoundaryCandidateRole::Challenger;
+        note.boundary_support = Some(1.0 / 6.0);
+        note.continuous_pitch_error_integral = Some(0.0);
+        note.continuous_pitch_observed_duration = Some(note.range.end - note.range.start);
+    }
+    before.target_midi = 67;
+    before.center_pitch_hz = 440.0 * 2.0_f32.powf(-2.0 / 12.0);
+    let selected = decode_candidate_graph(&[wide, before, after]).unwrap();
+    assert_eq!(
+        selected
+            .iter()
+            .map(|note| note.id.as_str())
+            .collect::<Vec<_>>(),
+        ["lower", "upper"]
+    );
+}
+
+#[test]
+fn dividing_one_pitch_target_cannot_improve_the_integrated_pitch_fit() {
+    let mut wide = sustain("wide", 0, 1_000_000);
+    let mut first = sustain("first", 0, 500_000);
+    let mut last = sustain("last", 500_000, 1_000_000);
+    wide.continuous_pitch_error_integral = Some(0.1);
+    first.continuous_pitch_error_integral = Some(0.04);
+    last.continuous_pitch_error_integral = Some(0.06);
+    let selected = decode_candidate_graph(&[wide, first, last]).unwrap();
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].id, "wide");
+}
