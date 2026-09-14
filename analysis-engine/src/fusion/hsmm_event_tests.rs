@@ -47,6 +47,7 @@ fn add_basic_pitch_attack(candidate: &mut SegmentCandidate) {
 
 fn add_acoustic_attack(candidate: &mut SegmentCandidate) {
     candidate.acoustic = Some(AcousticCandidateFeatures {
+        frame_count: 1,
         onset_supported: Some(true),
         ..AcousticCandidateFeatures::default()
     });
