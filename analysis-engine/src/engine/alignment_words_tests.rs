@@ -243,7 +243,7 @@ fn measured_character_alignment_reaches_individual_chart_notes_without_line_lyri
 
 #[test]
 fn generated_sentences_reach_chart_phrases_even_when_a_sentence_end_is_unresolved() {
-    let text = "光る。歌う！光る。";
+    let text = "光る 歌。歌う！光る 歌。";
     let generated = TranscriptArtifact {
         contract: "uta.analysis-engine.transcript".to_string(),
         version: 1,
@@ -270,7 +270,10 @@ fn generated_sentences_reach_chart_phrases_even_when_a_sentence_end_is_unresolve
     assert_eq!(transcript.tokens.len(), 3);
     assert!(transcript.tokens.iter().all(|token| token.range.is_none()));
     let requests = qwen_alignment_words(&transcript, &artifact.audio_segments).unwrap();
-    assert_eq!(requests.len(), 6);
+    assert_eq!(
+        requests.iter().map(|word| word["text"].as_str().unwrap()).collect::<Vec<_>>(),
+        ["光る", "歌。", "歌う！", "光る", "歌。"]
+    );
     assert!(
         requests
             .iter()
@@ -279,8 +282,7 @@ fn generated_sentences_reach_chart_phrases_even_when_a_sentence_end_is_unresolve
     let measured = [
         (100_000, 250_000),
         (260_000, 400_000),
-        (500_000, 600_000),
-        (610_000, 800_000),
+        (500_000, 800_000),
         (900_000, 1_050_000),
         (1_060_000, 1_300_000),
     ];
@@ -297,8 +299,10 @@ fn generated_sentences_reach_chart_phrases_even_when_a_sentence_end_is_unresolve
                 id: request["id"].as_str().unwrap().to_string(),
                 text: request["text"].as_str().unwrap().to_string(),
                 level: BoundaryLevel::Word,
-                start,
-                duration: end - start,
+                // The unmeasured sentence-final word retains the actual
+                // model search scope, not an invented word-sized interval.
+                start: if index == 1 { 0 } else { start },
+                duration: if index == 1 { 2_000_000 } else { end - start },
                 confidence: None,
                 authority: BoundaryAuthority::Soft,
                 timing_issue: (index == 1).then(|| "collapsed_timestamp".to_string()),
@@ -310,7 +314,9 @@ fn generated_sentences_reach_chart_phrases_even_when_a_sentence_end_is_unresolve
         backend: "ggml_cpu".to_string(),
     };
     alignment.validate(0, 2_000_000).unwrap();
-    let (_, words) = fuse_alignment_stage(&transcript, &[alignment], 0, 2_000_000).unwrap();
+    let (alignment, words) =
+        fuse_alignment_stage(&transcript, &[alignment], 0, 2_000_000).unwrap();
+    assert_eq!((alignment.items[1].start, alignment.items[1].duration), (0, 2_000_000));
     assert_eq!(
         words
             .iter()
@@ -318,7 +324,6 @@ fn generated_sentences_reach_chart_phrases_even_when_a_sentence_end_is_unresolve
             .collect::<Vec<_>>(),
         [
             Some("lyric-line-0"),
-            Some("lyric-line-1"),
             Some("lyric-line-1"),
             Some("lyric-line-2"),
             Some("lyric-line-2")
@@ -352,7 +357,7 @@ fn generated_sentences_reach_chart_phrases_even_when_a_sentence_end_is_unresolve
     )
     .unwrap();
     let selected = decode_candidate_graph(&fusion.candidates).unwrap();
-    let track = build_canonical_singing_track(
+    let mut track = build_canonical_singing_track(
         transcript,
         words,
         selected,
@@ -362,6 +367,10 @@ fn generated_sentences_reach_chart_phrases_even_when_a_sentence_end_is_unresolve
         Vec::new(),
     )
     .unwrap();
+    crate::candidate_pipeline::attach_alignment_lyric_units(&mut track, &alignment);
+    assert_eq!(track.lyric_units.len(), requests.len());
+    assert!(track.lyric_units[1].measured_range.is_none());
+    assert_eq!(track.lyric_units[1].audition_range, TimeRange::new(0, 2_000_000).unwrap());
     let chart =
         finalize_candidate_vocal_chart(&track, "generated-sentences-fixture", None).unwrap();
     let phrases = &chart.tracks[0].phrases;
@@ -379,12 +388,24 @@ fn generated_sentences_reach_chart_phrases_even_when_a_sentence_end_is_unresolve
                 })
                 .collect::<String>())
             .collect::<Vec<_>>(),
-        ["光", "歌う！", "光る。"]
+        ["光る歌。", "歌う！", "光る歌。"]
     );
     let notes = phrases
         .iter()
         .flat_map(|phrase| &phrase.notes)
         .collect::<Vec<_>>();
+    let lyrics = notes.iter().flat_map(|note| &note.lyrics)
+        .filter_map(|token| match token {
+            utz::LyricToken::Text(token) if !token.text.is_empty() => Some(token),
+            _ => None,
+        }).collect::<Vec<_>>();
+    assert_eq!(
+        lyrics.iter().map(|token| token.text.as_str()).collect::<String>(),
+        text.chars().filter(|character| !character.is_whitespace()).collect::<String>()
+    );
+    assert_eq!(lyrics[0].text, "光る歌。");
+    assert!(lyrics[0].timing_unresolved, "the preserved final word is not independently timed");
+    assert!(lyrics.iter().skip(1).all(|token| !token.timing_unresolved));
     assert_eq!(notes.len(), measured.len());
     for (note, (start, end)) in notes.iter().zip(measured) {
         assert_eq!((note.start, note.duration), (start, end - start));
