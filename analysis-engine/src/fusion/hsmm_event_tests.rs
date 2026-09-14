@@ -237,3 +237,26 @@ fn acoustic_attack_identity_survives_the_full_window_and_is_credited_once() {
     assert!(!distinct_onset_supported(&notes[0], &notes[1]));
     assert!(repeated_attack_reward(&notes[0], &notes[1]) > 0.0);
 }
+
+#[test]
+fn nearby_acoustic_attacks_use_the_event_nearest_each_note_start() {
+    let mut first = sustain("first", 0, 56_000);
+    let mut second = sustain("second", 56_000, 200_000);
+    let mut initial_event = onset_constraint(0);
+    initial_event.source_expert = "acoustic".to_string();
+    initial_event.kind = BoundaryConstraintKind::AcousticArticulation;
+    let mut repeated_event = initial_event.clone();
+    repeated_event.time = 56_000;
+    for note in [&mut first, &mut second] {
+        add_acoustic_attack(note);
+        note.boundary_constraints = vec![initial_event.clone(), repeated_event.clone()];
+    }
+    assert!(distinct_onset_supported(&first, &second));
+    assert_eq!(repeated_attack_reward(&first, &second), 0.0);
+    second.boundary_constraints.reverse();
+    assert!(distinct_onset_supported(&first, &second));
+
+    second.boundary_constraints = vec![initial_event];
+    assert!(!distinct_onset_supported(&first, &second));
+    assert!(repeated_attack_reward(&first, &second) > 0.0);
+}

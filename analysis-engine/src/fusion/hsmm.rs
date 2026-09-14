@@ -326,7 +326,10 @@ fn belongs_to_start(candidate: &SegmentCandidate, time: u64) -> bool {
     time.abs_diff(candidate.range.start) <= time.abs_diff(candidate.range.end)
 }
 
-fn attack_belongs_to_start(candidate: &SegmentCandidate, kind: BoundaryConstraintKind) -> bool {
+fn start_attack_event(
+    candidate: &SegmentCandidate,
+    kind: BoundaryConstraintKind,
+) -> Option<&BoundaryConstraintEvidence> {
     candidate
         .boundary_constraints
         .iter()
@@ -334,7 +337,13 @@ fn attack_belongs_to_start(candidate: &SegmentCandidate, kind: BoundaryConstrain
             constraint.kind == kind
                 && constraint.time.abs_diff(candidate.range.start) <= ATTACK_CONTEXT_TOLERANCE
         })
-        .min_by_key(|constraint| constraint.time.abs_diff(candidate.range.start))
+        .min_by_key(|constraint| {
+            (constraint.time.abs_diff(candidate.range.start), constraint.time)
+        })
+}
+
+fn attack_belongs_to_start(candidate: &SegmentCandidate, kind: BoundaryConstraintKind) -> bool {
+    start_attack_event(candidate, kind)
         .is_none_or(|constraint| belongs_to_start(candidate, constraint.time))
 }
 
@@ -418,17 +427,13 @@ fn shares_start_attack(
     next: &SegmentCandidate,
     kind: BoundaryConstraintKind,
 ) -> bool {
-    next.boundary_constraints.iter().any(|event| {
-        event.kind == kind
-            && event.time.abs_diff(next.range.start) <= ATTACK_CONTEXT_TOLERANCE
-            && belongs_to_start(next, event.time)
-            && previous.boundary_constraints.iter().any(|prior| {
-                prior.kind == kind
-                    && prior.time == event.time
-                    && prior.time.abs_diff(previous.range.start) <= ATTACK_CONTEXT_TOLERANCE
-                    && belongs_to_start(previous, prior.time)
-            })
-    })
+    start_attack_event(previous, kind)
+        .zip(start_attack_event(next, kind))
+        .is_some_and(|(prior, event)| {
+            prior.time == event.time
+                && belongs_to_start(previous, prior.time)
+                && belongs_to_start(next, event.time)
+        })
 }
 
 /// A path can observe the same peak from two neighboring state windows.
