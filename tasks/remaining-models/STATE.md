@@ -996,12 +996,35 @@ and original caller scopes remain. Evidence:
 `test-artifacts/singing-boundary-alignment-followup/results-summary.json`,
 `fresh-execution-summary.json`, and the Qwen context reports in that root.
 
-The current kr002a chart retains all 231 characters but fails ordered-text
-preservation; its finalizer correction and replay are still being verified.
-Two original-song B580 Wayland chart captures are available; public-chart UI
-and continuous audio verification remain in progress. No final UI/audio pass is
-claimed. 21J remains `NEEDS_REVIEW`, and model integration/production readiness
-is unchanged. See [current fusion follow-up](../final-features/followups/21J_MELODY_PATH_SCORE_COHERENCE.md#fusion-activity-and-independent-lyric-timing--2026-09-14-jst)
+Final-source CPU replays now preserve all supplied text in order, including
+kr002a's 231 characters, without changing selected note IDs/geometry, canonical
+data or any lyric token/time. All human-note evaluation values remain identical.
+Engine 387/Core 522/Desktop editor 14 tests pass at `230020b1`, with strict
+all-target Clippy and debug builds passing. The corresponding ignored tests
+remain two/one/zero. Subsequent evidence-validity synchronization at `edf8954e`
+passes Core 524 tests (one ignored), strict Core/Desktop Clippy and a final editor
+build, matching the Engine's existing rules. This is not a whole-workspace release
+pass.
+
+The final save-path repair at `e2ae98f0` keeps UTZ-valid empty lyric slots as
+warnings rather than blocking saving. Core **527 passed, one ignored**, Desktop
+editor **14 passed**, strict Core/Desktop Clippy and the final editor build pass.
+A B580 editor session atomically saves a 10 ms independent-lyric shift in a
+separate fixture; readback preserves all 71 note geometries, 44 text tokens and
+12 empty slots. The UI shows zero errors and 25 warnings. True format errors
+still block saving. See `test-artifacts/public-unpitched-ui/save-validation.json`
+and the measurement report for final receipts.
+
+B580 Wayland captures verify the two original lyric regions and the public
+unpitched interval. Native public-WAV playback preserves pause/play intent through
+lyric jumps, with 26.697 seconds observed running and unmuted. Application-stream
+ERR is zero; HDMI-driver ERR is seven from first active observation without later
+growth, but its earlier suspended row was zero. Startup error attribution and
+human listening qualification remain open. No build/inference ran during audition.
+Receipts and exact limits are in the measurement report and
+`test-artifacts/public-unpitched-ui/validation-summary.json`.
+21J remains `NEEDS_REVIEW`, with model integration/production readiness unchanged.
+See [current fusion follow-up](../final-features/followups/21J_MELODY_PATH_SCORE_COHERENCE.md#fusion-activity-and-independent-lyric-timing--2026-09-14-jst)
 and [measurement method](../../docs/NOTE_TRANSCRIPTION_EVALUATION.md).
 
 ## Imported lyric fidelity and note boundaries — 2026-09-14

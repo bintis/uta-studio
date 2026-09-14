@@ -1,6 +1,6 @@
 # 21J — Melody Path and Score Coherence
 
-**State:** `NEEDS_REVIEW` — current native measurements reduce false cuts and improve aggregate offsets; lyric order, alignment and per-recording regressions remain under review.
+**State:** `NEEDS_REVIEW` — current native measurements reduce false cuts and improve aggregate offsets; alignment and per-recording regressions remain under review.
 
 **Parent:** Card 21 final design-parity audit
 
@@ -23,7 +23,7 @@ available. No short-note filter or unconditional GAME winner was introduced.
 
 A separate finalizer defect was still creating pitch attacks at word boundaries.
 `LyricTiming` now carries each text token's absolute interval independently of
-the hosting note. Successive words such as `切` / `に` can keep distinct times
+the hosting note. Successive words such as `切れ` / `に` can keep distinct times
 on one measured note. Finalization preserves selected pitched IDs and geometry,
 including real reattacks; unresolved words retain explicit audition scopes.
 Editor lyric edits, note edits and multi-token clipboard operations preserve this
@@ -94,18 +94,45 @@ The current measurements are in `results-summary.json` and
 and simulation limitations are in `calibration-native-utility-comparison.json`.
 See also the [evaluation method and results](../../../docs/NOTE_TRANSCRIPTION_EVALUATION.md).
 
-One current artifact still fails ordered lyric preservation: `csd-kr002a`
-contains all 231 characters but reports `original_text_in_order: false`.
-The finalizer repair and its replay verification are in progress; complete
-ordered-text acceptance is therefore not claimed. Two original-song charts have
-been opened and captured in the B580 Wayland editor; public-chart visual checks
-and continuous audio verification are still in progress. No final UI/audio pass
-or new release qualification is recorded here.
+Final committed-source replays preserve every selected note ID and geometry,
+all canonical data and every lyric token/time while correcting kr002a's order.
+All five public charts now retain supplied characters in order; their complete
+human-note evaluations are unchanged. Evidence:
+`test-artifacts/singing-boundary-alignment-followup/final-replay-verification.json`
+and `verified-replays/`; operations `20260914T062438-0f735239081d` and
+`20260914T062734-421d23f04569`.
+
+B580 Wayland captures show the two original-song lyric intervals and the public
+chart's true unpitched interval. Actual native public-WAV audition includes a
+paused lyric seek and a seek during playback, with 26.697 seconds observed running
+and unmuted. Application stream ERR stays zero; the HDMI driver's first active
+ERR is seven and does not grow afterward, while its earlier suspended row showed
+zero. Startup errors are not attributed, and human listening quality is not
+established. No compile/inference ran during audition. Details and receipts:
+`test-artifacts/public-unpitched-ui/validation-summary.json` and the
+[current measurement report](../../../docs/NOTE_TRANSCRIPTION_EVALUATION.md#boundary-and-independent-lyric-follow-up--2026-09-14).
+
+At `230020b1`, Engine 387/Core 522/Desktop editor 14 tests pass (respectively
+two/one/zero ignored), strict all-target Clippy passes for all three packages,
+and debug editor/replay/analysis CLI builds pass. UTZ/UltraStar export and native
+Qwen verification receipts remain in the measurement report. The subsequent
+Core evidence-validity synchronization at `edf8954e` passes 524 tests (one
+ignored), strict Core/Desktop Clippy and a final editor build. It matches
+existing Engine rules without adding stricter limits; receipts are in the report.
+
+The final save-path repair at `e2ae98f0` keeps UTZ-valid empty lyric slots as
+warnings rather than blocking saving. Core **527 passed, one ignored**, Desktop
+editor **14 passed**, strict Core/Desktop Clippy and the final editor build pass.
+A B580 editor session atomically saves a 10 ms independent-lyric shift in a
+separate fixture; readback preserves all 71 note geometries, 44 text tokens and
+12 empty slots. The UI shows zero errors and 25 warnings. True format errors
+still block saving. See `test-artifacts/public-unpitched-ui/save-validation.json`
+and the measurement report for final receipts.
 
 Installed runtimes and user source media remain unchanged. Card 21J stays
 `NEEDS_REVIEW`; no model's `integration_ready` or `production_ready` status is
-promoted. Remaining work is ordered-text verification, long/repeated-word
-alignment, displaced expert onsets, Vocadito's regression and musical audition.
+promoted. Remaining work is long/repeated-word alignment, displaced expert onsets,
+Vocadito's regression, startup audio-error attribution and musical audition.
 
 ## Public-data fusion repair — 2026-09-14 JST
 

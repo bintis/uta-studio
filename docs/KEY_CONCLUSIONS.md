@@ -40,6 +40,15 @@ Actual final public-chart UTZ and UltraStar exports preserve all 71 notes and
 129 characters, and both FLAC streams decode fully. UTZ additionally preserves
 the 32 independent lyric intervals; UltraStar cannot represent that timeline.
 
+Final relevant verification passes: Engine 387, Core 527 and Desktop editor 14
+tests, with two/one/zero ignored, strict Clippy and debug builds. B580 editor
+captures show independent lyrics and true unpitched evidence; 26.697 seconds of
+native public-WAV playback preserves pause/play intent through lyric jumps.
+Application stream ERR is zero; device startup error attribution remains open.
+Actual isolated editing and atomic save/readback preserve every note geometry
+while moving only the selected lyric time. UTZ-valid empty text slots remain
+visible warnings rather than incorrectly blocking saves.
+
 See [the current measurement report](NOTE_TRANSCRIPTION_EVALUATION.md#boundary-and-independent-lyric-follow-up--2026-09-14)
 and [21J](../tasks/final-features/followups/21J_MELODY_PATH_SCORE_COHERENCE.md).
 This is scoped algorithm verification. Installed charts/runtimes and model
@@ -84,7 +93,7 @@ the current versions before final compilation/tests.
 
 ## Runtime architecture
 
-- Latest user direction (2026-09-11 UTC): compile **latest upstream source**, one current build, without release/commit equality gates. GGML and LibTorch source builders replace pinned acquisition; no GPU access/tests are currently authorized. Isolated dependency compaction measured **922,327,591 bytes saved (31.65%)**, not final source-built size. Latest GGML CPU/Vulkan compilation and bounded weighted CPU GAME graph reuse pass; LibTorch app-native compilation/CPU rotary reuse pass against existing runtime libraries. Full latest-source XPU LibTorch compilation remains incomplete because the SYCL compiler/SDK and build-time PyYAML are absent; no GPU speedup or readiness promotion. Fixed-wheel optional Nix runtime packaging is removed, not retained as another version. Details and operation receipts: [latest-source trimming and reuse](design/runtime/LIBTORCH_EXECUTION.md#latest-source-trimming-and-reuse--cpu-verified-xpu-source-build-incomplete-2026-09-11-utc).
+- The runtime-source task of 2026-09-11 UTC requested **latest upstream source**, one current build, without release/commit equality gates. GGML and LibTorch source builders replace pinned acquisition; that CPU optimization task did not authorize GPU execution. Isolated dependency compaction measured **922,327,591 bytes saved (31.65%)**, not final source-built size. Latest GGML CPU/Vulkan compilation and bounded weighted CPU GAME graph reuse pass; LibTorch app-native compilation/CPU rotary reuse pass against existing runtime libraries. Full latest-source XPU LibTorch compilation remains incomplete because the SYCL compiler/SDK and build-time PyYAML are absent; no GPU speedup or readiness promotion. Fixed-wheel optional Nix runtime packaging is removed, not retained as another version. Details and operation receipts: [latest-source trimming and reuse](design/runtime/LIBTORCH_EXECUTION.md#latest-source-trimming-and-reuse--cpu-verified-xpu-source-build-incomplete-2026-09-11-utc).
 
 - Studio communicates with packaged `uta-analyze` and `uta-runtime` machine protocols. `app-core/**` and `desktop/**` do not import backend implementation crates.
 - On 2026-09-11 the real production request over the 12-second excerpt completed end to end on the LibTorch XPU route outside the development shell (`test-artifacts/libtorch-xpu-production-12s/summary.json`): identical transcript and alignment counts to the GGML reference, pitch within 0.155 Hz, 55.8 s cold / 54.3 s warm engine wall versus 48.5 s GGML on that short slice (separation faster, Qwen/RMVPE nodes slower, other processes active). Functional pass only; not a controlled benchmark or parity qualification.

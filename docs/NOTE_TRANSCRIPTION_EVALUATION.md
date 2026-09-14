@@ -131,7 +131,8 @@ regression or demonstrate uniformly better singing coverage.
 
 Vocadito's second annotation remains a separate evaluation; it is never combined
 with A1 to select favorable matches. The follow-up result has 71 predicted notes
-against A2's 64, with onset/pitch F1 78.5%. Detailed matches and offset results are
+against A2's 64, with onset/pitch F1 78.5%, offset F1 50.4%, and five extra
+internal cuts (previously 78.8%, 48.5%, and four). Detailed matches and results are
 in `evaluations/vocadito-1/final-annotator-second.json`.
 
 The comparison retains the same six non-alignment native-model outputs for each
@@ -218,6 +219,87 @@ fractional pitch or unresolved flags. It does not split melody notes to simulate
 that timeline. Both lossless FLAC streams decode completely through
 33.212245 seconds. Evidence:
 `export-final/verification/summary.json`.
+
+Final-source verification also reruns all five public cases and both original
+evidence variants after the lyric-order correction. Every selected note ID,
+start, duration and pitch, every text token and independent time, and the complete
+canonical track remain identical to the preceding follow-up. All supplied text
+now appears in order, including kr002a's 231 characters. Its unresolved suffix
+had followed a stale note owner instead of the preceding shared-note text token.
+The five human-note evaluations are identical, including matches, coverage and
+parameters. New outputs are in `verified-replays/`; the comparison is
+`final-replay-verification.json`. Execution:
+`20260914T062438-0f735239081d`; value comparison:
+`20260914T062734-421d23f04569`. The initial aggregate compared the different
+prediction file paths as data and failed; correcting that diagnostic required
+no model or replay repetition.
+
+At source `230020b1`, final Engine **387 passed, two ignored** and Core
+**522 passed, one ignored** (`20260914T062113-6f3b7851816a`).
+Desktop editor **14 passed** (`20260914T062209-f50f4aaff4f0`).
+All-target strict Clippy for Engine, Core and Desktop passes
+(`20260914T062320-de7f6b5471c2`); the final editor/replay and analysis CLI
+builds pass (`20260914T062341-70cde9dc78bb`,
+`20260914T062424-268500f45871`). A core force-stop test exposed a
+process-observation race; the test now observes Linux process existence/state
+together. Production termination and its strict final assertion were not weakened.
+
+The subsequent Core evidence-boundary repair `edf8954e` synchronizes the
+already existing Engine semantics for voiced/rest evidence and pitch audit
+fields; it introduces no stricter model limits. Core **524 passed, one ignored**
+(`20260914T063216-2a893adf6f0e`), strict Core/Desktop Clippy passes
+(`20260914T063259-cce88961de3c`), and the final editor builds
+(`20260914T063341-515e44756edf`). Independent source review confirms matching
+field and validity semantics. A scan of 484 application source files finds none
+over 2000 lines; the largest is 1962. Product identity review is clean.
+Receipts: `20260914T063426-551179ec02cb`,
+`20260914T063426-5d43cc712321`.
+
+The actual original charts were opened in a Wayland editor rendered by B580.
+`目覚める` is complete across its melody notes; `切れ` and `に` retain
+distinct 400 ms lyric controls on one 800 ms note. The final public chart loads
+its real singing-analysis evidence and shows the 4.71–4.88-second
+`No pitch target` interval without a fictitious MIDI note.
+Screenshots: `test-artifacts/unpitched-evidence-ui/{mezameru-b580-gl,kireni-b580}.png`
+and `test-artifacts/public-unpitched-ui/unpitched-final-b580.png`.
+The public final capture uses B580 for both the application and compositor;
+the two earlier original captures used B580 for application rendering and AMD
+for compositor presentation. No model tests were moved to AMD.
+
+Continuous native audition uses the original 33.212-second public WAV unchanged.
+The registered editor commands seek while paused, start playback and seek again
+while preserving playback. Across 77 observations, 52 show an unmuted,
+uncorked stream and a running PipeWire node, spanning **26.697 seconds**.
+The application stream reports quantum 4408 at 44.1 kHz and ERR zero.
+The HDMI driver runs at 2048/48 kHz with ERR seven from its first active sample
+and no later increase; its earlier suspended row showed zero. The startup
+counter difference is not attributed, and this is **not** a claim of zero device
+errors over startup or human listening qualification. No build or inference ran
+during audition; user volume/mute settings were unchanged. Receipts:
+`20260914T062647-bf13f63cb262`, `20260914T062647-4967ed4f4788`;
+details: `test-artifacts/public-unpitched-ui/validation-summary.json`.
+
+Actual editor saving exposed another inconsistency: empty text slots are valid
+UTZ but were labeled format errors in the editor. They now remain located
+authoring warnings, including whitespace-only text. The separate scored-note
+without-lyrics advice remains; overlapping notes, missing pitch targets and
+unresolved continuations still block saving as the format requires.
+Final source `e2ae98f0` passes Core **527 tests, one ignored**
+(`20260914T064226-9c2153eba349`), Desktop editor **14**
+(`20260914T064246-e396d311fb01`), strict Core/Desktop Clippy
+(`20260914T064306-d0feb38f015e`) and the final editor build
+(`20260914T064328-83097244e80b`).
+
+A final B580 editor session changes `sa` from 4.640 to 4.650 seconds, keeps its
+640 ms duration and atomically saves to a separate `save-data` fixture.
+Reading the authored chart back confirms all 71 note geometries, all 44 text
+tokens and the 12 empty slots are retained; only that requested independent
+lyric start changes. The UI reports **zero errors and 25 warnings**.
+No user library or measurement output was modified. Receipts:
+`20260914T064355-27efa0732172`, `20260914T064459-11a3f8b732eb`;
+evidence: `test-artifacts/public-unpitched-ui/save-validation.json` and
+`saved-chart-b580.png`. The public chart's preceding final-evidence load also
+passes on B580 (`20260914T063622-85d14910647d`).
 
 This is bounded algorithm verification. Installed runtime libraries, configured
 model directories, user source media and cached charts were not replaced.
