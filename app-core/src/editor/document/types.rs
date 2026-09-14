@@ -228,8 +228,10 @@ pub struct ChartLyric {
     pub start: f64,
     pub end: f64,
     pub text: String,
-    /// A token whose owning note carries a pitch target has note guidance.
+    /// A token with overlapping pitched notes has note guidance.
     pub guided: bool,
+    /// Flattened indices of all pitched notes overlapping this lyric's interval.
+    pub guidance_notes: Vec<usize>,
     /// Preserved text with provisional timing, independent of pitch guidance.
     pub timing_unresolved: bool,
     /// Flattened index of the note that owns the token.
@@ -248,12 +250,12 @@ pub struct ChartLyric {
 #[derive(Debug, Clone)]
 pub struct ClipboardNote {
     pub(crate) offset: u64,
+    pub(crate) source_start: u64,
     pub(crate) duration: u64,
     pub(crate) pitch: Option<NotePitch>,
     pub(crate) kind: NoteKind,
     pub(crate) weight: f64,
-    pub(crate) text: Option<String>,
-    pub(crate) timing_unresolved: bool,
+    pub(crate) lyrics: Vec<utz::LyricToken>,
 }
 
 pub(crate) struct FlatNote {

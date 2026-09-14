@@ -3,7 +3,7 @@ use std::collections::{BTreeSet, HashSet};
 
 use crate::editor::{round_units_to_millis, seconds_to_units, units_to_seconds};
 use utz::{
-    DEFAULT_TIMEBASE, LyricJoin, LyricTextToken, LyricToken, NoteBonus, NotePitch, NoteScoring,
+    DEFAULT_TIMEBASE, LyricJoin, LyricTiming, LyricToken, NoteBonus, NotePitch, NoteScoring,
     ScoringMode, VocalChart, VocalMode, VocalNote, VocalPhrase, VocalTrack, VocalTrackRole,
 };
 
@@ -532,6 +532,13 @@ impl EditorDocument {
         let Some(track) = self.chart.tracks.get(index) else {
             return Vec::new();
         };
+        let guides = track
+            .phrases
+            .iter()
+            .flat_map(|phrase| &phrase.notes)
+            .enumerate()
+            .filter(|(_, note)| note.pitch.is_some())
+            .collect::<Vec<_>>();
         let mut result = Vec::new();
         let mut note_index = 0usize;
         for (phrase, entry) in track.phrases.iter().enumerate() {
@@ -558,15 +565,33 @@ impl EditorDocument {
                         end = held.start.saturating_add(held.duration);
                         continuation_notes.push(note_index + held_offset);
                     }
+                    let start = token
+                        .timing
+                        .map(|timing| timing.start)
+                        .unwrap_or(note.start);
+                    let end = token
+                        .timing
+                        .map(|timing| timing.start.saturating_add(timing.duration))
+                        .unwrap_or(end);
+                    let guidance_notes = guides
+                        .iter()
+                        .filter_map(|(index, guide)| {
+                            (guide.start < end
+                                && guide.start.saturating_add(guide.duration) > start)
+                                .then_some(*index)
+                        })
+                        .collect::<Vec<_>>();
+                    let guided = !guidance_notes.is_empty();
                     result.push(ChartLyric {
                         address: LyricAddress {
                             segment: phrase,
                             word,
                         },
-                        start: self.to_seconds(note.start),
+                        start: self.to_seconds(start),
                         end: self.to_seconds(end),
                         text: token.text.clone(),
-                        guided: note.pitch.is_some(),
+                        guided,
+                        guidance_notes,
                         timing_unresolved: token.timing_unresolved,
                         note: note_index + offset,
                         continuation_notes,
@@ -833,35 +858,44 @@ impl EditorDocument {
             };
             let mut left = note.clone();
             left.duration = split - start;
-            // More than one lyric relationship can share a note (two short
-            // syllables with no room for their own notes, or a note that
-            // both continues an earlier syllable and starts a new one) —
-            // only the first belongs before the split point.
-            left.lyrics.truncate(1);
-            selected.insert(output.len());
-            output.push(FlatNote { phrase, note: left });
-
             let mut right = note;
             right.start = split;
             right.duration = end - split;
-            right.lyrics = if right.lyrics.len() > 1 {
-                // Everything past the first token already has its own
-                // identity (its own syllable, or a continuation of a
-                // different earlier one) — keep it as-is on the right half
-                // instead of collapsing it into a continuation of the first
-                // and silently losing it.
-                right.lyrics.split_off(1)
-            } else {
-                // A single relationship (one syllable, or continuing an
-                // earlier one) — splitting mid-syllable means both halves
-                // keep singing it, so the tail continues it.
-                let head = right.lyrics.first().map(|token| match token {
-                    LyricToken::Text(token) => token.id.clone(),
-                    LyricToken::Continuation { continuation_of } => continuation_of.clone(),
-                });
-                head.map(|continuation_of| vec![LyricToken::Continuation { continuation_of }])
-                    .unwrap_or_default()
-            };
+            let tokens = std::mem::take(&mut right.lyrics);
+            left.lyrics.clear();
+            for token in tokens {
+                match token {
+                    LyricToken::Text(text) if text.timing.is_some() => {
+                        let timing = text.timing.expect("independent text timing");
+                        if timing.start >= split {
+                            right.lyrics.push(LyricToken::Text(text));
+                        } else {
+                            if timing.start.saturating_add(timing.duration) > split {
+                                right.lyrics.push(LyricToken::Continuation {
+                                    continuation_of: text.id.clone(),
+                                });
+                            }
+                            left.lyrics.push(LyricToken::Text(text));
+                        }
+                    }
+                    LyricToken::Text(text) => {
+                        right.lyrics.push(LyricToken::Continuation {
+                            continuation_of: text.id.clone(),
+                        });
+                        left.lyrics.push(LyricToken::Text(text));
+                    }
+                    LyricToken::Continuation { continuation_of } => {
+                        left.lyrics.push(LyricToken::Continuation {
+                            continuation_of: continuation_of.clone(),
+                        });
+                        right
+                            .lyrics
+                            .push(LyricToken::Continuation { continuation_of });
+                    }
+                }
+            }
+            selected.insert(output.len());
+            output.push(FlatNote { phrase, note: left });
             selected.insert(output.len());
             output.push(FlatNote {
                 phrase,
@@ -905,9 +939,15 @@ impl EditorDocument {
         indices: &BTreeSet<usize>,
         primary: Option<usize>,
     ) -> Option<usize> {
-        if indices.len() < 2 {
+        if indices
+            .iter()
+            .filter(|index| self.note_at(**index).is_some())
+            .count()
+            < 2
+        {
             return None;
         }
+        self.preserve_note_lyric_timings(indices);
         let flat = self.take_flat();
         let ordered = indices
             .iter()
@@ -920,7 +960,7 @@ impl EditorDocument {
         }
         let first = ordered[0];
         let source = primary
-            .filter(|index| indices.contains(index))
+            .filter(|index| ordered.contains(index))
             .unwrap_or(first);
         let mut merged = flat[source].note.clone();
         let phrase = flat[first].phrase;
@@ -1064,39 +1104,113 @@ impl EditorDocument {
         let notes = self
             .active_track()
             .into_iter()
-            .flat_map(|track| track.phrases.iter().flat_map(|phrase| phrase.notes.iter()));
+            .flat_map(|track| track.phrases.iter().flat_map(|phrase| phrase.notes.iter()))
+            .collect::<Vec<_>>();
+        let all_texts = notes
+            .iter()
+            .flat_map(|note| &note.lyrics)
+            .filter_map(|token| match token {
+                LyricToken::Text(token) => Some((token.id.clone(), token.clone())),
+                LyricToken::Continuation { .. } => None,
+            })
+            .collect::<std::collections::HashMap<_, _>>();
         let mut selected = notes
+            .into_iter()
             .enumerate()
             .filter(|(index, _)| indices.contains(index))
             .map(|(_, note)| note)
             .collect::<Vec<_>>();
         selected.sort_by_key(|note| note.start);
         let origin = selected.first().map(|note| note.start).unwrap_or(0);
+        let mut copied_texts = selected
+            .iter()
+            .flat_map(|note| &note.lyrics)
+            .filter_map(|token| match token {
+                LyricToken::Text(token) => Some(token.id.clone()),
+                LyricToken::Continuation { .. } => None,
+            })
+            .collect::<HashSet<_>>();
+        let copied_tails = selected
+            .iter()
+            .flat_map(|note| {
+                note.lyrics.iter().filter_map(move |token| match token {
+                    LyricToken::Continuation { continuation_of } => Some((
+                        continuation_of.clone(),
+                        note.start,
+                        note.start.saturating_add(note.duration),
+                    )),
+                    LyricToken::Text(_) => None,
+                })
+            })
+            .collect::<Vec<_>>();
         selected
             .into_iter()
-            .map(|note| ClipboardNote {
-                offset: note.start.saturating_sub(origin),
-                duration: note.duration,
-                pitch: note.pitch,
-                kind: NoteKind::of(note),
-                weight: note.scoring.weight,
-                timing_unresolved: note.lyrics.iter().any(
-                    |token| matches!(token, LyricToken::Text(token) if token.timing_unresolved),
-                ),
-                text: note.lyrics.iter().find_map(|token| match token {
-                    LyricToken::Text(token) => Some(token.text.clone()),
-                    LyricToken::Continuation { .. } => None,
-                }),
+            .map(|note| {
+                let lyrics = note
+                    .lyrics
+                    .iter()
+                    .map(|token| {
+                        if let LyricToken::Continuation { continuation_of } = token
+                            && !copied_texts.contains(continuation_of)
+                            && let Some(root) = all_texts.get(continuation_of)
+                        {
+                            let mut text = root.clone();
+                            // A copied tail becomes self-contained if its head was not selected.
+                            if text.timing.is_some() {
+                                let end = copied_tails
+                                    .iter()
+                                    .filter(|(id, _, _)| id == continuation_of)
+                                    .map(|(_, _, end)| *end)
+                                    .max()
+                                    .unwrap_or(note.start.saturating_add(note.duration));
+                                text.timing = Some(LyricTiming {
+                                    start: note.start,
+                                    duration: end.saturating_sub(note.start),
+                                });
+                                text.timing_unresolved = true;
+                            }
+                            copied_texts.insert(continuation_of.clone());
+                            return LyricToken::Text(text);
+                        }
+                        token.clone()
+                    })
+                    .collect();
+                ClipboardNote {
+                    offset: note.start.saturating_sub(origin),
+                    source_start: note.start,
+                    duration: note.duration,
+                    pitch: note.pitch,
+                    kind: NoteKind::of(note),
+                    weight: note.scoring.weight,
+                    lyrics,
+                }
             })
             .collect()
     }
 
-    /// Seconds from the clipboard's origin to its last note end, so a duplicate
-    /// can be dropped clear of the material it came from.
+    /// The copied note and lyric extent, so duplicate keeps both clear of the source.
     pub fn clipboard_span(&self, clipboard: &[ClipboardNote]) -> f64 {
         clipboard
             .iter()
-            .map(|note| self.to_seconds(note.offset.saturating_add(note.duration)))
+            .map(|note| {
+                let origin = note.source_start.saturating_sub(note.offset);
+                let end = note
+                    .lyrics
+                    .iter()
+                    .filter_map(|token| match token {
+                        LyricToken::Text(token) => token.timing.map(|timing| {
+                            timing
+                                .start
+                                .saturating_add(timing.duration)
+                                .saturating_sub(origin)
+                        }),
+                        LyricToken::Continuation { .. } => None,
+                    })
+                    .max()
+                    .unwrap_or(0)
+                    .max(note.offset.saturating_add(note.duration));
+                self.to_seconds(end)
+            })
             .fold(0.0, f64::max)
     }
 
@@ -1104,26 +1218,52 @@ impl EditorDocument {
         if clipboard.is_empty() {
             return BTreeSet::new();
         }
-        let at_units = self.to_units(at);
+        let origin = clipboard[0]
+            .source_start
+            .saturating_sub(clipboard[0].offset);
+        let earliest = clipboard
+            .iter()
+            .flat_map(|note| &note.lyrics)
+            .filter_map(|token| match token {
+                LyricToken::Text(token) => token.timing.map(|timing| timing.start),
+                LyricToken::Continuation { .. } => None,
+            })
+            .min()
+            .unwrap_or(origin)
+            .min(origin);
+        let at_units = self.to_units(at).max(origin.saturating_sub(earliest));
         let minimum = self.min_duration();
-        let join = self.default_join();
+        let mut ids = std::collections::HashMap::new();
+        for token in clipboard.iter().flat_map(|note| &note.lyrics) {
+            if let LyricToken::Text(token) = token {
+                ids.entry(token.id.clone())
+                    .or_insert_with(|| self.allocate_id("lyric"));
+            }
+        }
         let mut pasted = Vec::with_capacity(clipboard.len());
         for entry in clipboard {
             let id = self.allocate_id("note");
-            let lyrics = match &entry.text {
-                Some(text) => {
-                    let token = self.allocate_id("lyric");
-                    vec![LyricToken::Text(LyricTextToken {
-                        timing_unresolved: entry.timing_unresolved,
-                        id: token,
-                        text: text.clone(),
-                        join_before: join,
-                        reading: None,
-                        phonemes: None,
-                    })]
-                }
-                None => Vec::new(),
-            };
+            let shift = at_units as i64 - origin as i64;
+            let lyrics = entry
+                .lyrics
+                .iter()
+                .map(|token| match token {
+                    LyricToken::Text(token) => {
+                        let mut token = token.clone();
+                        token.id = ids.get(&token.id).cloned().unwrap_or(token.id);
+                        if let Some(timing) = token.timing.as_mut() {
+                            timing.start = timing.start.saturating_add_signed(shift);
+                        }
+                        LyricToken::Text(token)
+                    }
+                    LyricToken::Continuation { continuation_of } => LyricToken::Continuation {
+                        continuation_of: ids
+                            .get(continuation_of)
+                            .cloned()
+                            .unwrap_or_else(|| continuation_of.clone()),
+                    },
+                })
+                .collect();
             let mut note = VocalNote {
                 id,
                 start: at_units.saturating_add(entry.offset),

@@ -96,29 +96,20 @@ pub(crate) fn spawn_editor(
     let ghosts = other_track_notes(&editor.document);
     let tracks_visible = !editor.tracks_hidden;
     let lyrics = chart_lyrics(&editor.document);
-    // The lyric or note(s) the current selection is bound to, so its match
-    // can be highlighted — the format ties a note's pitch and its lyric
-    // together, and clicking either one should show the other. A
-    // syllable held across a pitch change spans more than one note (see
-    // `ChartLyricView::continuation_notes`), so all of them highlight
-    // together rather than just the one carrying the lyric text.
+    // Highlight the real pitch targets overlapping the selected lyric interval.
     let selected_lyric = if let Some(word) = editor.selected_word {
         lyrics
             .iter()
             .find(|lyric| lyric.segment == word.segment && lyric.word == word.word && lyric.guided)
     } else {
         editor.selected_note.and_then(|note_index| {
-            lyrics.iter().find(|lyric| {
-                lyric.note == note_index || lyric.continuation_notes.contains(&note_index)
-            })
+            lyrics
+                .iter()
+                .find(|lyric| lyric.guidance_notes.contains(&note_index))
         })
     };
     let bound_notes: BTreeSet<usize> = selected_lyric
-        .map(|lyric| {
-            std::iter::once(lyric.note)
-                .chain(lyric.continuation_notes.iter().copied())
-                .collect()
-        })
+        .map(|lyric| lyric.guidance_notes.iter().copied().collect())
         .unwrap_or_default();
     let bound_word = selected_lyric.map(|lyric| WordSelection {
         segment: lyric.segment,

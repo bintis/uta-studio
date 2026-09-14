@@ -6,8 +6,8 @@ use std::collections::{BTreeSet, HashSet};
 use crate::editor::seconds_to_units;
 use crate::editor::syllabize::{is_han, is_hangul, is_kana};
 use utz::{
-    LyricJoin, LyricTextToken, LyricToken, NoteBonus, NoteScoring, ScoringMode, VocalMode,
-    VocalNote, VocalPhrase,
+    LyricJoin, LyricTextToken, LyricTiming, LyricToken, NoteBonus, NoteScoring, ScoringMode,
+    VocalMode, VocalNote, VocalPhrase,
 };
 
 impl EditorDocument {
@@ -88,11 +88,10 @@ impl EditorDocument {
         let playhead_units = self.to_units(playhead.max(0.0));
         let mut start = playhead_units;
         if let Some(selection) = selection
-            && let Some(note) = self.resolve(selection)
-            && let Some((_, note)) = self.note_at(note)
+            && let Some(timing) = self.effective_lyric_timing(selection)
         {
-            let end = note.start.saturating_add(note.duration);
-            if playhead_units >= note.start && playhead_units <= end {
+            let end = timing.start.saturating_add(timing.duration);
+            if playhead_units >= timing.start && playhead_units <= end {
                 start = end;
             }
         }
@@ -132,6 +131,7 @@ impl EditorDocument {
         let id = self.allocate_id("lyric");
         let note = self.note_at_mut(note_index)?;
         note.lyrics.push(LyricToken::Text(LyricTextToken {
+            timing: None,
             timing_unresolved: false,
             id,
             text: "New lyric".into(),
@@ -157,6 +157,7 @@ impl EditorDocument {
         let id = self.allocate_id("lyric");
         let note = self.note_at_mut(note_index)?;
         note.lyrics.push(LyricToken::Text(LyricTextToken {
+            timing: None,
             timing_unresolved: false,
             id,
             text: "New lyric".into(),
@@ -180,6 +181,22 @@ impl EditorDocument {
         forward: bool,
     ) -> Option<LyricAddress> {
         let note_index = self.resolve(from)?;
+        let tokens = self.phrase_tokens(from.segment);
+        let adjacent = if forward {
+            from.word.checked_add(1)
+        } else {
+            from.word.checked_sub(1)
+        };
+        if let Some(word) = adjacent
+            && tokens
+                .get(word)
+                .is_some_and(|(_, note)| *note == note_index)
+        {
+            return Some(LyricAddress {
+                segment: from.segment,
+                word,
+            });
+        }
         let (phrase, offset) = self.locate_note(note_index)?;
         let slots = self.lyric_slots(phrase);
         let position = slots.iter().position(|candidate| *candidate == offset)?;
@@ -190,8 +207,19 @@ impl EditorDocument {
         };
         let range = self.phrase_flat_range(phrase)?;
         let target_note = range.start + next_offset;
-        self.address_of_note(target_note)
-            .or_else(|| self.add_lyric_to_note(target_note))
+        let existing = if forward {
+            self.address_of_note(target_note)
+        } else {
+            tokens
+                .iter()
+                .rev()
+                .find(|(_, note)| *note == target_note)
+                .map(|(word, _)| LyricAddress {
+                    segment: phrase,
+                    word: *word,
+                })
+        };
+        existing.or_else(|| self.add_lyric_to_note(target_note))
     }
 
     /// Moves the lyric at `word` onto `note_index`, the format's way of
@@ -206,9 +234,8 @@ impl EditorDocument {
 
     /// Same as [`Self::bind_lyric_to_note`], but when `align_to_lyric` is
     /// true the merged note keeps the lyric's own start/end instead of the
-    /// pitch note's. The format has one start/end per note, so a bind must
-    /// pick a side when the two disagree; this makes that pick explicit
-    /// instead of the pitch note's timing always silently winning.
+    /// pitch note's. Aligning to MIDI explicitly binds the text to note geometry;
+    /// aligning to lyrics retains each independent token interval.
     pub fn bind_lyric_to_note_aligned(
         &mut self,
         word: LyricAddress,
@@ -223,8 +250,9 @@ impl EditorDocument {
         if source.pitch.is_some() {
             return None;
         }
-        let source_start = source.start;
-        let source_duration = source.duration;
+        let source_timing = self.effective_lyric_timing(word)?;
+        let source_start = source_timing.start;
+        let source_duration = source_timing.duration;
         let source_token_ids: HashSet<String> = source
             .lyrics
             .iter()
@@ -265,7 +293,15 @@ impl EditorDocument {
         if held_elsewhere {
             return None;
         }
-        let tokens = std::mem::take(&mut self.note_at_mut(source_index)?.lyrics);
+        let mut tokens = std::mem::take(&mut self.note_at_mut(source_index)?.lyrics);
+        if !align_to_lyric {
+            // The explicit MIDI alignment choice binds lyric time to the target note.
+            for token in &mut tokens {
+                if let LyricToken::Text(token) = token {
+                    token.timing = None;
+                }
+            }
+        }
         self.note_at_mut(note_index)?.lyrics = tokens;
         if align_to_lyric {
             let target_note = self.note_at_mut(note_index)?;
@@ -285,11 +321,8 @@ impl EditorDocument {
     /// extend onto next.
     pub(crate) fn lyric_chain_tail(&self, word: LyricAddress) -> Option<(usize, usize, String)> {
         let source_index = self.resolve(word)?;
-        let (source_phrase, source_note) = self.note_at(source_index)?;
-        let token_id = source_note.lyrics.iter().find_map(|token| match token {
-            LyricToken::Text(text) => Some(text.id.clone()),
-            LyricToken::Continuation { .. } => None,
-        })?;
+        let (source_phrase, _) = self.note_at(source_index)?;
+        let token_id = self.token_id_at(word)?;
         let mut tail_index = source_index;
         while let Some(next_index) = tail_index.checked_add(1) {
             let Some((phrase, note)) = self.note_at(next_index) else {
@@ -359,9 +392,15 @@ impl EditorDocument {
         let Some(note) = self.note_at_mut(note_index) else {
             return false;
         };
+        let end = note.start.saturating_add(note.duration);
         note.lyrics = vec![LyricToken::Continuation {
             continuation_of: token_id,
         }];
+        if let Some(token) = self.token_mut(word)
+            && let Some(timing) = token.timing.as_mut()
+        {
+            timing.duration = timing.duration.max(end.saturating_sub(timing.start));
+        }
         self.touch();
         true
     }
@@ -409,7 +448,7 @@ impl EditorDocument {
             if source.pitch.is_some() {
                 return None;
             }
-            let source_start = source.start;
+            let source_start = self.effective_lyric_timing(word)?.start;
             let range = self.phrase_flat_range(phrase)?;
             let target_index = range
                 .filter(|index| *index != source_index)
@@ -517,6 +556,10 @@ impl EditorDocument {
             detached_note.lyrics = match source_text {
                 Some(mut text) => {
                     text.id = new_id;
+                    text.timing = Some(LyricTiming {
+                        start: detached_note.start,
+                        duration: detached_note.duration,
+                    });
                     vec![LyricToken::Text(text)]
                 }
                 // The head's text somehow no longer carries this token
@@ -719,47 +762,37 @@ impl EditorDocument {
         if addresses.len() < 2 {
             return None;
         }
-        let segment = addresses.first()?.segment;
-        if addresses.iter().any(|address| address.segment != segment) {
+        let first = *addresses.first()?;
+        if addresses
+            .iter()
+            .any(|address| address.segment != first.segment)
+        {
             return None;
         }
+        let independent = addresses.iter().any(|address| {
+            self.token_at(*address)
+                .is_some_and(|token| token.timing.is_some())
+        });
+        let token_ids = addresses
+            .iter()
+            .map(|address| self.token_id_at(*address))
+            .collect::<Option<Vec<_>>>()?;
         let notes = addresses
             .iter()
             .filter_map(|address| self.resolve(*address))
             .collect::<BTreeSet<_>>();
-        let timing_unresolved = addresses.iter().any(|address| {
-            self.token_mut(*address)
-                .is_some_and(|token| token.timing_unresolved)
-        });
-        let compact = self.compact_language();
-        let text = addresses
-            .iter()
-            .filter_map(|address| self.lyric_text(*address))
-            .collect::<Vec<_>>()
-            .join(if compact { "" } else { " " });
-        let first = *addresses.first()?;
-        if notes.len() > 1 {
+        if !independent && notes.len() > 1 {
             self.merge_notes(&notes, None)?;
-        } else {
-            // One note holds them all: collapse its tokens into the first.
-            let note = *notes.first()?;
-            let keep = self.token_mut(first).map(|token| token.id.clone())?;
-            if let Some(note) = self.note_at_mut(note) {
-                note.lyrics.retain(|token| match token {
-                    LyricToken::Text(token) => token.id == keep,
-                    LyricToken::Continuation { .. } => true,
-                });
-            }
         }
-        let address = LyricAddress {
-            segment: first.segment.min(self.phrase_count().saturating_sub(1)),
-            word: first.word,
-        };
-        self.set_lyric_text(address, &text);
-        if let Some(token) = self.token_mut(address) {
-            token.timing_unresolved = timing_unresolved;
+        let addresses = token_ids
+            .iter()
+            .map(|id| self.address_of_token(first.segment, id))
+            .collect::<Option<BTreeSet<_>>>()?;
+        let merged = self.merge_independent_lyrics(&addresses)?;
+        if !independent {
+            self.token_mut(merged)?.timing = None;
         }
-        Some(address)
+        Some(merged)
     }
 
     pub fn lyric_text(&self, address: LyricAddress) -> Option<String> {
@@ -781,8 +814,8 @@ impl EditorDocument {
             .nth(ordinal)
     }
 
-    /// Splits each selected syllable, splitting its note so both halves keep a
-    /// singable target.
+    /// Splits the selected text at its own interval. A single bound syllable
+    /// divides its note; independent or shared-note words keep the pitch geometry.
     pub fn split_lyrics(
         &mut self,
         addresses: &BTreeSet<LyricAddress>,
@@ -812,12 +845,21 @@ impl EditorDocument {
                 (text.clone(), String::new())
             };
 
+            if self.lyric_needs_independent_edit(address) {
+                let split = self.split_independent_lyric(address, left_text, right_text, single);
+                result.extend(split.into_iter().filter_map(|address| {
+                    self.token_id_at(address).map(|id| (address.segment, id))
+                }));
+                continue;
+            }
             let mut selection = BTreeSet::new();
             selection.insert(note_index);
             let split = self.split_notes(&selection, single.unwrap_or(f64::NAN));
             let mut split = split.into_iter();
             let (Some(left), Some(right)) = (split.next(), split.next()) else {
-                result.insert(address);
+                if let Some(id) = self.token_id_at(address) {
+                    result.insert((address.segment, id));
+                }
                 continue;
             };
             // Splitting a note leaves the tail continuing the head's syllable;
@@ -825,6 +867,7 @@ impl EditorDocument {
             let id = self.allocate_id("lyric");
             if let Some(note) = self.note_at_mut(right) {
                 note.lyrics = vec![LyricToken::Text(LyricTextToken {
+                    timing: None,
                     timing_unresolved,
                     id,
                     text: right_text,
@@ -836,13 +879,20 @@ impl EditorDocument {
             }
             if let Some(left) = self.address_of_note(left) {
                 self.set_lyric_text(left, &left_text);
-                result.insert(left);
+                if let Some(id) = self.token_id_at(left) {
+                    result.insert((left.segment, id));
+                }
             }
             if let Some(right) = self.address_of_note(right) {
-                result.insert(right);
+                if let Some(id) = self.token_id_at(right) {
+                    result.insert((right.segment, id));
+                }
             }
         }
         result
+            .into_iter()
+            .filter_map(|(phrase, id)| self.address_of_token(phrase, &id))
+            .collect()
     }
 
     /// The notes of a phrase that can hold a syllable. A note carrying a
@@ -856,10 +906,14 @@ impl EditorDocument {
         };
         (0..entry.notes.len())
             .filter(|offset| {
-                !entry.notes[*offset]
+                entry.notes[*offset]
                     .lyrics
                     .iter()
-                    .any(|token| matches!(token, LyricToken::Continuation { .. }))
+                    .any(|token| matches!(token, LyricToken::Text(_)))
+                    || !entry.notes[*offset]
+                        .lyrics
+                        .iter()
+                        .any(|token| matches!(token, LyricToken::Continuation { .. }))
             })
             .collect()
     }
@@ -958,7 +1012,9 @@ impl EditorDocument {
                 .iter()
                 .flat_map(|note| note.lyrics.iter())
                 .filter_map(|token| match token {
-                    LyricToken::Text(token) => Some((token.id.clone(), token.timing_unresolved)),
+                    LyricToken::Text(token) => {
+                        Some((token.id.clone(), token.timing_unresolved, token.timing))
+                    }
                     LyricToken::Continuation { .. } => None,
                 })
                 .collect::<Vec<_>>()
@@ -966,15 +1022,32 @@ impl EditorDocument {
         // Retokenizing text can merge, insert, or remove words. Ordinal
         // reuse cannot establish which rewritten word inherited a missing
         // timestamp, so retain that uncertainty throughout the rewritten line.
-        let timing_unresolved = existing.iter().any(|(_, unresolved)| *unresolved);
+        let regrouped = parsed.len() != existing.len();
+        let scope_start = existing
+            .iter()
+            .filter_map(|(_, _, timing)| timing.map(|timing| timing.start))
+            .min();
+        let scope_end = existing
+            .iter()
+            .filter_map(|(_, _, timing)| {
+                timing.map(|timing| timing.start.saturating_add(timing.duration))
+            })
+            .max();
+        let scope = scope_start.zip(scope_end).map(|(start, end)| LyricTiming {
+            start,
+            duration: end.saturating_sub(start),
+        });
+        let timing_unresolved =
+            existing.iter().any(|(_, unresolved, _)| *unresolved) || (regrouped && scope.is_some());
         let mut ids = existing.into_iter();
         let tokens = parsed
             .into_iter()
             .map(|(text, join)| {
-                let (id, _) = ids
+                let (id, _, timing) = ids
                     .next()
-                    .unwrap_or_else(|| (self.allocate_id("lyric"), false));
+                    .unwrap_or_else(|| (self.allocate_id("lyric"), false, None));
                 LyricToken::Text(LyricTextToken {
+                    timing: if regrouped { scope } else { timing },
                     timing_unresolved,
                     id,
                     text,
@@ -1039,10 +1112,9 @@ impl EditorDocument {
         (end > start).then_some((start, end))
     }
 
-    /// Splits each selected word into the syllables its language sings, giving
-    /// every syllable its own note. The word's note is divided in proportion to
-    /// how much of the word each syllable spells, which is closer to how it is
-    /// sung than an even split.
+    /// Splits each selected word into the syllables its language sings.
+    /// Independent or shared-note words keep the pitch geometry; a single
+    /// bound word divides its note. Automatic internal timing remains provisional.
     ///
     /// The last syllable keeps the original token's ID so a held note that
     /// continues the word still points at the syllable it is holding.
@@ -1050,8 +1122,17 @@ impl EditorDocument {
         let language = self.chart.language.clone();
         let minimum = self.min_duration();
         let mut produced_ids = Vec::new();
+        let mut produced_tokens = Vec::new();
         // Back to front, so the addresses ahead of the cursor stay valid.
         for address in addresses.iter().rev().copied() {
+            if self.lyric_needs_independent_edit(address) {
+                produced_tokens.extend(
+                    self.syllabize_independent_lyric(address)
+                        .into_iter()
+                        .map(|id| (address.segment, id)),
+                );
+                continue;
+            }
             let Some(note_index) = self.resolve(address) else {
                 continue;
             };
@@ -1065,10 +1146,7 @@ impl EditorDocument {
             else {
                 continue;
             };
-            let Some(token) = note.lyrics.iter().find_map(|token| match token {
-                LyricToken::Text(token) => Some(token.clone()),
-                LyricToken::Continuation { .. } => None,
-            }) else {
+            let Some(token) = self.token_at(address).cloned() else {
                 continue;
             };
             let pieces = crate::editor::syllabize::syllables(
@@ -1124,6 +1202,7 @@ impl EditorDocument {
                     cursor,
                     piece_duration,
                     LyricTextToken {
+                        timing: None,
                         timing_unresolved: token.timing_unresolved,
                         id: token_id,
                         text: piece.text.clone(),
@@ -1171,16 +1250,40 @@ impl EditorDocument {
 
         // Addresses are only stable once every split has landed.
         let notes = self.notes();
-        produced_ids
+        let mut result = produced_ids
             .into_iter()
             .filter_map(|id| {
                 let index = notes.iter().position(|note| note.id == id)?;
                 self.address_of_note(index)
             })
-            .collect()
+            .collect::<Vec<_>>();
+        result.extend(
+            produced_tokens
+                .into_iter()
+                .filter_map(|(phrase, id)| self.address_of_token(phrase, &id)),
+        );
+        result.sort_unstable();
+        result
     }
 
     pub fn shift_lyric(&mut self, address: LyricAddress, delta: f64) -> bool {
+        if !delta.is_finite() {
+            return false;
+        }
+        if let Some(timing) = self.token_at(address).and_then(|token| token.timing) {
+            let shift =
+                ((delta * self.timebase() as f64).round() as i64).max(-(timing.start as i64));
+            if shift == 0 {
+                return false;
+            }
+            let token = self.token_mut(address).expect("resolved token");
+            token.timing = Some(LyricTiming {
+                start: timing.start.saturating_add_signed(shift),
+                duration: timing.duration,
+            });
+            self.touch();
+            return true;
+        }
         let Some(note) = self.resolve(address) else {
             return false;
         };
@@ -1196,7 +1299,18 @@ impl EditorDocument {
         let Some(note) = self.resolve(address) else {
             return false;
         };
-        if !self.resize_note(note, start, end) {
+        if self
+            .token_at(address)
+            .is_some_and(|token| token.timing.is_some())
+        {
+            let start = self.to_units(start);
+            let end = self.to_units(end);
+            self.token_mut(address).expect("resolved token").timing = Some(LyricTiming {
+                start,
+                duration: end.saturating_sub(start).max(1),
+            });
+            self.touch();
+        } else if !self.resize_note(note, start, end) {
             return false;
         }
         // A deliberate lyric boundary edit supplies an authored interval.
@@ -1213,16 +1327,12 @@ impl EditorDocument {
         start_delta: f64,
         end_delta: f64,
     ) -> bool {
-        let Some(index) = self.resolve(address) else {
+        let Some((_, start, end)) = self.lyric(address) else {
             return false;
         };
-        let Some((_, note)) = self.note_at(index) else {
-            return false;
-        };
-        let start = self.to_seconds(note.start);
-        let end = self.to_seconds(note.start.saturating_add(note.duration));
-        let next_start = (start + start_delta).clamp(0.0, end - MIN_NOTE_SECONDS);
-        let next_end = (end + end_delta).max(next_start + MIN_NOTE_SECONDS);
+        let minimum = MIN_NOTE_SECONDS.min((end - start).max(1.0 / self.timebase() as f64));
+        let next_start = (start + start_delta).clamp(0.0, (end - minimum).max(0.0));
+        let next_end = (end + end_delta).max(next_start + minimum);
         self.set_lyric_timing(address, next_start, next_end)
     }
 
@@ -1413,7 +1523,14 @@ impl EditorDocument {
             .iter()
             .flat_map(|track| track.phrases.iter())
             .flat_map(|phrase| phrase.notes.iter())
-            .map(|note| note.start)
+            .flat_map(|note| {
+                std::iter::once(note.start).chain(note.lyrics.iter().filter_map(
+                    |token| match token {
+                        LyricToken::Text(token) => token.timing.map(|timing| timing.start),
+                        LyricToken::Continuation { .. } => None,
+                    },
+                ))
+            })
             .min()
             .unwrap_or(0);
         let delta = ((seconds * timebase).round() as i64).max(-(earliest as i64));
@@ -1424,6 +1541,13 @@ impl EditorDocument {
             for phrase in &mut track.phrases {
                 for note in &mut phrase.notes {
                     note.start = note.start.saturating_add_signed(delta);
+                    for token in &mut note.lyrics {
+                        if let LyricToken::Text(token) = token
+                            && let Some(timing) = token.timing.as_mut()
+                        {
+                            timing.start = timing.start.saturating_add_signed(delta);
+                        }
+                    }
                 }
             }
         }

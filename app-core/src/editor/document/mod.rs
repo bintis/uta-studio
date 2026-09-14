@@ -1,6 +1,7 @@
 mod helpers;
 mod lyrics;
 mod notes;
+mod timing;
 mod types;
 
 pub(crate) use helpers::*;

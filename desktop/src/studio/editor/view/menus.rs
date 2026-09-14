@@ -1140,6 +1140,8 @@ mod tests {
         let mut value = serde_json::to_value(&chart.vocal_chart).unwrap();
         value["tracks"][0]["phrases"][0]["notes"][0]["lyrics"][0]["timing_unresolved"] =
             serde_json::Value::Bool(true);
+        value["tracks"][0]["phrases"][0]["notes"][0]["lyrics"][0]["timing"] =
+            serde_json::json!({"start": 200_000, "duration": 600_000});
         chart.vocal_chart = serde_json::from_value(value).unwrap();
         let mut editor = NativeEditor::new(
             chart,
@@ -1152,6 +1154,7 @@ mod tests {
         assert!(lyrics[0].guided);
         assert!(lyrics[0].timing_unresolved);
         assert_eq!(lyrics[0].text, "めさめる");
+        assert_eq!((lyrics[0].start, lyrics[0].end), (0.2, 0.8));
 
         let mut world = World::new();
         let mut queue = bevy::ecs::world::CommandQueue::default();
@@ -1196,5 +1199,8 @@ mod tests {
         assert!(!updated[0].timing_unresolved);
         assert!(updated[0].guided);
         assert_eq!(updated[0].text, "めさめる");
+        assert_eq!((updated[0].start, updated[0].end), (0.1, 0.9));
+        let note = &editor.document.notes()[0];
+        assert_eq!((note.start, note.end), (0.0, 1.0));
     }
 }

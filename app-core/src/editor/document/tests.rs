@@ -28,6 +28,7 @@ mod tests {
                     weight: 1.0,
                 },
                 lyrics: vec![LyricToken::Text(LyricTextToken {
+                    timing: None,
                     timing_unresolved: false,
                     id: format!("lyric-{}", index + 1),
                     text: (*text).into(),
@@ -147,6 +148,7 @@ mod tests {
         // short to split further during authoring).
         document.chart.tracks[0].phrases[0].notes[0].lyrics = vec![
             LyricToken::Text(LyricTextToken {
+                timing: None,
                 timing_unresolved: false,
                 id: "lyric-1".into(),
                 text: "me".into(),
@@ -155,6 +157,7 @@ mod tests {
                 phonemes: None,
             }),
             LyricToken::Text(LyricTextToken {
+                timing: None,
                 timing_unresolved: false,
                 id: "lyric-2".into(),
                 text: "ru".into(),
@@ -214,6 +217,7 @@ mod tests {
         // `splitting_a_note_with_two_syllables_keeps_both_instead_of_dropping_the_second`).
         document.chart.tracks[0].phrases[0].notes[0].lyrics = vec![
             LyricToken::Text(LyricTextToken {
+                timing: None,
                 timing_unresolved: false,
                 id: "lyric-1".into(),
                 text: "me".into(),
@@ -222,6 +226,7 @@ mod tests {
                 phonemes: None,
             }),
             LyricToken::Text(LyricTextToken {
+                timing: None,
                 timing_unresolved: false,
                 id: "lyric-2".into(),
                 text: "ru".into(),
@@ -252,6 +257,7 @@ mod tests {
         let mut document = document(&[(0.0, 1.0, 60, "me")]);
         document.chart.tracks[0].phrases[0].notes[0].lyrics = vec![
             LyricToken::Text(LyricTextToken {
+                timing: None,
                 timing_unresolved: false,
                 id: "lyric-1".into(),
                 text: "me".into(),
@@ -260,6 +266,7 @@ mod tests {
                 phonemes: None,
             }),
             LyricToken::Text(LyricTextToken {
+                timing: None,
                 timing_unresolved: false,
                 id: "lyric-2".into(),
                 text: "ru".into(),
@@ -1448,4 +1455,5 @@ mod tests {
         assert_eq!(document.phrase_text(0), "AB");
         assert!(document.lyrics()[0].timing_unresolved);
     }
+    include!("timing_tests.rs");
 }

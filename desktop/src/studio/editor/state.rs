@@ -677,12 +677,8 @@ pub(crate) struct ChartLyricView {
     pub(crate) text: String,
     pub(crate) lane: usize,
     pub(crate) guided: bool,
+    pub(crate) guidance_notes: Vec<usize>,
     pub(crate) timing_unresolved: bool,
-    /// Flattened index of the note this lyric is bound to.
-    pub(crate) note: usize,
-    /// Flattened indices of any notes that hold this syllable through a
-    /// pitch change past `note` — see `app_core::ChartLyric::continuation_notes`.
-    pub(crate) continuation_notes: Vec<usize>,
     pub(crate) reading: Option<String>,
 }
 
@@ -1071,9 +1067,8 @@ pub(crate) fn chart_lyrics(document: &app_core::EditorDocument) -> Vec<ChartLyri
                 text: lyric.text,
                 lane,
                 guided: lyric.guided,
+                guidance_notes: lyric.guidance_notes,
                 timing_unresolved: lyric.timing_unresolved,
-                note: lyric.note,
-                continuation_notes: lyric.continuation_notes,
                 reading: lyric.reading,
             }
         })
