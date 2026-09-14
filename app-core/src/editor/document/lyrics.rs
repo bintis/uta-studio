@@ -883,10 +883,10 @@ impl EditorDocument {
                     result.insert((left.segment, id));
                 }
             }
-            if let Some(right) = self.address_of_note(right) {
-                if let Some(id) = self.token_id_at(right) {
-                    result.insert((right.segment, id));
-                }
+            if let Some(right) = self.address_of_note(right)
+                && let Some(id) = self.token_id_at(right)
+            {
+                result.insert((right.segment, id));
             }
         }
         result
