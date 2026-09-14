@@ -682,7 +682,7 @@ impl SegmentCandidate {
         // calibrated model confidence. Fractional pitch targets and the
         // tolerance band reduce a short plateau's loss; its integrated cost
         // must still compete with the extra state and legato transition.
-        const PITCH_ERROR_WEIGHT: f32 = 4.0;
+        const PITCH_ERROR_WEIGHT: f32 = 3.0;
         utility -= self.continuous_pitch_error_integral.unwrap_or(0.0) * PITCH_ERROR_WEIGHT;
         let event = boundary_event_score(self);
         utility += event.reward;
