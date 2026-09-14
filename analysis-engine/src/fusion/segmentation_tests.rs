@@ -459,3 +459,28 @@ fn basic_pitch_missing_frames_separate_observed_response_regions() {
         vec![(100_000, 0.8), (450_000, 0.8)]
     );
 }
+
+#[test]
+fn basic_pitch_late_tiny_maximum_preserves_the_attack_time() {
+    let evidence = basic_pitch_response(|time| match time {
+        100_000..200_000 => 0.1,
+        400_000 => 0.800011,
+        _ => 0.8,
+    });
+    assert_eq!(basic_pitch_onsets(&evidence), vec![(200_000, 0.800011)]);
+}
+
+#[test]
+fn basic_pitch_small_rises_accumulate_against_the_time_anchor() {
+    let evidence = basic_pitch_response(|time| {
+        if time < 200_000 {
+            0.1
+        } else {
+            0.8 + (time - 200_000).min(80_000) as f32 / 2_000_000.0
+        }
+    });
+    let onsets = basic_pitch_onsets(&evidence);
+    assert_eq!(onsets.len(), 1);
+    assert!(onsets[0].0 > 200_000, "the resolved rise still moves the peak");
+    assert!((onsets[0].1 - 0.84).abs() < 0.000001);
+}

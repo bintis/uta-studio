@@ -516,6 +516,7 @@ pub(crate) fn basic_pitch_onsets(evidence: &BasicPitchEvidence) -> Vec<(u64, f32
     const MIN_ONSET_CHANGE: f32 = 0.03;
     let mut peaks = Vec::new();
     let mut peak: Option<(u64, f32)> = None;
+    let mut anchor_strength = 0.0;
     let mut valley: Option<f32> = None;
     let mut previous_time = None;
     for frame in &evidence.frames {
@@ -530,7 +531,11 @@ pub(crate) fn basic_pitch_onsets(evidence: &BasicPitchEvidence) -> Vec<(u64, f32
         if frame.onset_activation >= ONSET_THRESHOLD {
             if let Some(current) = &mut peak {
                 if frame.onset_activation > current.1 {
-                    *current = (frame.time, frame.onset_activation);
+                    if frame.onset_activation - anchor_strength >= MIN_ONSET_CHANGE {
+                        current.0 = frame.time;
+                        anchor_strength = frame.onset_activation;
+                    }
+                    current.1 = frame.onset_activation;
                 } else if current.1 - frame.onset_activation >= MIN_ONSET_CHANGE {
                     peaks.push(*current);
                     peak = None;
@@ -540,10 +545,12 @@ pub(crate) fn basic_pitch_onsets(evidence: &BasicPitchEvidence) -> Vec<(u64, f32
                 *low = low.min(frame.onset_activation);
                 if frame.onset_activation - *low >= MIN_ONSET_CHANGE {
                     peak = Some((frame.time, frame.onset_activation));
+                    anchor_strength = frame.onset_activation;
                     valley = None;
                 }
             } else {
                 peak = Some((frame.time, frame.onset_activation));
+                anchor_strength = frame.onset_activation;
             }
         }
         previous_time = Some(frame.time);
