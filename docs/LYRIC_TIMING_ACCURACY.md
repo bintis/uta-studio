@@ -64,3 +64,45 @@ duration. This is a new decoding algorithm, **not** official Qwen postprocessing
 parity. Both native GGML and LibTorch routes use the same Rust implementation.
 Exhaustive small-state tests check its optimum independently. Changes in resolved
 coverage alone will not be reported as accuracy improvements.
+
+## Multilingual onset/pitch/offset acceptance — 2026-09-14
+
+The user clarified the primary target as **onset + pitch + offset F1**, minimum
+80%, preferably 90%, and explicitly authorized compiling/installing the updated
+native implementation. Default evaluation tolerances remain onset 50 ms, pitch
+50 cents, offset max(50 ms, 20% reference duration). Lyrics are assessed separately.
+No reference pitch or word/note times are passed into inference.
+
+Evidence: `test-artifacts/multilingual-chart-accuracy/`. Its `data/selection.json`
+was written before inference/accuracy inspection: Chinese, Japanese and English,
+two calibration segments of one song and three validation segments of a different
+song per language. This is a small multilingual experiment, not universal or
+model-training-disjoint qualification. Every selected segment stays in reporting.
+
+The official GTSinger recordings provide original WAV, word/phone annotations,
+expert MusicXML scores and JSON. Reference notes use the supplied `note_start` /
+`note_end`, never the different quantized `note_dur`. Internal melisma boundaries
+may be score-derived: the published generation code combines TextGrid word ranges
+with note durations. These are provided benchmark annotations, not proof that
+every note edge was independently hand-clicked. The authors also list further
+Japanese annotation refinement as pending. Source responses and exact download
+URLs are preserved; two English calibration TextGrid URLs returned 404, while
+all selected WAV/JSON/MusicXML inputs downloaded. None are generated singing.
+Sources: https://github.com/AaronZ345/GTSinger and
+https://huggingface.co/datasets/GTSinger/GTSinger .
+
+`tools/evaluate-singing-lyrics.py` compares observed boundaries at normalized
+transcript character positions. It never picks a favorable repeated word by
+nearby time. Coarser model segmentation contributes no invented inner boundaries;
+unresolved points, absent independent timing and missing boundary positions stay
+in reference denominators. Text mismatches are explicit and not rematched for
+favorable timing scores. This word-boundary diagnostic is not the note F1 target.
+
+Build/install `20260914T090936-27485e50ac87` completed the local product executable
+set and updated `result/bin`. Native app-model library build
+`20260914T091933-3f566568093c` succeeded; explicit atomic installation
+`20260914T092118-27de12fdab61` retains the prior library/manifest under `install/`.
+Trained weights, the existing Torch SDK and user media were not replaced.
+The first six invocation attempts stopped before inference because uta-analyze
+requires an already-created authorized output directory. The error and corrected
+preparation remain recorded; failed invocations are not model measurements.
