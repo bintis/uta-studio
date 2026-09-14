@@ -402,3 +402,22 @@ fn independent_timing_note_split_keeps_unoccupied_halves_saveable() {
         document.to_chart().validate().unwrap();
     }
 }
+
+#[test]
+fn independent_timing_roll_explicitly_aligns_all_words_to_destination_notes() {
+    let mut document = independent_document();
+    let before = geometry(&document);
+    assert!(document.roll_lyrics(0, true));
+    let lyrics = document.lyrics();
+    assert_eq!(
+        lyrics
+            .iter()
+            .map(|lyric| lyric.text.as_str())
+            .collect::<Vec<_>>(),
+        ["た", "切れ", "に"]
+    );
+    assert_eq!((lyrics[1].start, lyrics[1].end), (2.0, 3.0));
+    assert_eq!((lyrics[2].start, lyrics[2].end), (2.0, 3.0));
+    assert!(lyrics[2].timing_unresolved);
+    assert_eq!(geometry(&document), before);
+}

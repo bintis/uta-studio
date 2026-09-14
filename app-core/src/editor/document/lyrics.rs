@@ -948,7 +948,13 @@ impl EditorDocument {
         } else {
             carried.rotate_left(1);
         }
-        for (offset, tokens) in slots.iter().zip(carried) {
+        for (offset, mut tokens) in slots.iter().zip(carried) {
+            // Rolling is an explicit alignment to the next note's geometry.
+            for token in &mut tokens {
+                if let LyricToken::Text(token) = token {
+                    token.timing = None;
+                }
+            }
             entry.notes[*offset].lyrics = tokens;
         }
         self.touch();
