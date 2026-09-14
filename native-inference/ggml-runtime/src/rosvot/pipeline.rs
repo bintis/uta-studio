@@ -6,8 +6,10 @@ use super::model::{HIDDEN_DIM, MEL_BINS, PITCH_CLASSES, Rosvot};
 use crate::stars::frontend;
 use crate::wav::read_f32_wav;
 
-pub const FRAME_BUCKET: usize = 256;
-pub const NOTE_BUCKET: usize = 32;
+/// U-Net shape alignment, not a neural context or a musical boundary.
+pub const FRAME_BUCKET: usize = 16;
+const CONTEXT_TARGET_FRAMES: usize = 30 * frontend::SAMPLE_RATE / frontend::HOP_SIZE;
+const CONTEXT_MARGIN_FRAMES: usize = frontend::SAMPLE_RATE / frontend::HOP_SIZE;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TranscriptWord {
@@ -46,6 +48,12 @@ struct Segment {
     start: usize,
     valid: usize,
     words: Vec<TranscriptWord>,
+}
+
+impl Segment {
+    fn padded(&self) -> usize {
+        self.valid.div_ceil(FRAME_BUCKET) * FRAME_BUCKET
+    }
 }
 
 /// Builds the shared ROSVOT input from a decoded 24 kHz mono WAV and raw
@@ -114,7 +122,7 @@ impl Rosvot {
         P: FnMut(f32, &str),
     {
         validate_shared_inputs(shared)?;
-        let segments = conditioned_segments(words, source_start_micros, shared.frames);
+        let segments = conditioned_segments(words, source_start_micros, shared.frames)?;
         if segments.is_empty() {
             return Err("ROSVOT has no TimedTranscript-conditioned frames".to_string());
         }
@@ -126,9 +134,9 @@ impl Rosvot {
                 index as f32 / segments.len() as f32,
                 "Running ROSVOT frame/pitch segments",
             );
-            let mel = padded_rows(&shared.mel, shared.frames, MEL_BINS, segment.start);
-            let pitch = padded_i32(&shared.pitch_coarse, segment.start);
-            let uv = padded_i32(&shared.uv, segment.start);
+            let mel = padded_rows(&shared.mel, MEL_BINS, segment);
+            let pitch = padded_indices(&shared.pitch_coarse, segment);
+            let uv = padded_indices(&shared.uv, segment);
             let reference = segment_word_boundaries(segment, source_start_micros)?;
             let conditioning = self.encode_conditioning(
                 &mel,
@@ -136,11 +144,11 @@ impl Rosvot {
                 &uv,
                 &reference,
                 segment.valid,
-                FRAME_BUCKET,
+                segment.padded(),
             )?;
             let features =
-                self.encode_backbone(&conditioning.conditioned, segment.valid, FRAME_BUCKET)?;
-            let frame = self.encode_frame_heads(&features, FRAME_BUCKET)?;
+                self.encode_backbone(&conditioning.conditioned, segment.valid, segment.padded())?;
+            let frame = self.encode_frame_heads(&features, segment.padded())?;
             all_logits[segment.start..segment.start + segment.valid]
                 .copy_from_slice(&frame.boundary_logits[..segment.valid]);
             let regulated = regulate_boundaries(
@@ -158,15 +166,15 @@ impl Rosvot {
                 HIDDEN_DIM,
                 segment.valid,
             )?;
-            if aggregated.count > NOTE_BUCKET {
-                return Err("ROSVOT segment exceeds the pinned note bucket".to_string());
-            }
+            // The native pitch head accepts the actual note count. A former
+            // small fixture bucket must not limit complete musical phrases.
             let pitch = self.encode_pitch_head(&aggregated.features, aggregated.count)?;
             let local_boundaries = boundary_indices(&regulated, segment.valid);
             let ranges = note_ranges(&local_boundaries, segment.valid);
             append_notes(&mut all_notes, segment.start, &ranges, &pitch.logits)?;
         }
-        stitch_notes(&mut all_notes);
+        // Every retained window ends at a real transcript boundary or a gap.
+        // Equal pitch does not imply continuation: preserve repeated notes.
         let all_boundaries = all_notes
             .iter()
             .skip(1)
@@ -216,38 +224,78 @@ fn conditioned_segments(
     words: &[TranscriptWord],
     source_start_micros: u64,
     frames: usize,
-) -> Vec<Segment> {
-    (0..frames)
-        .step_by(FRAME_BUCKET)
-        .filter_map(|start| {
-            let valid = (frames - start).min(FRAME_BUCKET);
-            let segment_start = frame_to_micros(start).saturating_add(source_start_micros);
-            let segment_end = frame_to_micros(start + valid).saturating_add(source_start_micros);
-            let words = words
-                .iter()
-                .filter(|word| {
-                    word.start_micros < segment_end
-                        && word.start_micros.saturating_add(word.duration_micros) > segment_start
-                })
-                .cloned()
-                .collect::<Vec<_>>();
-            (!words.is_empty()).then_some(Segment {
+) -> Result<Vec<Segment>, String> {
+    let mut spans = Vec::new();
+    for (index, word) in words.iter().enumerate() {
+        let start = canonical_to_frame(word.start_micros.saturating_sub(source_start_micros))?;
+        let end = canonical_to_frame(
+            word.start_micros
+                .saturating_add(word.duration_micros)
+                .saturating_sub(source_start_micros),
+        )?
+        .min(frames);
+        if start < frames && end > start {
+            spans.push((index, start, end));
+        }
+    }
+    if spans.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Keep full words and their acoustic context together. The work target
+    // bounds ordinary phrases, but cannot cut a word at an allocation grid.
+    let mut groups = Vec::new();
+    let mut first = 0;
+    let mut previous_end = spans[0].2;
+    for index in 1..spans.len() {
+        let start = spans[index].1;
+        let gap = start.saturating_sub(previous_end);
+        if gap > CONTEXT_MARGIN_FRAMES * 2
+            || (start.saturating_sub(spans[first].1) >= CONTEXT_TARGET_FRAMES
+                && start >= previous_end)
+        {
+            groups.push((first, index, previous_end));
+            first = index;
+        }
+        previous_end = previous_end.max(spans[index].2);
+    }
+    groups.push((first, spans.len(), previous_end));
+    let mut segments = Vec::new();
+    for (index, &(first, stop, end)) in groups.iter().enumerate() {
+        let mut start = spans[first].1.saturating_sub(CONTEXT_MARGIN_FRAMES);
+        let mut end = end.saturating_add(CONTEXT_MARGIN_FRAMES).min(frames);
+        if index > 0 {
+            let preceding_end = groups[index - 1].2;
+            let cut = preceding_end + spans[first].1.saturating_sub(preceding_end) / 2;
+            start = start.max(cut);
+        }
+        if let Some(next) = groups.get(index + 1) {
+            let measured_end = groups[index].2;
+            let cut = measured_end + spans[next.0].1.saturating_sub(measured_end) / 2;
+            end = end.min(cut);
+        }
+        if end > start {
+            segments.push(Segment {
                 start,
-                valid,
-                words,
-            })
-        })
-        .collect()
+                valid: end - start,
+                words: spans[first..stop]
+                    .iter()
+                    .map(|span| words[span.0].clone())
+                    .collect(),
+            });
+        }
+    }
+    Ok(segments)
 }
 
-/// Returns one at every word start after the first word in this segment.
+/// Each measured word onset is a condition, including the first onset after
+/// actual leading silence. Context-window starts are not word boundaries.
 fn segment_word_boundaries(
     segment: &Segment,
     source_start_micros: u64,
 ) -> Result<Vec<i32>, String> {
-    let mut boundaries = vec![0_i32; FRAME_BUCKET];
+    let mut boundaries = vec![0_i32; segment.padded()];
     let timeline_start = frame_to_micros(segment.start).saturating_add(source_start_micros);
-    for word in segment.words.iter().skip(1) {
+    for word in &segment.words {
         let local = word.start_micros.saturating_sub(timeline_start);
         let frame = canonical_to_frame(local)?.min(segment.valid.saturating_sub(1));
         if frame > 0 {
@@ -257,17 +305,16 @@ fn segment_word_boundaries(
     Ok(boundaries)
 }
 
-fn padded_rows(values: &[f32], frames: usize, width: usize, start: usize) -> Vec<f32> {
-    let mut result = vec![0.0_f32; FRAME_BUCKET * width];
-    let count = frames.saturating_sub(start).min(FRAME_BUCKET);
-    result[..count * width].copy_from_slice(&values[start * width..(start + count) * width]);
+fn padded_rows(values: &[f32], width: usize, segment: &Segment) -> Vec<f32> {
+    let mut result = vec![0.0_f32; segment.padded() * width];
+    result[..segment.valid * width]
+        .copy_from_slice(&values[segment.start * width..(segment.start + segment.valid) * width]);
     result
 }
 
-fn padded_i32(values: &[i32], start: usize) -> Vec<i32> {
-    let mut result = vec![0_i32; FRAME_BUCKET];
-    let count = values.len().saturating_sub(start).min(FRAME_BUCKET);
-    result[..count].copy_from_slice(&values[start..start + count]);
+fn padded_indices(values: &[i32], segment: &Segment) -> Vec<i32> {
+    let mut result = vec![0_i32; segment.padded()];
+    result[..segment.valid].copy_from_slice(&values[segment.start..segment.start + segment.valid]);
     result
 }
 
@@ -318,29 +365,6 @@ fn append_notes(
     Ok(())
 }
 
-fn stitch_notes(notes: &mut Vec<RawNote>) {
-    let mut stitched: Vec<RawNote> = Vec::with_capacity(notes.len());
-    for note in notes.drain(..) {
-        if let Some(previous) = stitched.last_mut()
-            && previous.end_frame == note.start_frame
-            && previous.midi.is_some()
-            && previous.midi == note.midi
-        {
-            let previous_frames = previous.end_frame - previous.start_frame;
-            let note_frames = note.end_frame - note.start_frame;
-            let total_frames = previous_frames + note_frames;
-            previous.end_frame = note.end_frame;
-            for (left, right) in previous.pitch_logits.iter_mut().zip(note.pitch_logits) {
-                *left = (*left * previous_frames as f32 + right * note_frames as f32)
-                    / total_frames as f32;
-            }
-        } else {
-            stitched.push(note);
-        }
-    }
-    *notes = stitched;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -374,7 +398,91 @@ mod tests {
 
     #[test]
     fn segments_without_transcript_are_skipped() {
-        assert!(conditioned_segments(&[], 0, 300).is_empty());
-        assert_eq!(conditioned_segments(&[word(0)], 0, 300).len(), 1);
+        assert!(conditioned_segments(&[], 0, 300).unwrap().is_empty());
+        assert_eq!(conditioned_segments(&[word(0)], 0, 300).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_phrase_keeps_more_than_one_fixture_bucket_of_acoustic_context() {
+        let words = (0..12)
+            .map(|index| TranscriptWord {
+                id: format!("unit-{index}"),
+                text: "la".into(),
+                start_micros: 1_000_000 + index * 500_000,
+                duration_micros: 500_000,
+            })
+            .collect::<Vec<_>>();
+        let frames = canonical_to_frame(8_000_000).unwrap();
+        let segments = conditioned_segments(&words, 0, frames).unwrap();
+        assert_eq!(segments.len(), 1);
+        let segment = &segments[0];
+        assert_eq!(segment.words, words);
+        assert!(segment.valid > 256);
+        assert_eq!(segment.padded() % 16, 0);
+        assert!(segment.padded() - segment.valid < 16);
+        let boundaries = segment_word_boundaries(segment, 0).unwrap();
+        assert_eq!(boundaries.iter().sum::<i32>(), words.len() as i32);
+        let values = (0..frames * MEL_BINS)
+            .map(|index| index as f32)
+            .collect::<Vec<_>>();
+        let padded = padded_rows(&values, MEL_BINS, segment);
+        assert_eq!(
+            &padded[..segment.valid * MEL_BINS],
+            &values[segment.start * MEL_BINS..(segment.start + segment.valid) * MEL_BINS]
+        );
+        assert!(
+            padded[segment.valid * MEL_BINS..]
+                .iter()
+                .all(|value| *value == 0.0)
+        );
+    }
+
+    #[test]
+    fn long_contexts_split_only_between_whole_transcript_words() {
+        let words = (0..80)
+            .map(|index| TranscriptWord {
+                id: format!("word-{index}"),
+                text: "la".into(),
+                start_micros: index * 1_000_000,
+                duration_micros: 1_000_000,
+            })
+            .collect::<Vec<_>>();
+        let segments =
+            conditioned_segments(&words, 0, canonical_to_frame(80_000_000).unwrap()).unwrap();
+        assert!(segments.len() > 1);
+        assert!(
+            segments
+                .windows(2)
+                .all(|pair| pair[0].start + pair[0].valid <= pair[1].start)
+        );
+        assert_eq!(
+            segments
+                .iter()
+                .flat_map(|segment| segment.words.clone())
+                .collect::<Vec<_>>(),
+            words
+        );
+        for segment in segments {
+            for word in segment.words {
+                assert!(canonical_to_frame(word.start_micros).unwrap() >= segment.start);
+                assert!(
+                    canonical_to_frame(word.start_micros + word.duration_micros).unwrap()
+                        <= segment.start + segment.valid
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn native_same_pitch_rearticulations_are_not_stitched_away() {
+        let mut notes = Vec::new();
+        let mut logits = vec![-10.0; PITCH_CLASSES * 2];
+        logits[60] = 10.0;
+        logits[PITCH_CLASSES + 60] = 10.0;
+        append_notes(&mut notes, 0, &[0..400, 400..800], &logits).unwrap();
+        assert_eq!(notes.len(), 2);
+        assert_eq!(notes[0].midi, notes[1].midi);
+        assert_eq!(notes[0].end_frame, notes[1].start_frame);
+        assert_eq!(notes[0].end_frame, 400);
     }
 }

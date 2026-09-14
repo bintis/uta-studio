@@ -14,6 +14,6 @@ pub use frame::{ConditionEncoding, MelEncoding, MelPitchEncoding};
 pub use heads::{FrameHeadEncoding, PitchHeadEncoding};
 pub use model::{HIDDEN_DIM, MEL_BINS, PITCH_CLASSES, Rosvot};
 pub use pipeline::{
-    FRAME_BUCKET, NOTE_BUCKET, RawNote, RosvotResult, SharedInputs, TranscriptWord, prepare_inputs,
+    FRAME_BUCKET, RawNote, RosvotResult, SharedInputs, TranscriptWord, prepare_inputs,
     prepare_wav_inputs,
 };

@@ -11,6 +11,6 @@ pub use model::{
     PitchHeadEncoding, Rosvot,
 };
 pub use pipeline::{
-    FRAME_BUCKET, NOTE_BUCKET, RawNote, RosvotResult, SharedInputs, TranscriptWord, prepare_inputs,
+    FRAME_BUCKET, RawNote, RosvotResult, SharedInputs, TranscriptWord, prepare_inputs,
     prepare_wav_inputs,
 };
