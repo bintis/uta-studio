@@ -213,6 +213,7 @@ pub fn finalize_candidate_vocal_chart(
 /// later onset must not manufacture an empty prefix note. Later measured word
 /// onsets provide real boundaries for sequential syllables, including sentences.
 fn notes_at_lyric_sentence_boundaries(track: &CanonicalSingingTrack) -> Vec<CanonicalNote> {
+    let (words, associated_notes) = projection_word_boundaries(track);
     let mut ids = track
         .notes
         .iter()
@@ -220,17 +221,14 @@ fn notes_at_lyric_sentence_boundaries(track: &CanonicalSingingTrack) -> Vec<Cano
         .collect::<std::collections::BTreeSet<_>>();
     let mut output = Vec::new();
     for (index, note) in track.notes.iter().enumerate() {
-        let cuts = track
-            .words
+        let cuts = words
             .iter()
-            .enumerate()
-            .filter(|(_, word)| range_overlap(word.range, note.range) > 0)
+            .filter(|word| range_overlap(word.range, note.range) > 0)
             .skip(1)
-            .filter(|(word_index, _)| !word_has_existing_note_edge(track, index, *word_index))
-            .map(|(_, word)| word.range.start)
+            .map(|word| word.range.start)
             .filter(|boundary| note.range.start < *boundary && *boundary < note.range.end)
             .collect::<Vec<_>>();
-        if cuts.is_empty() && note.word_id.is_none() {
+        if cuts.is_empty() && note.word_id.is_none() && !associated_notes.contains(&index) {
             output.push(note.clone());
             continue;
         }
@@ -250,13 +248,11 @@ fn notes_at_lyric_sentence_boundaries(track: &CanonicalSingingTrack) -> Vec<Cano
             }
             let overlaps =
                 |word: &&CanonicalWordBoundary| range_overlap(word.range, fragment.range) > 0;
-            fragment.word_id = track
-                .words
+            fragment.word_id = words
                 .iter()
                 .find(|word| Some(&word.word_id) == note.word_id.as_ref() && overlaps(word))
                 .or_else(|| {
-                    track
-                        .words
+                    words
                         .iter()
                         .filter(overlaps)
                         .max_by_key(|word| range_overlap(word.range, fragment.range))
@@ -269,39 +265,68 @@ fn notes_at_lyric_sentence_boundaries(track: &CanonicalSingingTrack) -> Vec<Cano
     output
 }
 
-/// A word onset and a touching selected-note edge can describe the same event
-/// within the existing evidence association tolerance. If those real notes
-/// already own the two successive words, keep the selected edge and both pitches
-/// instead of adding a second cut a few milliseconds away. Raw word measurements
-/// remain unchanged; the chart lyric uses its owning note's existing time.
-fn word_has_existing_note_edge(
+/// Associate measured word onsets with nearby touching note edges before
+/// assigning lyric ownership. The largest-overlap owner can still be the old
+/// word when the aligner onset lies just inside the next note; requiring that
+/// owner to be correct first would manufacture a short prefix at every seam.
+///
+/// These are temporary display ranges. The original words and selected note
+/// geometry remain unchanged. Each edge belongs to at most one word onset,
+/// associations remain in text order, and no word range can collapse. A gap
+/// never supplies an edge, and any other selected edge between the measured
+/// onset and its association is preserved as a separate event.
+fn projection_word_boundaries(
     track: &CanonicalSingingTrack,
-    note_index: usize,
-    word_index: usize,
-) -> bool {
-    let word = &track.words[word_index];
-    let Some(previous_word) = word_index.checked_sub(1).map(|index| &track.words[index]) else {
-        return false;
-    };
-    let note = &track.notes[note_index];
-    let pair = if note.word_id.as_deref() == Some(word.word_id.as_str()) {
-        note_index
-            .checked_sub(1)
-            .map(|index| (&track.notes[index], note))
-    } else if note.word_id.as_deref() == Some(previous_word.word_id.as_str()) {
-        track.notes.get(note_index + 1).map(|next| (note, next))
-    } else {
-        None
-    };
-    pair.is_some_and(|(before, after)| {
-        before.range.end == after.range.start
-            && after.range.start.abs_diff(word.range.start)
-                <= crate::fusion::BOUNDARY_EVIDENCE_TOLERANCE
-            && before.word_id.as_deref() == Some(previous_word.word_id.as_str())
-            && after.word_id.as_deref() == Some(word.word_id.as_str())
-            && range_overlap(before.range, previous_word.range) > 0
-            && range_overlap(after.range, word.range) > 0
-    })
+) -> (
+    Vec<CanonicalWordBoundary>,
+    std::collections::BTreeSet<usize>,
+) {
+    let mut words = track.words.clone();
+    let mut associated_notes = std::collections::BTreeSet::new();
+    let mut used_edges = std::collections::BTreeSet::new();
+    let mut previous_edge = None;
+    for word_index in 1..words.len() {
+        let measured = &track.words[word_index];
+        let previous_word = &track.words[word_index - 1];
+        let next_word_start = track.words.get(word_index + 1).map(|word| word.range.start);
+        let edge = track
+            .notes
+            .windows(2)
+            .enumerate()
+            .filter_map(|(note_index, pair)| {
+                let time = pair[1].range.start;
+                let distance = time.abs_diff(measured.range.start);
+                if pair[0].range.end != time
+                    || distance > crate::fusion::BOUNDARY_EVIDENCE_TOLERANCE
+                    || used_edges.contains(&time)
+                    || previous_edge.is_some_and(|previous| time <= previous)
+                    || time <= words[word_index - 1].range.start
+                    || time >= measured.range.end
+                    || next_word_start.is_some_and(|next| time >= next)
+                    || range_overlap(pair[0].range, previous_word.range) == 0
+                    || range_overlap(pair[1].range, measured.range) == 0
+                    || track.notes.iter().any(|note| {
+                        let edge = note.range.start;
+                        edge > time.min(measured.range.start)
+                            && edge < time.max(measured.range.start)
+                    })
+                {
+                    return None;
+                }
+                Some((distance, time, note_index))
+            })
+            .min_by_key(|(distance, time, _)| (*distance, *time));
+        let Some((_, time, note_index)) = edge else {
+            continue;
+        };
+        words[word_index - 1].range.end = words[word_index - 1].range.end.min(time);
+        words[word_index].range.start = time;
+        used_edges.insert(time);
+        previous_edge = Some(time);
+        associated_notes.insert(note_index);
+        associated_notes.insert(note_index + 1);
+    }
+    (words, associated_notes)
 }
 
 /// Groups the finalized notes into one UTZ phrase per canonical lyric line.
@@ -1350,5 +1375,93 @@ mod tests {
             assert_eq!(notes[1].range.end, track.notes[0].range.end);
             assert_eq!(notes[2].range, track.notes[1].range);
         }
+    }
+    #[test]
+    fn nearby_word_edge_corrects_stale_overlap_ownership_without_a_prefix() {
+        let edge = 1_000_000;
+        let mut track = cross_word_track(edge);
+        track.words[0].range = TimeRange::new(0, edge + 20_000).unwrap();
+        track.words[1].range = TimeRange::new(edge + 20_000, 2_000_000).unwrap();
+        track.notes[0].range = TimeRange::new(0, edge).unwrap();
+        let mut after = track.notes[0].clone();
+        after.id = "after-edge".to_string();
+        after.range = TimeRange::new(edge, 2_000_000).unwrap();
+        // A prior largest-overlap association need not already be correct.
+        after.word_id = track.notes[0].word_id.clone();
+        track.notes.push(after);
+        let original = track.clone();
+        let chart = finalize_candidate_vocal_chart(&track, "stale-word-owner", None).unwrap();
+        let notes = &chart.tracks[0].phrases[0].notes;
+        assert_eq!(notes.len(), 2);
+        assert_eq!(notes[1].start, edge);
+        assert_eq!(notes[1].duration, 1_000_000);
+        assert!(matches!(&notes[0].lyrics[0], LyricToken::Text(token) if token.text == "sing"));
+        assert!(matches!(&notes[1].lyrics[0], LyricToken::Text(token) if token.text == "now"));
+        assert_eq!(track, original);
+    }
+
+    #[test]
+    fn a_distant_internal_word_onset_still_splits_the_measured_note() {
+        let edge = 1_000_000;
+        let onset = edge + 140_000;
+        let mut track = cross_word_track(edge);
+        track.words[0].range = TimeRange::new(0, onset).unwrap();
+        track.words[1].range = TimeRange::new(onset, 2_000_000).unwrap();
+        track.notes[0].range = TimeRange::new(0, edge).unwrap();
+        let mut after = track.notes[0].clone();
+        after.id = "after-edge".to_string();
+        after.range = TimeRange::new(edge, 2_000_000).unwrap();
+        track.notes.push(after);
+        let original = track.clone();
+        let chart = finalize_candidate_vocal_chart(&track, "internal-word-onset", None).unwrap();
+        let notes = &chart.tracks[0].phrases[0].notes;
+        assert_eq!(notes.len(), 3);
+        assert_eq!(notes[1].start, edge);
+        assert_eq!(notes[1].duration, 140_000);
+        assert_eq!(notes[2].start, onset);
+        assert!(matches!(&notes[2].lyrics[0], LyricToken::Text(token) if token.text == "now"));
+        assert_eq!(track, original);
+    }
+
+    #[test]
+    fn one_note_edge_cannot_collapse_two_short_repeated_words() {
+        let edge = 1_000_000;
+        let mut track = cross_word_track(edge);
+        track.transcript.text = "sing now now".to_string();
+        track.words[0].range = TimeRange::new(0, edge - 20_000).unwrap();
+        track.words[1].range = TimeRange::new(edge - 20_000, edge + 20_000).unwrap();
+        let mut repeated = track.words[1].clone();
+        repeated.word_id = "repeated-word".to_string();
+        repeated.range = TimeRange::new(edge + 20_000, 2_000_000).unwrap();
+        track.words.push(repeated);
+        track.notes[0].range = TimeRange::new(0, edge).unwrap();
+        let mut after = track.notes[0].clone();
+        after.id = "after-edge".to_string();
+        after.range = TimeRange::new(edge, 2_000_000).unwrap();
+        track.notes.push(after);
+        let original = track.clone();
+        let chart = finalize_candidate_vocal_chart(&track, "short-repeated-words", None).unwrap();
+        let notes = &chart.tracks[0].phrases[0].notes;
+        assert_eq!(notes.len(), 3);
+        assert_eq!(notes[1].start, edge);
+        assert_eq!(notes[1].duration, 20_000);
+        assert_eq!(notes[2].start, edge + 20_000);
+        let words = notes
+            .iter()
+            .flat_map(|note| &note.lyrics)
+            .filter_map(|token| match token {
+                LyricToken::Text(token) => Some((token.id.as_str(), token.text.as_str())),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            words,
+            [
+                ("word-1", "sing"),
+                ("word-2", "now"),
+                ("repeated-word", "now")
+            ]
+        );
+        assert_eq!(track, original);
     }
 }
