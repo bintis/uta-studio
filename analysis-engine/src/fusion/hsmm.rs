@@ -3,6 +3,9 @@ use serde::{Deserialize, Serialize};
 #[path = "native_note_events.rs"]
 mod native_note_events;
 use native_note_events::NativeNoteEvents;
+#[path = "native_note_envelopes.rs"]
+mod native_note_envelopes;
+use native_note_envelopes::NativeNoteEnvelopes;
 
 use super::candidate_states::{
     validate_candidate_evidence_relation_count, validate_candidate_state_count,
@@ -1471,6 +1474,7 @@ pub fn decode_candidate_graph_with_boundaries(
     });
     let voicing_reset_times = voicing_reset_times(&ordered);
     let native_events = NativeNoteEvents::new(&ordered);
+    let native_envelopes = NativeNoteEnvelopes::new(&ordered);
     let emissions = ordered
         .iter()
         .enumerate()
@@ -1478,9 +1482,9 @@ pub fn decode_candidate_graph_with_boundaries(
             if candidate_crosses_hard_boundary(candidate, &hard_boundary_times) {
                 Ok(f32::NEG_INFINITY)
             } else {
-                candidate
-                    .emission_utility()
-                    .map(|utility| utility + native_events.reward(index))
+                candidate.emission_utility().map(|utility| {
+                    utility + native_events.reward(index) + native_envelopes.reward(index)
+                })
             }
         })
         .collect::<Result<Vec<_>, _>>()?;
