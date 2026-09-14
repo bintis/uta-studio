@@ -18,6 +18,9 @@ cleanup() {
     kill "$weston_pid" 2>/dev/null || true
     wait "$weston_pid" 2>/dev/null || true
   fi
+  if [[ -f "$weston_log" ]]; then
+    cp -- "$weston_log" "${screenshot%.*}.weston.log"
+  fi
   rm -rf -- "$runtime_dir" "$config_dir"
 }
 trap cleanup EXIT
@@ -28,6 +31,7 @@ mkdir -p "$(dirname "$screenshot")"
 XDG_RUNTIME_DIR="$runtime_dir" \
   weston \
     --backend=headless-backend.so \
+    --renderer="${UTA_STUDIO_WESTON_RENDERER:-auto}" \
     --socket="$socket" \
     --idle-time=0 \
     --width=1600 \
