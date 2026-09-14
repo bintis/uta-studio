@@ -9,6 +9,21 @@
 - `tasks/remaining-models/STATE.md` is the current model/task index.
 - Historical evidence remains scoped to the exact source, model bytes, backend, device, and command that produced it. It does not override current source.
 
+## Imported lyrics and word timing
+
+Imported text is preserved independently from successful word-timing measurements.
+Unresolved characters remain editable in explicitly marked text groups; measured
+words retain distinct timing in the chart, with nearby existing note edges reused
+inside the established 60 ms evidence tolerance. LRC search scopes do not create
+empty first-word slices. Basic Pitch onset extraction now treats a continuous
+activation response as one event.
+
+The latest Asphodelos retained-pool replay preserves all 361 characters, versus
+180 in the reported chart. This proves text/projection repair, not fresh alignment
+accuracy or fewer real-song fragments. Final Engine/core/UTZ and targeted desktop
+tests pass; debug binaries build. Current verification and the remaining 21J
+quality review are recorded in [the task follow-up](../tasks/final-features/followups/21J_MELODY_PATH_SCORE_COHERENCE.md#imported-lyrics-and-short-note-repair--2026-09-14-jst).
+
 ## Lyric sentences and Workflow quantization
 
 Generated sentence boundaries now reach UTZ phrases, while supplied plain/LRC line authority and untimed mixed-LRC text are preserved. Workflow exposes a per-song rhythm-quantization preference through the existing mutation and exact request path. The real Asphodelos rerun/export has 33 phrases instead of one, with prior melody coverage/pitch preserved; recognition/alignment omissions remain a separate quality issue. See [implementation, verification and limits](LYRIC_SENTENCE_REPAIR.md). This task does not promote runtime/model readiness.

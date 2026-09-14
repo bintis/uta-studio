@@ -1,10 +1,95 @@
 # 21J — Melody Path and Score Coherence
 
-**State:** `NEEDS_REVIEW` — the user's subsequent analysis completes; caller word-granularity and ownership repairs are verified in CPU tests, but fresh measured alignment/downstream chart and broader fragmentation/listening qualification remain.
+**State:** `NEEDS_REVIEW` — imported-text and word-boundary repair passes real retained-pool replay and focused tests; fresh alignment, overall fragmentation reduction and listening quality remain unqualified.
 
 **Parent:** Card 21 final design-parity audit
 
 **Task class:** Analysis Engine algorithm-quality convergence; no new user-facing tuning surface required
+
+## Imported lyrics and short-note repair — 2026-09-14 JST
+
+The reported song is **Asphodelos / Rena**, latest run
+`studio-auto-356563-1789347980852467641-1`. Its retained caller text has 26 lines
+and 361 non-whitespace characters. Alignment retains all 357 lexical units, but
+179 have unresolved timing (158 collapsed, 15 large corrections, six window-edge
+items). The published chart kept only 180 characters because finalization visited
+only measured words. In the reported line, `覚` and `る` were unresolved;
+they had never disappeared from the original input.
+
+Implemented changes:
+
+- `85cb327` always retains supplied reference text despite ASR omissions.
+- `86aba3e` carries all alignment units separately from measured word boundaries.
+  Unresolved text stays in its original order in editable adjacent text groups,
+  with UTZ `timing_unresolved`; wholly unresolved lines use non-scoring display
+  placements. Their scopes are not promoted to measured word timing.
+- `f6496e9` exposes that state in the editor as `?`, preserves it through text
+  edits, and clears it after an explicit timing edit. UTZ and UltraStar retain
+  the text. This does not qualify the pre-existing multi-token clipboard path.
+- A held note containing successive measured words is divided at the real word
+  onset. The reported `切れ` / `に` become separate intervals, with `に` at
+  104.640 s. Caller LRC scope starts no longer create an empty first-word prefix:
+  the 103.110–103.280 s empty slice is absent.
+- `f544dc4` reuses a touching selected-note edge when the adjacent notes already
+  own the successive words and the measured onset is within the existing 60 ms
+  evidence tolerance. Raw word timestamps and original note pitches, IDs and
+  boundaries stay intact. This avoids redundant 10–40 ms cuts near real pitch
+  changes; gaps, distant edges and internal held-note word onsets remain distinct.
+- `3df87c7` extracts one peak per continuous Basic Pitch onset activation, shared
+  by candidate creation, onset support and consolidation checks. A long activation
+  no longer creates a new attack every 100 ms or repeatedly vetoes consolidation.
+  Separated attacks and existing validation remain. Distinct real peaks that never
+  fall below threshold still need measured review.
+
+Executed evidence lives in `test-artifacts/lyric-note-repair/`:
+
+- Read-only re-decoding of the **existing** 9,179-candidate pool and current
+  alignment preserves **361/361 characters in order**, with 78 explicitly
+  unresolved text groups and no multi-text notes. Assertions cover the reported
+  `に` onset and absence of the 170 ms empty prefix.
+- This is not fresh candidate construction or alignment. The old chart has
+  575 pitched notes / 40 below 100 ms; current projection has 588 / 52. Explicit
+  word boundaries add notes. A first projection added 108 short notes; reusing
+  measured note edges reduces that to 52. **Overall real-song fragmentation
+  reduction is not established**, and the retained pool cannot demonstrate the
+  revised Basic Pitch detector's effect without original activation frames.
+- Final Engine suite: 325 passed, two explicit diagnostics ignored
+  (`20260914T015329-724504c4177b`). Core: 495 passed, one ignored; UTZ: 14 passed
+  (`20260914T014427-0987ff5f5b2e`). The deliberately invoked real replay passes
+  (`20260914T015356-edbc922dee38`). Its initial attempts had input-path and
+  reconstructed-request-shape errors before execution; these remain recorded.
+- Desktop rendering/timing-command regression passes
+  (`20260914T015437-bac30cba3374`) after correcting its test-module imports.
+  Local debug `uta-studio` and `uta-analyze` build successfully
+  (`20260914T015556-8911c9de3694`).
+- Isolated Weston/Wayland with lavapipe loads the real reprojected chart and renders
+  the preserved `目覚` / `める` groups and timing notice. Seven registered UI
+  actions open the chart, select a lyric and change its view. Evidence is under
+  `ui/`; this is dispatched interaction and rendering, not physical input or
+  continuous audition. The initial minimal fixture omitted audio and could not
+  load the chart; adding copies of retained stems fixes chart loading. Final
+  operation `20260914T020037-c1fb2e87b532` also forwards the session audio socket:
+  the seven actions complete without an error notice, the paused audio seeks to
+  the lyric, and `ui/editor-final.png` shows both preserved groups. No playback
+  toggle or continuous audition is part of this smoke.
+- Engine all-target Clippy with warnings denied passes
+  (`20260914T015853-9f43e6a9dc92`). The combined core/desktop check is not clean:
+  unchanged warnings in `backend_cli/process.rs`, `debug_logging.rs` and
+  `log_storage.rs` block it (`20260914T015750-354c59e33559`). This task's
+  unnecessary test clone was fixed separately.
+
+No fresh model/GPU inference, source-media mutation, user-cache replacement,
+installed-package replacement, real audio-bundle export, continuous audition or
+release packaging was performed. The debug binaries are available for a new run;
+the user's open cached chart is not automatically rewritten. Card 21J remains
+`NEEDS_REVIEW`, with model integration/production readiness unchanged.
+
+Next: run fresh alignment and downstream note/fusion stages with the corrected
+build, retain raw activation evidence, and review unresolved Japanese timing and
+audible note events. The current Japanese character segmentation differs from the
+locally retained upstream word tokenizer, but the published artifacts do not prove
+that difference caused the collapsed timestamps. Do not relabel unresolved scopes
+or relax timestamp validity to make counts appear better.
 
 ## Caller word alignment follow-up — 2026-09-11 UTC
 

@@ -960,6 +960,25 @@ diagnostic operations preceded the pass (missing `libz.so.1`, a compute-runtime 
 with the OpenCL loader unresolved, and a 32-bit OpenCL loader); each fix is a separate commit
 (`f0062fc`, `e6884b2`, `ccaacee`). Details: `summary.json` in the evidence root.
 
+## Imported lyric fidelity and note boundaries — 2026-09-14
+
+Asphodelos source repair preserves all imported text even when alignment timing is
+unresolved, separates measured word intervals, and removes the reported 170 ms
+LRC-induced empty prefix. The editor marks unconfirmed timing without dropping
+text; UTZ/UltraStar retain it. Sustained Basic Pitch activation now contributes one
+onset event rather than repeated 100 ms cuts. Existing pitch, gap and boundary
+protections remain.
+
+The retained real candidate-pool replay preserves 361/361 characters (previously
+180), with 78 marked groups. Current projection has 588 pitched notes, 52 under
+100 ms, versus 575/40 previously: complete word timing adds explicit boundaries,
+and this replay cannot prove the new onset detector reduces real-song fragments.
+No new model inference occurred. Engine 325, core 495, UTZ 14 and the desktop
+lyric-command test pass; debug executables build and isolated Wayland renders the
+repaired text. Engine strict Clippy passes; unchanged core warnings block the
+combined check. 21J remains `NEEDS_REVIEW`, and readiness is unchanged.
+See [current repair and evidence](../final-features/followups/21J_MELODY_PATH_SCORE_COHERENCE.md#imported-lyrics-and-short-note-repair--2026-09-14-jst).
+
 ## Note-fusion regression — source repaired, real-song quality review open (2026-09-11)
 
 The current Studio Japanese-song run reached `singing-fusion` after its six pitch/note
