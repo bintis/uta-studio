@@ -296,7 +296,9 @@ fn pitch_fit_stays_additive_across_offset_dsp_frames_and_subframe_cuts() {
         .collect::<Vec<_>>();
     let error_sum = parts.iter().map(|part| part.error_integral).sum::<f32>();
     let covered_sum = parts.iter().map(|part| part.observed_duration).sum::<u64>();
-    assert!((whole.error_integral - 0.23).abs() < 0.00001);
+    // DSP explains ten milliseconds; the remaining twenty milliseconds each
+    // carry the bounded 1.5-semitone error, independently of candidate cuts.
+    assert!((whole.error_integral - 0.03).abs() < 0.00001);
     assert!((error_sum - whole.error_integral).abs() < 0.000001);
     assert_eq!(covered_sum, whole.observed_duration);
     assert_eq!(covered_sum, 30_000);
