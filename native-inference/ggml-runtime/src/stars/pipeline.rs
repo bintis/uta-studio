@@ -240,7 +240,13 @@ impl Stars {
                 ranges.len(),
                 &regulated,
             )?;
-            append_notes(&mut all_notes, segment.start, &ranges, &pitch.note_logits);
+            let mut local_notes = Vec::new();
+            append_notes(&mut local_notes, 0, &ranges, &pitch.note_logits);
+            for mut note in consolidate_word_unisons(local_notes, &alignment.word_intervals) {
+                note.start_frame += segment.start;
+                note.end_frame += segment.start;
+                all_notes.push(note);
+            }
 
             if include_technique {
                 append_technique_outputs(
@@ -491,6 +497,57 @@ fn append_notes(
     }
 }
 
+/// STARS's published MIDI decoder consolidates unison fragments within a word.
+/// Use its own acoustic alignment for ownership, never the human benchmark or
+/// a caller's evenly divided word duration. Ambiguous overlap is left intact.
+fn word_owner(note: &RawNote, words: &[decode::Interval]) -> Option<usize> {
+    let mut best = None;
+    let mut maximum = 0;
+    let mut ambiguous = false;
+    for (index, word) in words.iter().enumerate() {
+        let overlap = note
+            .end_frame
+            .min(word.end)
+            .saturating_sub(note.start_frame.max(word.start));
+        if overlap > maximum {
+            maximum = overlap;
+            best = (word.label >= 0).then_some(index);
+            ambiguous = false;
+        } else if overlap > 0 && overlap == maximum {
+            ambiguous = true;
+        }
+    }
+    if ambiguous { None } else { best }
+}
+
+fn consolidate_word_unisons(notes: Vec<RawNote>, words: &[decode::Interval]) -> Vec<RawNote> {
+    let mut output: Vec<(RawNote, Option<usize>)> = Vec::with_capacity(notes.len());
+    for note in notes {
+        let owner = word_owner(&note, words);
+        if let Some((previous, previous_owner)) = output.last_mut()
+            && owner.is_some()
+            && owner == *previous_owner
+            && previous.end_frame == note.start_frame
+            && previous.midi.is_some()
+            && previous.midi == note.midi
+            && owner.is_some_and(|index| {
+                words[index].start < note.start_frame && note.start_frame < words[index].end
+            })
+        {
+            let previous_duration = previous.end_frame - previous.start_frame;
+            let duration = note.end_frame - note.start_frame;
+            let total = previous_duration + duration;
+            for (left, right) in previous.pitch_logits.iter_mut().zip(note.pitch_logits) {
+                *left = (*left * previous_duration as f32 + right * duration as f32) / total as f32;
+            }
+            previous.end_frame = note.end_frame;
+        } else {
+            output.push((note, owner));
+        }
+    }
+    output.into_iter().map(|(note, _)| note).collect()
+}
+
 fn sigmoid(value: f32) -> f32 {
     1.0 / (1.0 + (-value).exp())
 }
@@ -498,6 +555,74 @@ fn sigmoid(value: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn predicted_word(start: usize, end: usize, label: i64) -> decode::Interval {
+        decode::Interval {
+            start,
+            end,
+            label,
+            word: None,
+        }
+    }
+
+    fn predicted_note(start_frame: usize, end_frame: usize, midi: Option<u8>) -> RawNote {
+        RawNote {
+            start_frame,
+            end_frame,
+            pitch_logits: vec![1.0; PITCH_CLASSES],
+            midi,
+        }
+    }
+
+    #[test]
+    fn same_word_unison_fragments_merge_without_erasing_cross_word_attacks() {
+        let notes = vec![
+            predicted_note(0, 20, Some(60)),
+            predicted_note(20, 80, Some(60)),
+            predicted_note(80, 100, Some(60)),
+            predicted_note(100, 120, Some(62)),
+        ];
+        let words = [predicted_word(0, 80, 0), predicted_word(80, 120, 1)];
+        let result = consolidate_word_unisons(notes, &words);
+        assert_eq!(result.len(), 3);
+        assert_eq!((result[0].start_frame, result[0].end_frame), (0, 80));
+        assert_eq!((result[1].start_frame, result[1].end_frame), (80, 100));
+        assert_eq!(result[2].midi, Some(62));
+    }
+
+    #[test]
+    fn gaps_silence_and_ambiguous_words_do_not_license_consolidation() {
+        let notes = vec![
+            predicted_note(0, 40, Some(60)),
+            predicted_note(40, 80, Some(60)),
+        ];
+        assert_eq!(consolidate_word_unisons(notes.clone(), &[]), notes);
+        assert_eq!(
+            consolidate_word_unisons(notes.clone(), &[predicted_word(0, 80, -1)]),
+            notes
+        );
+        let words = [predicted_word(0, 20, 0), predicted_word(20, 80, 1)];
+        assert_eq!(consolidate_word_unisons(notes.clone(), &words), notes);
+        let gaps = vec![
+            predicted_note(0, 20, Some(60)),
+            predicted_note(30, 80, Some(60)),
+        ];
+        assert_eq!(
+            consolidate_word_unisons(gaps.clone(), &[predicted_word(0, 80, 0)]),
+            gaps
+        );
+    }
+
+    #[test]
+    fn many_repeated_syllables_remain_separate_after_word_consolidation() {
+        let notes = (0..48)
+            .map(|index| predicted_note(index * 30, (index + 1) * 30, Some(60)))
+            .collect::<Vec<_>>();
+        let words = (0..48)
+            .map(|index| predicted_word(index * 30, (index + 1) * 30, index as i64))
+            .collect::<Vec<_>>();
+        assert_eq!(consolidate_word_unisons(notes.clone(), &words), notes);
+    }
 
     #[test]
     fn conditioned_segments_use_the_canonical_source_offset() {
