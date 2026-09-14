@@ -316,15 +316,19 @@ fn projection_word_boundaries(
                 Some((distance, time, note_index))
             })
             .min_by_key(|(distance, time, _)| (*distance, *time));
-        let Some((_, time, note_index)) = edge else {
+        let Some((distance, time, note_index)) = edge else {
             continue;
         };
         words[word_index - 1].range.end = words[word_index - 1].range.end.min(time);
         words[word_index].range.start = time;
         used_edges.insert(time);
         previous_edge = Some(time);
-        associated_notes.insert(note_index);
-        associated_notes.insert(note_index + 1);
+        // An already aligned onset does not correct ownership. In particular,
+        // explicit unowned melody must remain in its current lyric phrase.
+        if distance > 0 {
+            associated_notes.insert(note_index);
+            associated_notes.insert(note_index + 1);
+        }
     }
     (words, associated_notes)
 }
@@ -1119,6 +1123,20 @@ mod tests {
         track.notes[0].range = TimeRange::new(1_000_000, 1_200_000).unwrap();
         track.notes[0].word_id = None;
         assert!(range_overlap(track.notes[0].range, track.words[1].range) > 0);
+        assert_eq!(notes_at_lyric_sentence_boundaries(&track), track.notes);
+    }
+
+    #[test]
+    fn an_aligned_word_edge_does_not_assign_previously_unowned_melody() {
+        let mut track = lined_track();
+        let mut stray = track.notes[0].clone();
+        stray.id = "stray".to_string();
+        stray.range = TimeRange::new(1_000_000, 1_200_000).unwrap();
+        stray.word_id = None;
+        track.notes.insert(1, stray);
+        let (words, associated_notes) = projection_word_boundaries(&track);
+        assert_eq!(words, track.words);
+        assert!(associated_notes.is_empty());
         assert_eq!(notes_at_lyric_sentence_boundaries(&track), track.notes);
     }
 
