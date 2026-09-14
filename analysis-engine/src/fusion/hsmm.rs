@@ -1310,14 +1310,20 @@ struct DecodeWorkBudget {
     examined_pair_transitions: usize,
 }
 
+/// Immutable scores share the ordering of the candidate graph. Native event
+/// credits and emissions are built once and reused across coverage components.
+struct DecodeScoreInputs<'a> {
+    emissions: &'a [f32],
+    native_events: &'a NativeNoteEvents,
+}
+
 fn decode_component(
     ordered: &[SegmentCandidate],
-    emissions: &[f32],
+    scores: &DecodeScoreInputs<'_>,
     component: CoverageComponent,
     members: &[usize],
     hard_boundaries: &HardBoundaryTimeIndex,
     voicing_reset_times: &[u64],
-    native_events: &NativeNoteEvents,
     budget: &mut DecodeWorkBudget,
 ) -> Result<Vec<usize>, String> {
     let mut members_by_end = std::collections::BTreeMap::<u64, Vec<usize>>::new();
@@ -1344,9 +1350,9 @@ fn decode_component(
                 &ordered[next],
                 hard_boundaries,
                 voicing_reset_times,
-            ) - native_events.repeated_reward(previous, next);
+            ) - scores.native_events.repeated_reward(previous, next);
             let mut best = (ordered[previous].range.start == component.start).then(|| PairState {
-                score: emissions[previous] + transition + emissions[next],
+                score: scores.emissions[previous] + transition + scores.emissions[next],
                 previous_previous: None,
             });
             if let Some(before_members) = predecessors_by_current.get(&previous) {
@@ -1370,7 +1376,7 @@ fn decode_component(
                             hard_boundaries,
                             voicing_reset_times,
                         )
-                        + emissions[next];
+                        + scores.emissions[next];
                     if best.is_none_or(|candidate| score > candidate.score) {
                         best = Some(PairState {
                             score,
@@ -1396,7 +1402,7 @@ fn decode_component(
             ordered[*index].range.start == component.start
                 && ordered[*index].range.end == component.end
         })
-        .map(|index| (emissions[index], None, index))
+        .map(|index| (scores.emissions[index], None, index))
         .max_by(|left, right| left.0.total_cmp(&right.0));
     for (&pair @ (_, current), state) in &states {
         if ordered[current].range.end == component.end
@@ -1490,17 +1496,20 @@ pub fn decode_candidate_graph_with_boundaries(
             members_by_component[component_index].push(index);
         }
     }
+    let scores = DecodeScoreInputs {
+        emissions: &emissions,
+        native_events: &native_events,
+    };
     let mut selected = Vec::new();
     for (component, members) in components.into_iter().zip(members_by_component) {
         let mut budget = DecodeWorkBudget::default();
         selected.extend(decode_component(
             &ordered,
-            &emissions,
+            &scores,
             component,
             &members,
             &hard_boundary_times,
             &voicing_reset_times,
-            &native_events,
             &mut budget,
         )?);
     }
