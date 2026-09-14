@@ -223,9 +223,11 @@ fn notes_at_lyric_sentence_boundaries(track: &CanonicalSingingTrack) -> Vec<Cano
         let cuts = track
             .words
             .iter()
-            .filter(|word| range_overlap(word.range, note.range) > 0)
+            .enumerate()
+            .filter(|(_, word)| range_overlap(word.range, note.range) > 0)
             .skip(1)
-            .map(|word| word.range.start)
+            .filter(|(word_index, _)| !word_has_existing_note_edge(track, index, *word_index))
+            .map(|(_, word)| word.range.start)
             .filter(|boundary| note.range.start < *boundary && *boundary < note.range.end)
             .collect::<Vec<_>>();
         if cuts.is_empty() && note.word_id.is_none() {
@@ -265,6 +267,39 @@ fn notes_at_lyric_sentence_boundaries(track: &CanonicalSingingTrack) -> Vec<Cano
         }
     }
     output
+}
+
+/// A word onset and a touching selected-note edge can describe the same event
+/// within the existing evidence association tolerance. If those real notes
+/// already own the two successive words, keep the selected edge and both pitches
+/// instead of adding a second cut a few milliseconds away. Raw word measurements
+/// remain unchanged; the chart lyric uses its owning note's existing time.
+fn word_has_existing_note_edge(
+    track: &CanonicalSingingTrack,
+    note_index: usize,
+    word_index: usize,
+) -> bool {
+    let word = &track.words[word_index];
+    let Some(previous_word) = word_index.checked_sub(1)
+        .map(|index| &track.words[index]) else {
+        return false;
+    };
+    let note = &track.notes[note_index];
+    let pair = if note.word_id.as_deref() == Some(word.word_id.as_str()) {
+        note_index.checked_sub(1).map(|index| (&track.notes[index], note))
+    } else if note.word_id.as_deref() == Some(previous_word.word_id.as_str()) {
+        track.notes.get(note_index + 1).map(|next| (note, next))
+    } else {
+        None
+    };
+    pair.is_some_and(|(before, after)| {
+        before.range.end == after.range.start
+            && after.range.start.abs_diff(word.range.start) <= crate::fusion::BOUNDARY_EVIDENCE_TOLERANCE
+            && before.word_id.as_deref() == Some(previous_word.word_id.as_str())
+            && after.word_id.as_deref() == Some(word.word_id.as_str())
+            && range_overlap(before.range, previous_word.range) > 0
+            && range_overlap(after.range, word.range) > 0
+    })
 }
 
 /// Groups the finalized notes into one UTZ phrase per canonical lyric line.
@@ -1250,4 +1285,64 @@ mod tests {
             assert!(tokens[1].timing_unresolved);
         }
     }
+
+    #[test]
+    fn nearby_word_onsets_reuse_real_note_edges_without_micro_fragments() {
+        let edge: u64 = 1_000_000;
+        for offset in [-40_000_i64, 40_000] {
+            for next_pitch in [58, 56] {
+                let onset = edge.saturating_add_signed(offset);
+                let mut track = cross_word_track(edge);
+                track.words[0].range = TimeRange::new(0, onset).unwrap();
+                track.words[1].range = TimeRange::new(onset, 2_000_000).unwrap();
+                track.notes[0].range = TimeRange::new(0, edge).unwrap();
+                track.notes[0].midi_note = 58;
+                let mut next = track.notes[0].clone();
+                next.id = "next-real-note".to_string();
+                next.range = TimeRange::new(edge, 2_000_000).unwrap();
+                next.word_id = Some(track.words[1].word_id.clone());
+                next.midi_note = next_pitch;
+                track.notes.push(next);
+                let original = track.clone();
+                let chart = finalize_candidate_vocal_chart(&track, "near-word-edge", None).unwrap();
+                let notes = &chart.tracks[0].phrases[0].notes;
+                assert_eq!(notes.len(), 2);
+                for (note, selected) in notes.iter().zip(&track.notes) {
+                    assert_eq!(note.id, selected.id);
+                    assert_eq!(note.start, selected.range.start);
+                    assert_eq!(note.duration, selected.range.end - selected.range.start);
+                    assert_eq!(note.pitch.unwrap().midi, selected.midi_note);
+                }
+                assert!(matches!(&notes[0].lyrics[0], LyricToken::Text(token)
+                    if token.text == "sing"));
+                assert!(matches!(&notes[1].lyrics[0], LyricToken::Text(token)
+                    if token.text == "now"));
+                assert_eq!(notes[1].start.abs_diff(track.words[1].range.start), offset.unsigned_abs());
+                assert!(notes[1].start.abs_diff(track.words[1].range.start)
+                    <= crate::fusion::BOUNDARY_EVIDENCE_TOLERANCE);
+                assert_eq!(track, original);
+            }
+        }
+    }
+
+    #[test]
+    fn separate_gaps_and_distant_word_onsets_do_not_reuse_note_edges() {
+        for (onset, gap) in [(960_000, 10_000), (920_000, 0)] {
+            let mut track = cross_word_track(1_000_000);
+            track.words[0].range = TimeRange::new(0, onset).unwrap();
+            track.words[1].range = TimeRange::new(onset, 2_000_000).unwrap();
+            track.notes[0].range = TimeRange::new(0, 1_000_000).unwrap();
+            let mut next = track.notes[0].clone();
+            next.id = "separate-note".to_string();
+            next.range = TimeRange::new(1_000_000 + gap, 2_000_000).unwrap();
+            next.word_id = Some(track.words[1].word_id.clone());
+            track.notes.push(next);
+            let notes = notes_at_lyric_sentence_boundaries(&track);
+            assert_eq!(notes.len(), 3);
+            assert_eq!(notes[1].range.start, onset);
+            assert_eq!(notes[1].range.end, track.notes[0].range.end);
+            assert_eq!(notes[2].range, track.notes[1].range);
+        }
+    }
+
 }

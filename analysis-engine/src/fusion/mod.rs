@@ -17,7 +17,7 @@ pub use baseline::{
     fuse_singing_evidence,
 };
 pub use calibration::{CalibrationMethod, ScoreCalibrator};
-pub(crate) use candidate_states::{persistent_f0_shifts, trustworthy_f0_point};
+pub(crate) use candidate_states::{BOUNDARY_EVIDENCE_TOLERANCE, persistent_f0_shifts, trustworthy_f0_point};
 pub use canonical::{
     CanonicalLyricUnit, CanonicalNote, CanonicalNoteEvidence, CanonicalSingingTrack, F0Point,
     FusionContextSignal, FusionDecisionTrace, HarmonyMetadata, PitchBendPoint,
