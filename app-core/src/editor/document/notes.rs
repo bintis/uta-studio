@@ -3,8 +3,9 @@ use std::collections::{BTreeSet, HashSet};
 
 use crate::editor::{round_units_to_millis, seconds_to_units, units_to_seconds};
 use utz::{
-    DEFAULT_TIMEBASE, LyricJoin, LyricTiming, LyricToken, NoteBonus, NotePitch, NoteScoring,
-    ScoringMode, VocalChart, VocalMode, VocalNote, VocalPhrase, VocalTrack, VocalTrackRole,
+    DEFAULT_TIMEBASE, LyricJoin, LyricTextToken, LyricTiming, LyricToken, NoteBonus, NotePitch,
+    NoteScoring, ScoringMode, VocalChart, VocalMode, VocalNote, VocalPhrase, VocalTrack,
+    VocalTrackRole,
 };
 
 impl EditorDocument {
@@ -892,6 +893,21 @@ impl EditorDocument {
                             .lyrics
                             .push(LyricToken::Continuation { continuation_of });
                     }
+                }
+            }
+            // A pitched half without a lyric still needs the format's empty text
+            // slot; it must not pretend to continue a word outside its interval.
+            for half in [&mut left, &mut right] {
+                if half.lyrics.is_empty() {
+                    half.lyrics.push(LyricToken::Text(LyricTextToken {
+                        id: self.allocate_id("lyric"),
+                        text: String::new(),
+                        join_before: LyricJoin::None,
+                        timing: None,
+                        timing_unresolved: false,
+                        reading: None,
+                        phonemes: None,
+                    }));
                 }
             }
             selected.insert(output.len());

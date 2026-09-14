@@ -379,3 +379,26 @@ fn independent_timing_tab_visits_words_that_share_a_note_with_a_continuation() {
     assert_eq!(document.advance_lyric_edit(word(1), true), Some(word(2)));
     assert_eq!(document.advance_lyric_edit(word(2), false), Some(word(1)));
 }
+
+#[test]
+fn independent_timing_note_split_keeps_unoccupied_halves_saveable() {
+    for (start, duration) in [(100_000, 300_000), (1_200_000, 300_000)] {
+        let mut document = document(&[(0.0, 2.0, 60, "word")]);
+        document.token_mut(word(0)).unwrap().timing = Some(utz::LyricTiming { start, duration });
+        document.split_notes(&selection(&[0]), 1.0);
+        let lyrics = document.lyrics();
+        let written = lyrics
+            .iter()
+            .filter(|lyric| !lyric.text.is_empty())
+            .collect::<Vec<_>>();
+        assert_eq!(written.len(), 1);
+        assert_eq!(written[0].text, "word");
+        assert_eq!(written[0].start, start as f64 / DEFAULT_TIMEBASE as f64);
+        assert!(written[0].continuation_notes.is_empty());
+        assert_eq!(
+            lyrics.iter().filter(|lyric| lyric.text.is_empty()).count(),
+            1
+        );
+        document.to_chart().validate().unwrap();
+    }
+}
