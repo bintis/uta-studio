@@ -133,9 +133,8 @@ fn selected_transcript_keeps_audio_anchors_but_reference_replacement_drops_stale
     let (fused, _) = fuse_transcript_stage(&[evidence.clone()], None).unwrap();
     assert_eq!(fused.audio_segments, evidence.audio_segments);
     let (replaced, _) = fuse_transcript_stage(&[evidence], Some("sing soon")).unwrap();
-    if replaced.text == "sing soon" {
-        assert!(replaced.audio_segments.is_empty());
-    }
+    assert_eq!(replaced.text, "sing soon");
+    assert!(replaced.audio_segments.is_empty());
 }
 
 fn pitch(octave_disagreement: bool) -> PitchEvidence {
@@ -526,14 +525,30 @@ fn generated_unknown_confidence_and_reference_alternative_remain_truthful() {
         Some("reference only"),
     )
     .unwrap();
-    assert_eq!(canonical.text, "sing now");
+    assert_eq!(canonical.text, "reference only");
     assert_eq!(canonical.confidence, None);
     assert_eq!(canonical.tokens.len(), 1);
     assert_eq!(artifact.tokens.len(), 1);
-    assert_eq!(artifact.tokens[0].text, "sing now");
+    assert_eq!(artifact.tokens[0].text, "reference only");
     assert_eq!(artifact.tokens[0].confidence, None);
-    assert_eq!(canonical.alternatives, ["reference only"]);
+    assert_eq!(canonical.alternatives, ["sing now"]);
     assert_eq!(artifact.model_sha256, Some("a".repeat(64)));
+}
+
+#[test]
+fn imported_reference_keeps_every_character_despite_unrelated_asr_text() {
+    let reference = "目覚める 惨劇の記憶を\n途切れ途切れに覗いた場所は";
+    let (artifact, canonical) = fuse_transcript_stage(
+        &[transcript(TranscriptAuthority::Generated)],
+        Some(reference),
+    )
+    .unwrap();
+    assert_eq!(artifact.text, reference);
+    assert_eq!(canonical.text, reference);
+    assert_eq!(canonical.alternatives, ["sing now"]);
+    assert_eq!(artifact.tokens.iter().map(|token| token.text.as_str()).collect::<Vec<_>>(),
+        ["目覚める 惨劇の記憶を", "途切れ途切れに覗いた場所は"]);
+    assert!(artifact.audio_segments.is_empty());
 }
 
 #[test]

@@ -78,35 +78,6 @@ fn sequence_units(text: &str) -> Vec<String> {
     }
 }
 
-fn sequence_edit_distance(left: &[String], right: &[String]) -> usize {
-    let mut previous = (0..=right.len()).collect::<Vec<_>>();
-    let mut current = vec![0; right.len() + 1];
-    for (left_index, left_unit) in left.iter().enumerate() {
-        current[0] = left_index + 1;
-        for (right_index, right_unit) in right.iter().enumerate() {
-            current[right_index + 1] = if left_unit == right_unit {
-                previous[right_index]
-            } else {
-                (previous[right_index] + 1)
-                    .min(previous[right_index + 1] + 1)
-                    .min(current[right_index] + 1)
-            };
-        }
-        std::mem::swap(&mut previous, &mut current);
-    }
-    previous[right.len()]
-}
-
-fn sequence_similarity(left: &str, right: &str) -> f32 {
-    let left = sequence_units(left);
-    let right = sequence_units(right);
-    let maximum = left.len().max(right.len());
-    if maximum == 0 {
-        return 1.0;
-    }
-    1.0 - sequence_edit_distance(&left, &right) as f32 / maximum as f32
-}
-
 pub fn build_transcript_disagreement_regions(
     transcript: &TranscriptArtifact,
     reference_lyrics: Option<&str>,
@@ -312,50 +283,44 @@ pub fn fuse_transcript_stage(
     if let Some(reference) = reference_lyrics
         .map(str::trim)
         .filter(|text| !text.is_empty())
+        && canonical.authority == LyricsAuthority::Generated
         && normalized(reference) != normalized(&artifact.text)
     {
         let generated = artifact.text.clone();
-        if sequence_similarity(&generated, reference) >= 0.5 {
-            artifact.text = reference.to_string();
-            canonical.text = reference.to_string();
-            // The current ASR contracts do not supply stable token timing for
-            // sequence reconciliation. Do not leave tokens claiming identity
-            // that belonged to the pre-reconciled text.
-            artifact.tokens.clear();
-            // These scopes index the generated text, not a replacement lyric.
-            artifact.audio_segments.clear();
-            canonical.tokens.clear();
-            if !artifact
+        // Imported text remains the textual reference even when ASR omits
+        // most of a sung line. Recognition may challenge timing, never erase it.
+        artifact.text = reference.to_string();
+        canonical.text = reference.to_string();
+        // The current ASR contracts do not supply stable token timing for
+        // sequence reconciliation. Do not leave tokens claiming identity
+        // that belonged to the pre-reconciled text.
+        artifact.tokens.clear();
+        // These scopes index the generated text, not a replacement lyric.
+        artifact.audio_segments.clear();
+        canonical.tokens.clear();
+        if !artifact
+            .source_experts
+            .iter()
+            .any(|source| source == "caller.reference")
+        {
+            artifact.source_experts.push("caller.reference".to_string());
+        }
+        if !canonical
+            .source_experts
+            .iter()
+            .any(|source| source == "caller.reference")
+        {
+            canonical
                 .source_experts
-                .iter()
-                .any(|source| source == "caller.reference")
-            {
-                artifact.source_experts.push("caller.reference".to_string());
-            }
-            if !canonical
-                .source_experts
-                .iter()
-                .any(|source| source == "caller.reference")
-            {
-                canonical
-                    .source_experts
-                    .push("caller.reference".to_string());
-            }
-            if !artifact
-                .alternatives
-                .iter()
-                .any(|item| normalized(item) == normalized(&generated))
-            {
-                artifact.alternatives.push(generated.clone());
-                canonical.alternatives.push(generated);
-            }
-        } else if !artifact
+                .push("caller.reference".to_string());
+        }
+        if !artifact
             .alternatives
             .iter()
-            .any(|item| normalized(item) == normalized(reference))
+            .any(|item| normalized(item) == normalized(&generated))
         {
-            artifact.alternatives.push(reference.to_string());
-            canonical.alternatives.push(reference.to_string());
+            artifact.alternatives.push(generated.clone());
+            canonical.alternatives.push(generated);
         }
     }
     if canonical.authority == LyricsAuthority::Generated {
