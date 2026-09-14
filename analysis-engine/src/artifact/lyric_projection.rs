@@ -27,20 +27,20 @@ pub(super) fn lyric_display_groups(track: &CanonicalSingingTrack) -> Vec<LyricDi
     for unit in &track.lyric_units {
         let measured = unit.measured_range.is_some();
         let original = track.words.iter().find(|word| word.word_id == unit.id);
-        if !measured {
-            if let Some(previous) = output.last_mut().filter(|group| {
+        if !measured
+            && let Some(previous) = output.last_mut().filter(|group| {
                 !group.measured
                     && group.boundary.line_id == unit.line_id
                     && group.boundary.range == unit.audition_range
-            }) {
-                if super::vocal_chart::lyric_join_between(Some(&previous.boundary.text), &unit.text)
-                    == utz::LyricJoin::Space
-                {
-                    previous.boundary.text.push(' ');
-                }
-                previous.boundary.text.push_str(&unit.text);
-                continue;
+            })
+        {
+            if super::vocal_chart::lyric_join_between(Some(&previous.boundary.text), &unit.text)
+                == utz::LyricJoin::Space
+            {
+                previous.boundary.text.push(' ');
             }
+            previous.boundary.text.push_str(&unit.text);
+            continue;
         }
         output.push(LyricDisplayGroup {
             boundary: CanonicalWordBoundary {
