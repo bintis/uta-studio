@@ -135,11 +135,23 @@ fn main() -> Result<(), Box<dyn Error>> {
             vocal_preparation_generation: &evidence.vocal_preparation_generation,
         })?);
     }
-    let techniques = input
+    let mut techniques = input
         .technique_evidence
         .iter()
         .map(|path| read_json::<TechniqueEvidence>(path))
         .collect::<Result<Vec<_>, _>>()?;
+    // The complete engine consumes techniques embedded in advanced note
+    // evidence. Omitting them here makes a replay a different experiment.
+    // An explicitly supplied artifact for the same model takes precedence.
+    for expert in &advanced {
+        if let Some(technique) = expert.technique_artifact(start, duration)?
+            && !techniques
+                .iter()
+                .any(|explicit| explicit.model_id == technique.model_id)
+        {
+            techniques.push(technique);
+        }
+    }
     let fusion = execute_singing_fusion_stage_with_timed_notes(
         &transcript,
         &alignment,
