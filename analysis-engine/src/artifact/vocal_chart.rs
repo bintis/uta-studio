@@ -280,13 +280,14 @@ fn word_has_existing_note_edge(
     word_index: usize,
 ) -> bool {
     let word = &track.words[word_index];
-    let Some(previous_word) = word_index.checked_sub(1)
-        .map(|index| &track.words[index]) else {
+    let Some(previous_word) = word_index.checked_sub(1).map(|index| &track.words[index]) else {
         return false;
     };
     let note = &track.notes[note_index];
     let pair = if note.word_id.as_deref() == Some(word.word_id.as_str()) {
-        note_index.checked_sub(1).map(|index| (&track.notes[index], note))
+        note_index
+            .checked_sub(1)
+            .map(|index| (&track.notes[index], note))
     } else if note.word_id.as_deref() == Some(previous_word.word_id.as_str()) {
         track.notes.get(note_index + 1).map(|next| (note, next))
     } else {
@@ -294,7 +295,8 @@ fn word_has_existing_note_edge(
     };
     pair.is_some_and(|(before, after)| {
         before.range.end == after.range.start
-            && after.range.start.abs_diff(word.range.start) <= crate::fusion::BOUNDARY_EVIDENCE_TOLERANCE
+            && after.range.start.abs_diff(word.range.start)
+                <= crate::fusion::BOUNDARY_EVIDENCE_TOLERANCE
             && before.word_id.as_deref() == Some(previous_word.word_id.as_str())
             && after.word_id.as_deref() == Some(word.word_id.as_str())
             && range_overlap(before.range, previous_word.range) > 0
@@ -1317,9 +1319,14 @@ mod tests {
                     if token.text == "sing"));
                 assert!(matches!(&notes[1].lyrics[0], LyricToken::Text(token)
                     if token.text == "now"));
-                assert_eq!(notes[1].start.abs_diff(track.words[1].range.start), offset.unsigned_abs());
-                assert!(notes[1].start.abs_diff(track.words[1].range.start)
-                    <= crate::fusion::BOUNDARY_EVIDENCE_TOLERANCE);
+                assert_eq!(
+                    notes[1].start.abs_diff(track.words[1].range.start),
+                    offset.unsigned_abs()
+                );
+                assert!(
+                    notes[1].start.abs_diff(track.words[1].range.start)
+                        <= crate::fusion::BOUNDARY_EVIDENCE_TOLERANCE
+                );
                 assert_eq!(track, original);
             }
         }
@@ -1344,5 +1351,4 @@ mod tests {
             assert_eq!(notes[2].range, track.notes[1].range);
         }
     }
-
 }
