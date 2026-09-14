@@ -546,8 +546,14 @@ fn imported_reference_keeps_every_character_despite_unrelated_asr_text() {
     assert_eq!(artifact.text, reference);
     assert_eq!(canonical.text, reference);
     assert_eq!(canonical.alternatives, ["sing now"]);
-    assert_eq!(artifact.tokens.iter().map(|token| token.text.as_str()).collect::<Vec<_>>(),
-        ["目覚める 惨劇の記憶を", "途切れ途切れに覗いた場所は"]);
+    assert_eq!(
+        artifact
+            .tokens
+            .iter()
+            .map(|token| token.text.as_str())
+            .collect::<Vec<_>>(),
+        ["目覚める 惨劇の記憶を", "途切れ途切れに覗いた場所は"]
+    );
     assert!(artifact.audio_segments.is_empty());
 }
 
