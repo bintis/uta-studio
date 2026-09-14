@@ -122,16 +122,13 @@ pub fn parse_rmvpe_pitch(
         "sample_rate".to_string(),
         serde_json::json!(raw.sample_rate),
     );
-    let local_end = (frame_count - 1)
-        .try_into()
-        .ok()
-        .and_then(|count: u64| count.checked_mul(hop))
-        .ok_or_else(|| invalid("pitch evidence duration overflows"))?;
-    if local_end > source_duration {
-        return Err(invalid(
-            "pitch evidence exceeds the decoded source duration",
-        ));
-    }
+    let local_end = source_owned_pitch_end(
+        &mut frequency_hz,
+        &mut confidence,
+        hop,
+        source_duration,
+        raw.sample_rate,
+    )?;
     source_start
         .checked_add(local_end)
         .ok_or_else(|| invalid("pitch evidence overflows the source timeline"))?;
@@ -216,10 +213,13 @@ pub fn parse_fcpe_pitch(
         frequency_hz.push(frame.hz.map(f64::from));
         confidence.push(None);
     }
-    let local_end = (frame_count - 1) as u64 * hop;
-    if local_end > source_duration {
-        return Err(invalid("FCPE evidence exceeds the decoded source duration"));
-    }
+    let local_end = source_owned_pitch_end(
+        &mut frequency_hz,
+        &mut confidence,
+        hop,
+        source_duration,
+        raw.sample_rate,
+    )?;
     source_start
         .checked_add(local_end)
         .ok_or_else(|| invalid("FCPE evidence overflows the source timeline"))?;
@@ -253,6 +253,34 @@ pub fn parse_fcpe_pitch(
         confidence,
         model,
     })
+}
+
+/// Resampling can round the decoded waveform up by one destination sample.
+/// A centered analysis frame at that rounded endpoint is not an observation
+/// inside the original source. Drop only that out-of-source endpoint, retaining
+/// every preceding F0 value unchanged and the raw worker artifact verbatim.
+fn source_owned_pitch_end(
+    frequency: &mut Vec<Option<f64>>,
+    confidence: &mut Vec<Option<f64>>,
+    hop: u64,
+    source_duration: u64,
+    sample_rate: u32,
+) -> EngineResult<u64> {
+    let mut end = (frequency.len() as u64 - 1)
+        .checked_mul(hop)
+        .ok_or_else(|| invalid("pitch evidence duration overflows"))?;
+    if end > source_duration {
+        let sample_micros = u64::from(CANONICAL_TIMEBASE).div_ceil(u64::from(sample_rate));
+        if end - source_duration > sample_micros || frequency.len() < 2 {
+            return Err(invalid(
+                "pitch evidence exceeds the decoded source duration",
+            ));
+        }
+        frequency.pop();
+        confidence.pop();
+        end -= hop;
+    }
+    Ok(end)
 }
 
 fn seconds_to_canonical(seconds: f64) -> EngineResult<u64> {
@@ -306,9 +334,12 @@ mod tests {
             [Some(0.9_f32 as f64), Some(0.01_f32 as f64)]
         );
         assert_eq!(
-            parse_rmvpe_pitch(&path, 0, 9_999).unwrap_err().code,
+            parse_rmvpe_pitch(&path, 0, 9_900).unwrap_err().code,
             EngineErrorCode::OutputValidationFailed
         );
+        let endpoint = parse_rmvpe_pitch(&path, 0, 9_979).unwrap();
+        assert_eq!(endpoint.frequency_hz, [Some(439.7_f32 as f64)]);
+        assert_eq!(endpoint.confidence, [Some(0.9_f32 as f64)]);
         std::fs::remove_file(path).unwrap();
     }
 
@@ -434,6 +465,10 @@ mod tests {
         assert!(!evidence.model.contains_key("source_sha256"));
         assert!(!evidence.model.contains_key("weights_sha256"));
         assert!(!evidence.model.contains_key("manifest_sha256"));
+        let endpoint = parse_fcpe_pitch(&path, 0, 9_979).unwrap();
+        assert_eq!(endpoint.frequency_hz, [Some(523.4293_f32 as f64)]);
+        assert_eq!(endpoint.confidence, [None]);
+        assert!(parse_fcpe_pitch(&path, 0, 9_900).is_err());
         std::fs::remove_file(path).unwrap();
     }
 }
