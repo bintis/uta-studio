@@ -252,13 +252,23 @@ fn voiced_recovery_can_split_a_long_native_note_without_inventing_a_native_vote(
     assert_eq!(pitched.len(), 2);
     assert_eq!(pitched[0].range, range(0, 400_000));
     assert_eq!(pitched[1].range, range(600_000, 1_000_000));
+    // GAME, RMVPE and FCPE target proposals share the same native
+    // duration observation; pitch alternatives must not count as new onsets.
+    let native_boundaries = result
+        .candidates
+        .iter()
+        .filter(|state| state.boundary_kind == BoundaryEvidenceKind::Game)
+        .map(|state| {
+            (
+                state.boundary_source.as_str(),
+                state.range.start,
+                state.range.end,
+            )
+        })
+        .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(
-        result
-            .candidates
-            .iter()
-            .filter(|state| state.boundary_kind == BoundaryEvidenceKind::Game)
-            .count(),
-        1
+        native_boundaries,
+        std::collections::BTreeSet::from([("game", 0, 1_000_000)]),
     );
 }
 
