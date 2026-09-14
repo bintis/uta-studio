@@ -375,6 +375,7 @@ fn valid_boundary_kind(kind: &str) -> bool {
             | "f0_consolidation"
             | "phrase_constraint"
             | "constraint"
+            | "voicing"
     )
 }
 
@@ -1497,6 +1498,7 @@ mod tests {
             serde_json::from_slice(&singing_analysis("selected")).unwrap();
         let silence = &mut value["candidate_evidence"][0];
         silence["target"] = serde_json::json!({"kind": "unpitched"});
+        silence["boundary_kind"] = serde_json::json!("voicing");
         silence["rmvpe_center_hz"] = serde_json::Value::Null;
         silence["fcpe_center_hz"] = serde_json::Value::Null;
         silence["voicing_evidence"] = serde_json::json!({
