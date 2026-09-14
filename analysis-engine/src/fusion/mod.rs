@@ -1047,6 +1047,9 @@ mod tests {
         let mut wrong_boundary_pitch = candidate("wrong-game-octave", 0.0, 1.0, 81);
         wrong_boundary_pitch.rmvpe_center_hz = Some(440.0);
         wrong_boundary_pitch.rmvpe_cents_difference = Some(-1_200.0);
+        // One second of observed 440 Hz against 880 Hz: (1200 - 50) / 100.
+        wrong_boundary_pitch.continuous_pitch_error_integral = Some(11.5);
+        wrong_boundary_pitch.continuous_pitch_observed_duration = Some(1_000_000);
 
         let mut matching_peer = wrong_boundary_pitch.clone();
         matching_peer.id = "matching-rmvpe".to_string();
@@ -1054,6 +1057,7 @@ mod tests {
         matching_peer.target_pitch_source = "rmvpe".to_string();
         matching_peer.center_pitch_hz = 440.0;
         matching_peer.rmvpe_cents_difference = Some(0.0);
+        matching_peer.continuous_pitch_error_integral = Some(0.0);
 
         assert!(
             matching_peer.emission_utility().unwrap()
