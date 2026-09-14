@@ -216,15 +216,15 @@ impl DebugLogging {
     }
 
     fn record_stderr(&mut self, bytes: &[u8]) {
-        if let Some(session) = &mut self.session {
-            if let Err(error) = session.backend_stderr.write_all(bytes) {
-                self.error.get_or_insert_with(|| {
-                    format!(
-                        "write {}: {error}",
-                        session.directory.join("backend-stderr.log").display()
-                    )
-                });
-            }
+        if let Some(session) = &mut self.session
+            && let Err(error) = session.backend_stderr.write_all(bytes)
+        {
+            self.error.get_or_insert_with(|| {
+                format!(
+                    "write {}: {error}",
+                    session.directory.join("backend-stderr.log").display()
+                )
+            });
         }
     }
 }

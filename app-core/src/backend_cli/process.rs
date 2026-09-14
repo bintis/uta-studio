@@ -21,22 +21,22 @@ pub fn discover_executable(variable: &str, name: &str) -> Result<PathBuf, Backen
     } else {
         name.to_string()
     };
-    if let Some(executable) = std::env::current_exe().ok() {
-        if let Some(directory) = executable.parent() {
-            let candidate = directory.join(&executable_name);
-            if executable_file(&candidate) {
-                return Ok(candidate);
-            }
-            if let Some(parent) = directory.parent() {
-                for candidate_directory in [
-                    parent.join("release"),
-                    parent.join("debug"),
-                    parent.join("bin"),
-                ] {
-                    let candidate = candidate_directory.join(&executable_name);
-                    if executable_file(&candidate) {
-                        return candidate.canonicalize().map_err(BackendCliError::from);
-                    }
+    if let Ok(executable) = std::env::current_exe()
+        && let Some(directory) = executable.parent()
+    {
+        let candidate = directory.join(&executable_name);
+        if executable_file(&candidate) {
+            return Ok(candidate);
+        }
+        if let Some(parent) = directory.parent() {
+            for candidate_directory in [
+                parent.join("release"),
+                parent.join("debug"),
+                parent.join("bin"),
+            ] {
+                let candidate = candidate_directory.join(&executable_name);
+                if executable_file(&candidate) {
+                    return candidate.canonicalize().map_err(BackendCliError::from);
                 }
             }
         }
@@ -211,9 +211,11 @@ mod tests {
             key == OsStr::new("UTA_STUDIO_DEBUG") && value == Some(OsStr::new("1"))
         }));
         let command = native_command_with_debug("unused-backend", false);
-        assert!(command.get_envs().any(|(key, value)| {
-            key == OsStr::new("UTA_STUDIO_DEBUG") && value.is_none()
-        }));
+        assert!(
+            command
+                .get_envs()
+                .any(|(key, value)| { key == OsStr::new("UTA_STUDIO_DEBUG") && value.is_none() })
+        );
     }
 
     #[test]

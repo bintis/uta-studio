@@ -366,7 +366,7 @@ mod tests {
         let fixture = Fixture::new();
         let directory = fixture.0.join("analysis-logs");
         fs::create_dir(&directory).unwrap();
-        fs::set_permissions(&directory, fs::Permissions::from_mode(0)).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o000)).unwrap();
         // Privileged runners can read mode-zero directories; exercise the actual
         // permission failure only when the filesystem enforces it for this user.
         let unreadable = fs::read_dir(&directory).is_err();
