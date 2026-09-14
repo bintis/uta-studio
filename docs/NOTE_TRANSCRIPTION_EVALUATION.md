@@ -136,6 +136,15 @@ Vocadito A2's 64-note annotation gives onset/pitch F1 **64.7% → 78.8%**, offse
 F1 **31.1% → 48.5%**, and extra cuts **30 → 4**. The two annotation sets are
 not combined to select favorable matches.
 
+Across all five recordings, **714/714 supplied non-whitespace characters** remain
+in order. Canonical caller token IDs, exact text (including whitespace), measured
+word boundaries, full lyric units and continuous pitch agree with their original
+inputs and retained raw alignment/RMVPE evidence in both control and final.
+The public inputs have no explicit timed caller tokens, so this check does not
+establish timed-lyric accuracy or identical displayed whitespace. Details:
+`final-text-evidence-preservation.json`, operation
+`20260914T042910-993b7e3f28a1`.
+
 ### What changed and why
 
 - Basic Pitch contributes resolved peaks, not every high activation frame.
