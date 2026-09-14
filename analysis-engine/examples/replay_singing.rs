@@ -8,21 +8,24 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use uta_analysis_engine::artifact::{
-    AcousticEvidence, Jbm555Evidence, Jbm555ExpectedInputs, finalize_candidate_vocal_chart,
-    parse_advanced_note_evidence, parse_alignment_artifact, parse_basic_pitch_evidence,
-    parse_fcpe_pitch, parse_game_evidence, parse_rmvpe_pitch, parse_transcript_artifact,
-    write_json_artifact,
+    AcousticEvidence, Jbm555Evidence, Jbm555ExpectedInputs, TechniqueEvidence,
+    finalize_candidate_vocal_chart, parse_advanced_note_evidence, parse_alignment_artifact,
+    parse_basic_pitch_evidence, parse_fcpe_pitch, parse_game_evidence, parse_rmvpe_pitch,
+    parse_transcript_artifact, write_json_artifact,
 };
 use uta_analysis_engine::candidate_pipeline::{
-    FusionDecisionMode, execute_candidate_graph_stage,
+    FusionDecisionMode, attach_caller_lyric_ranges, execute_candidate_graph_stage,
     execute_singing_fusion_stage_with_timed_notes, fuse_alignment_stage, fuse_transcript_stage,
 };
+use uta_analysis_engine::contract::{BoundaryConstraint, Lyrics, LyricsMode};
+use uta_analysis_engine::fusion::TimeRange;
 
 #[derive(Deserialize)]
 struct ReplayInputs {
     source_start: u64,
     source_duration: u64,
     transcript: PathBuf,
+    caller_lyrics: Option<PathBuf>,
     alignment: PathBuf,
     pitch: PathBuf,
     secondary_pitch: Option<PathBuf>,
@@ -30,6 +33,10 @@ struct ReplayInputs {
     basic_pitch: Option<PathBuf>,
     game: Option<PathBuf>,
     jbm: Option<PathBuf>,
+    pitch_owner: String,
+    boundary_constraints: Vec<BoundaryConstraint>,
+    technique_evidence: Vec<PathBuf>,
+    report_regions: Vec<TimeRange>,
     #[serde(default)]
     note_experts: BTreeMap<String, PathBuf>,
 }
@@ -38,20 +45,56 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, Box<dyn E
     Ok(serde_json::from_slice(&std::fs::read(path)?)?)
 }
 
+fn compact(text: &str) -> String {
+    text.chars()
+        .filter(|character| !character.is_whitespace())
+        .collect()
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let args = std::env::args_os().skip(1).collect::<Vec<_>>();
     if args.len() != 2 {
         return Err("usage: replay_singing INPUTS_JSON NEW_OUTPUT_DIRECTORY".into());
     }
     let input_path = PathBuf::from(&args[0]);
-    let input: ReplayInputs = read_json(&input_path)?;
+    let input_document: serde_json::Value = read_json(&input_path)?;
+    let input: ReplayInputs = serde_json::from_value(input_document.clone())?;
     let output = PathBuf::from(&args[1]);
     let start = input.source_start;
     let duration = input.source_duration;
     let pitch = parse_rmvpe_pitch(&input.pitch, start, duration)?;
     let transcript = parse_transcript_artifact(&input.transcript)?;
     let alignment = parse_alignment_artifact(&input.alignment, start, duration)?;
-    let (transcript, canonical) = fuse_transcript_stage(&[transcript], None)?;
+    let caller: Option<Lyrics> = input.caller_lyrics.as_deref().map(read_json).transpose()?;
+    let reference = caller
+        .as_ref()
+        .filter(|lyrics| lyrics.mode == LyricsMode::Reference)
+        .map(|lyrics| {
+            lyrics
+                .tokens
+                .iter()
+                .map(|token| token.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        });
+    let (transcript, mut canonical) = fuse_transcript_stage(&[transcript], reference.as_deref())?;
+    if let Some(caller) = &caller {
+        attach_caller_lyric_ranges(&mut canonical, caller);
+    }
+    let caller_ranges_preserved = caller.as_ref().map(|caller| {
+        caller.tokens.iter().all(|token| {
+            canonical.tokens.iter().any(|canonical| {
+                canonical.id.as_deref() == Some(token.id.as_str())
+                    && canonical.text == token.text
+                    && canonical.range
+                        == token
+                            .start
+                            .zip(token.end)
+                            .map(|(start, end)| TimeRange { start, end })
+            })
+        })
+    });
+    let expected_text = compact(&canonical.text);
     let (alignment, words) = fuse_alignment_stage(&canonical, &[alignment], start, duration)?;
     let acoustic: Option<AcousticEvidence> =
         input.acoustic.as_deref().map(read_json).transpose()?;
@@ -87,6 +130,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             vocal_preparation_generation: &evidence.vocal_preparation_generation,
         })?);
     }
+    let techniques = input
+        .technique_evidence
+        .iter()
+        .map(|path| read_json::<TechniqueEvidence>(path))
+        .collect::<Result<Vec<_>, _>>()?;
     let fusion = execute_singing_fusion_stage_with_timed_notes(
         &transcript,
         &alignment,
@@ -98,11 +146,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         acoustic.as_ref(),
         &advanced,
         &timed,
-        &[],
-        &[],
+        &techniques,
+        &input.boundary_constraints,
         start,
         duration,
-        "rmvpe",
+        &input.pitch_owner,
     )?;
     let singing =
         execute_candidate_graph_stage(canonical, words, fusion, FusionDecisionMode::Algorithm)?;
@@ -119,12 +167,27 @@ fn main() -> Result<(), Box<dyn Error>> {
             .entry(note.evidence.boundary_source.clone())
             .or_default() += 1;
     }
-    let notes = chart
+    let mut notes = chart
         .tracks
         .iter()
         .flat_map(|track| &track.phrases)
         .flat_map(|phrase| &phrase.notes)
         .collect::<Vec<_>>();
+    notes.sort_by_key(|note| (note.start, note.duration));
+    let chart_text = notes
+        .iter()
+        .flat_map(|note| &note.lyrics)
+        .filter_map(|token| match token {
+            utz::LyricToken::Text(token) => Some(token.text.as_str()),
+            utz::LyricToken::Continuation { .. } => None,
+        })
+        .collect::<String>();
+    let regions = input.report_regions.iter().map(|range| {
+        serde_json::json!({
+            "range": range,
+            "notes": notes.iter().filter(|note| note.start < range.end && note.start.saturating_add(note.duration) > range.start).collect::<Vec<_>>()
+        })
+    }).collect::<Vec<_>>();
     let pitched = notes
         .iter()
         .copied()
@@ -150,6 +213,17 @@ fn main() -> Result<(), Box<dyn Error>> {
                 && pair[1].start - pair[0].start - pair[0].duration <= 20_000
         })
         .count();
+    let adjacent_same_pitch = pitched
+        .windows(2)
+        .filter(|pair| {
+            pair[0].pitch.unwrap().midi == pair[1].pitch.unwrap().midi
+                && pair[1].start == pair[0].start.saturating_add(pair[0].duration)
+        })
+        .collect::<Vec<_>>();
+    let short_adjacent_same_pitch = adjacent_same_pitch
+        .iter()
+        .filter(|pair| pair[0].duration < 100_000 || pair[1].duration < 100_000)
+        .count();
     let mut proposals_by_duration = BTreeMap::<(&str, u64, u64), usize>::new();
     for candidate in &singing.fusion.candidates {
         *proposals_by_duration
@@ -163,6 +237,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let summary = serde_json::json!({
         "scope": "explicit cached evidence only; no model/audio execution or production input-binding claim",
         "inputs": input_path, "source_start": start, "source_duration": duration,
+        "pitch_owner": input.pitch_owner, "boundary_constraints": input.boundary_constraints.len(),
+        "technique_sources": techniques.iter().map(|evidence| evidence.model_id.as_str()).collect::<Vec<_>>(),
+        "caller_ranges_preserved": caller_ranges_preserved,
+        "caller_timed_lines": singing.track.transcript.tokens.iter().filter(|token| token.range.is_some()).count(),
+        "canonical_nonspace_chars": expected_text.chars().count(),
+        "chart_nonspace_chars": compact(&chart_text).chars().count(),
+        "all_canonical_text_preserved_in_order": compact(&chart_text) == expected_text,
         "raw_game_notes": game.as_ref().map(|evidence| evidence.notes.len()),
         "alignment_items": alignment.items.len(), "measured_words": alignment.measured_items().count(),
         "unresolved_words": alignment.items.iter().filter(|item| item.timing_issue.is_some()).count(),
@@ -172,6 +253,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         "selected_canonical_notes": singing.track.notes.len(), "chart_objects": notes.len(),
         "pitched_notes": pitched.len(), "pitched_duration_micros": pitched.iter().map(|note| note.duration).sum::<u64>(),
         "short_pitched_counts_below_micros": short, "same_pitch_pairs_gap_at_most_twenty_ms": same_pitch_pairs,
+        "adjacent_same_pitch_pairs": adjacent_same_pitch.len(),
+        "adjacent_same_pitch_pairs_with_note_below_hundred_ms": short_adjacent_same_pitch,
+        "reported_regions": regions,
+        "continuous_f0_points": singing.track.f0_curve.len(),
+        "rhythm_quantization_executed": false,
         "unassigned_lyric_notes": singing.track.notes.iter().filter(|note| note.word_id.is_none()).count(),
         "review_regions": singing.review_regions.len(),
         "warning": "Counts are diagnostic signals, not transcription accuracy or listening qualification."
@@ -179,6 +265,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Refuse an existing destination. Inputs are never modified; all writes use
     // the Engine's atomic publisher and retain the complete candidate evidence.
     std::fs::create_dir(&output)?;
+    write_json_artifact(
+        &output,
+        Path::new("input-manifest.json"),
+        "application/json",
+        &input_document,
+    )?;
     write_json_artifact(
         &output,
         Path::new("summary.json"),
