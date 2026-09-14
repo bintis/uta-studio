@@ -28,7 +28,7 @@ const MAX_PITCH_PROPOSALS_PER_SEGMENT: usize = 64;
 const CONTEXT_DURATION: u64 = 80_000;
 const MIN_CONTEXT_FRAMES: usize = 3;
 const EXIT_HYSTERESIS_CENTS: f32 = 110.0;
-const BOUNDARY_EVIDENCE_TOLERANCE: u64 = 60_000;
+pub(crate) const BOUNDARY_EVIDENCE_TOLERANCE: u64 = 60_000;
 const MIN_TRANSITION_CONFIDENCE: f32 = 0.5;
 
 pub(crate) fn trustworthy_f0_point(point: &F0Point) -> bool {
