@@ -11,11 +11,11 @@ mod transcript_fusion;
 mod types;
 
 pub use alignment_fusion::{CanonicalWordBoundary, WordBoundaryEvidence, fuse_word_boundaries};
-pub(crate) use baseline::{basic_pitch_onsets, fuse_singing_evidence_with_challengers};
 pub use baseline::{
     BoundaryEvidenceSet, BoundarySegmentEvidence, PitchGrid, SingingFusionEvidence,
     fuse_singing_evidence,
 };
+pub(crate) use baseline::{basic_pitch_onsets, fuse_singing_evidence_with_challengers};
 pub use calibration::{CalibrationMethod, ScoreCalibrator};
 pub(crate) use candidate_states::{
     BOUNDARY_EVIDENCE_TOLERANCE, persistent_f0_shifts, trustworthy_f0_point,

@@ -16,10 +16,11 @@ use crate::fusion::{
     CanonicalWordBoundary, EvidenceProvenance, ExpertTask, F0Point, HardBoundarySet,
     HarmonyMetadata, LyricsAuthority, PitchGrid, SingingFusionEvidence, SingingReviewReason,
     SingingReviewRegion, TranscriptHypothesis, TranscriptTokenEvidence, WordBoundaryEvidence,
-    attach_boundary_constraints, basic_pitch_onsets, build_canonical_singing_track, build_review_regions,
-    decode_candidate_graph_with_boundaries, fuse_singing_evidence_with_challengers,
-    fuse_transcripts, fuse_word_boundaries, persistent_f0_shifts, trustworthy_f0_point,
-    validate_candidate_path_with_boundaries, validate_candidate_pool,
+    attach_boundary_constraints, basic_pitch_onsets, build_canonical_singing_track,
+    build_review_regions, decode_candidate_graph_with_boundaries,
+    fuse_singing_evidence_with_challengers, fuse_transcripts, fuse_word_boundaries,
+    persistent_f0_shifts, trustworthy_f0_point, validate_candidate_path_with_boundaries,
+    validate_candidate_pool,
 };
 
 /// How Stage 4 (Expert Fusion) decides the final non-overlapping candidate
