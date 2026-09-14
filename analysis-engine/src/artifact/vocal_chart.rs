@@ -102,6 +102,9 @@ pub fn finalize_candidate_vocal_chart(
         })
         .collect::<Vec<_>>();
     let mut deferred_lyrics = BTreeMap::<String, Vec<(usize, LyricToken)>>::new();
+    // Word ownership cannot describe every text token on a shared note. Keep
+    // the actual preceding text anchor, including deferred measured words.
+    let mut previous_lyric_anchor = None::<String>;
     for (word_index, group) in lyric_groups.iter().enumerate() {
         let word = &group.boundary;
         let candidates = notes_by_word
@@ -131,22 +134,19 @@ pub fn finalize_candidate_vocal_chart(
         if candidates.is_empty() && spoken_range.is_none() {
             let neighbour = (!group.measured)
                 .then(|| {
-                    emitted_notes
-                        .iter()
-                        .filter(|(_, _, order)| *order < word_index)
-                        .max_by_key(|(_, range, order)| (*order, range.end))
-                        .or_else(|| {
-                            emitted_notes
-                                .iter()
-                                .filter(|(_, _, order)| *order > word_index && *order != usize::MAX)
-                                .min_by_key(|(_, range, order)| (*order, range.start))
-                        })
-                        .map(|(id, _, _)| id.clone())
+                    previous_lyric_anchor.clone().or_else(|| {
+                        emitted_notes
+                            .iter()
+                            .filter(|(_, _, order)| *order > word_index && *order != usize::MAX)
+                            .min_by_key(|(_, range, order)| (*order, range.start))
+                            .map(|(id, _, _)| id.clone())
+                    })
                 })
                 .flatten();
             let target_id = neighbour
                 .or(overlap_target)
                 .ok_or_else(|| invalid(format!("word {} has no lyric interval", word.word_id)))?;
+            previous_lyric_anchor = Some(target_id.clone());
             deferred_lyrics.entry(target_id).or_default().push((
                 word_index,
                 LyricToken::Text(LyricTextToken {
@@ -171,6 +171,7 @@ pub fn finalize_candidate_vocal_chart(
             join_before,
             lyric_timing(&lyric_groups, word_index),
         )?;
+        previous_lyric_anchor = Some(notes[first_emitted].id.clone());
         if let Some(range) = spoken_range {
             emitted_notes.push((notes[first_emitted].id.clone(), range, word_index));
         }
@@ -1687,6 +1688,115 @@ mod tests {
                 .collect::<String>(),
             track.transcript.text
         );
+        assert_eq!(track, original);
+        chart.validate().unwrap();
+    }
+    #[test]
+    fn unresolved_suffix_follows_a_measured_word_sharing_another_words_note() {
+        let mut track = track();
+        track.transcript.text = "계신주께여엉".into();
+        track.transcript.language = Some("ko".into());
+        track.words[0].text = "계".into();
+        track.words[0].range = TimeRange::new(520_000, 600_000).unwrap();
+        for (id, text, start, end) in [
+            ("shared-word", "신", 1_000_000, 1_160_000),
+            ("later-word", "엉", 1_400_000, 2_480_000),
+        ] {
+            let mut word = track.words[0].clone();
+            word.word_id = id.into();
+            word.text = text.into();
+            word.range = TimeRange::new(start, end).unwrap();
+            track.words.push(word);
+        }
+        track.notes[0].range = TimeRange::new(20_000, 570_000).unwrap();
+        let mut middle = track.notes[0].clone();
+        middle.id = "prior-word-continuation".into();
+        middle.range = TimeRange::new(570_000, 1_000_000).unwrap();
+        track.notes.push(middle);
+        let mut later = track.notes[0].clone();
+        later.id = "shared-note".into();
+        later.word_id = Some("later-word".into());
+        later.range = TimeRange::new(1_110_000, 1_580_000).unwrap();
+        track.notes.push(later);
+        track.lyric_units = [
+            ("word-1", "계", Some(track.words[0].range)),
+            ("shared-word", "신", Some(track.words[1].range)),
+            ("missing-words", "주께여", None),
+            ("later-word", "엉", Some(track.words[2].range)),
+        ]
+        .into_iter()
+        .map(
+            |(id, text, measured_range)| crate::fusion::CanonicalLyricUnit {
+                id: id.into(),
+                text: text.into(),
+                line_id: None,
+                measured_range,
+                audition_range: TimeRange::new(0, 3_000_000).unwrap(),
+            },
+        )
+        .collect();
+        let original = track.clone();
+        let chart =
+            finalize_candidate_vocal_chart(&track, "shared-word-suffix-order", None).unwrap();
+        let notes = &chart.tracks[0].phrases[0].notes;
+        assert_eq!(notes.len(), track.notes.len());
+        for (note, selected) in notes.iter().zip(&track.notes) {
+            assert_eq!(note.id, selected.id);
+            assert_eq!(note.start, selected.range.start);
+            assert_eq!(note.duration, selected.range.end - selected.range.start);
+            assert_eq!(note.pitch.unwrap().midi, selected.midi_note);
+        }
+        let text_tokens = |note: &VocalNote| {
+            note.lyrics
+                .iter()
+                .filter_map(|token| match token {
+                    LyricToken::Text(token) => Some(token.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let tokens = notes.iter().flat_map(text_tokens).collect::<Vec<_>>();
+        assert_eq!(
+            tokens
+                .iter()
+                .map(|token| token.text.as_str())
+                .collect::<String>(),
+            track.transcript.text
+        );
+        let shared = text_tokens(&notes[2]);
+        assert_eq!(
+            shared
+                .iter()
+                .map(|token| token.text.as_str())
+                .collect::<Vec<_>>(),
+            ["신", "주께여", "엉"]
+        );
+        assert_eq!(
+            shared[0].timing,
+            Some(LyricTiming {
+                start: 1_000_000,
+                duration: 160_000
+            })
+        );
+        assert!(!shared[0].timing_unresolved);
+        assert_eq!(
+            shared[1].timing,
+            Some(LyricTiming {
+                start: 1_160_000,
+                duration: 240_000
+            })
+        );
+        assert!(shared[1].timing_unresolved);
+        assert_eq!(
+            shared[2].timing,
+            Some(LyricTiming {
+                start: 1_400_000,
+                duration: 1_080_000
+            })
+        );
+        assert!(matches!(&notes[1].lyrics[0], LyricToken::Continuation {
+            continuation_of
+        } if continuation_of == "word-1"));
         assert_eq!(track, original);
         chart.validate().unwrap();
     }
