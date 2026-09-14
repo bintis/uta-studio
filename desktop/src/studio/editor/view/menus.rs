@@ -1105,3 +1105,96 @@ pub(crate) fn update_editor_playhead(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::studio::editor::commands::set_editor_word_timing;
+
+    #[test]
+    fn unresolved_lyric_timing_renders_and_can_be_refined_through_editor_commands() {
+        let vocal_chart = app_core::migrate_analyzer_chart(
+            &serde_json::json!({
+                "language": "ja",
+                "segments": [{
+                    "start": 0.0, "end": 1.0, "text": "めさめる",
+                    "words": [{"word": "めさめる", "start": 0.0, "end": 1.0}]
+                }]
+            }),
+            &serde_json::json!({
+                "notes": [{"start": 0.0, "end": 1.0, "midi": 60, "confidence": 1.0}]
+            }),
+        )
+        .unwrap();
+        let mut chart = app_core::ChartDocument {
+            file_hash: "fixture".into(),
+            vocal_chart,
+            pitch_track: serde_json::json!({}),
+            audio: app_core::ChartAudio {
+                instrumental: "instrumental.flac".into(),
+                vocals: None,
+                original: "original.flac".into(),
+            },
+            repaired_issues: Vec::new(),
+        };
+        let mut value = serde_json::to_value(&chart.vocal_chart).unwrap();
+        value["tracks"][0]["phrases"][0]["notes"][0]["lyrics"][0]["timing_unresolved"] =
+            serde_json::Value::Bool(true);
+        chart.vocal_chart = serde_json::from_value(value).unwrap();
+        let mut editor = NativeEditor::new(
+            chart,
+            uta_studio_audio::EditorAudioStatus::default(),
+            app_core::ChartWaveform::default(),
+            WaveformSource::Instrumental,
+            "instrumental",
+        );
+        let lyrics = chart_lyrics(&editor.document);
+        assert!(lyrics[0].guided);
+        assert!(lyrics[0].timing_unresolved);
+        assert_eq!(lyrics[0].text, "めさめる");
+
+        let mut world = World::new();
+        let mut queue = bevy::ecs::world::CommandQueue::default();
+        {
+            let mut commands = Commands::new(&mut queue, &world);
+            commands.spawn(Node::default()).with_children(|parent| {
+                spawn_editor_lyrics(
+                    parent,
+                    Handle::default(),
+                    &editor,
+                    &lyrics,
+                    None,
+                    &StudioTheme::new(true),
+                );
+            });
+        }
+        queue.apply(&mut world);
+        let mut text = world.query::<&Text>();
+        let labels = text
+            .iter(&world)
+            .map(|text| text.0.as_str())
+            .collect::<Vec<_>>();
+        assert!(labels.contains(&"? "));
+        assert!(labels.contains(&"めさめる"));
+        assert!(
+            labels
+                .iter()
+                .any(|text| text.contains("Timing unconfirmed"))
+        );
+
+        let address = WordSelection {
+            segment: 0,
+            word: 0,
+        };
+        assert!(set_editor_word_timing(
+            &mut editor.document,
+            address,
+            0.1,
+            0.9
+        ));
+        let updated = chart_lyrics(&editor.document);
+        assert!(!updated[0].timing_unresolved);
+        assert!(updated[0].guided);
+        assert_eq!(updated[0].text, "めさめる");
+    }
+}
