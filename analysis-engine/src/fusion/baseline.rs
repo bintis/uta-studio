@@ -1181,7 +1181,7 @@ fn build_segment_candidate(
 
     Ok(SegmentCandidate {
         id: if boundary_kind == BoundaryEvidenceKind::Voicing {
-            format!("{source_expert}-voicing-segment-{index}")
+            format!("voicing-segment-{index}")
         } else {
             format!("{source_expert}-segment-{index}")
         },

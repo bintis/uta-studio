@@ -69,6 +69,7 @@ pub fn finalize_candidate_vocal_chart(
         .iter()
         .map(|group| group.boundary.word_id.clone())
         .collect::<std::collections::BTreeSet<_>>();
+    let mut unassigned_index = 0usize;
     let mut notes = projection_notes
         .iter()
         .filter(|note| {
@@ -77,10 +78,16 @@ pub fn finalize_candidate_vocal_chart(
                 .is_none_or(|id| !word_order.contains_key(id))
         })
         .map(|note| {
-            let mut id = format!("unassigned-{}", note.id);
-            while !lyric_ids.insert(id.clone()) {
-                id.push('-');
-            }
+            // Note identifiers already own their full UTZ byte budget.
+            // Allocate an independent chart-local identity rather than
+            // composing another identifier from an arbitrarily long note ID.
+            let id = loop {
+                let candidate = format!("unassigned-{unassigned_index}");
+                unassigned_index += 1;
+                if lyric_ids.insert(candidate.clone()) {
+                    break candidate;
+                }
+            };
             project_note(
                 note,
                 vec![LyricToken::Text(LyricTextToken {
@@ -750,6 +757,84 @@ mod tests {
         assert!(matches!(&note.lyrics[0], LyricToken::Text(token) if token.text.is_empty()));
         assert_eq!(note.pitch.unwrap().midi, track.notes[0].midi_note);
         chart.validate().unwrap();
+    }
+
+    #[test]
+    fn unowned_notes_keep_full_length_note_ids_and_have_short_distinct_lyric_ids() {
+        let mut track = track();
+        track.words.clear();
+        track.notes[0].word_id = None;
+        track.notes[0].id = "n".repeat(64);
+        let mut following = track.notes[0].clone();
+        following.id = "m".repeat(64);
+        following.range = TimeRange::new(600_000, 1_000_000).unwrap();
+        track.notes.push(following);
+
+        let chart = finalize_candidate_vocal_chart(&track, "long-note-identifiers", None).unwrap();
+        chart.validate().unwrap();
+        let notes = chart
+            .tracks
+            .iter()
+            .flat_map(|track| &track.phrases)
+            .flat_map(|phrase| &phrase.notes)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            notes
+                .iter()
+                .map(|note| note.id.as_str())
+                .collect::<Vec<_>>(),
+            track
+                .notes
+                .iter()
+                .map(|note| note.id.as_str())
+                .collect::<Vec<_>>()
+        );
+        let lyric_ids = notes
+            .iter()
+            .flat_map(|note| &note.lyrics)
+            .filter_map(|token| match token {
+                LyricToken::Text(text) => Some(text.id.as_str()),
+                LyricToken::Continuation { .. } => None,
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(lyric_ids.len(), 2);
+        assert!(lyric_ids.iter().all(|id| id.len() <= 64));
+        assert_eq!(
+            chart,
+            finalize_candidate_vocal_chart(&track, "long-note-identifiers", None).unwrap(),
+        );
+    }
+
+    #[test]
+    fn unowned_lyric_ids_do_not_collide_with_original_caller_word_ids() {
+        let mut track = track();
+        track.words[0].word_id = "unassigned-0".into();
+        track.notes[0].word_id = Some("unassigned-0".into());
+        let mut following = track.notes[0].clone();
+        following.id = "unowned-note".into();
+        following.range = TimeRange::new(600_000, 1_000_000).unwrap();
+        following.word_id = None;
+        track.notes.push(following);
+        let chart = finalize_candidate_vocal_chart(&track, "caller-lyric-identity", None).unwrap();
+        chart.validate().unwrap();
+        let text_tokens = chart
+            .tracks
+            .iter()
+            .flat_map(|track| &track.phrases)
+            .flat_map(|phrase| &phrase.notes)
+            .flat_map(|note| &note.lyrics)
+            .filter_map(|token| match token {
+                LyricToken::Text(text) => Some(text),
+                LyricToken::Continuation { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            text_tokens
+                .iter()
+                .any(|token| token.id == "unassigned-0" && token.text == "sing")
+        );
+        assert_eq!(text_tokens.len(), 2);
+        assert_ne!(text_tokens[0].id, text_tokens[1].id);
     }
 
     fn cross_word_track(note_end: u64) -> CanonicalSingingTrack {
