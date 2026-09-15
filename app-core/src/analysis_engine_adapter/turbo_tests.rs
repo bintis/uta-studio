@@ -34,6 +34,7 @@ fn super_acceleration_is_captured_in_the_exact_request() {
     let accelerated = compile_analyze_request(intent.clone(), &settings).unwrap();
     let mut ordinary_intent = intent;
     ordinary_intent.turbo_acceleration = false;
+    let ordinary_intent_for_custom = ordinary_intent.clone();
     let ordinary = compile_analyze_request(ordinary_intent, &settings).unwrap();
     assert!(accelerated.execution_policy.turbo_acceleration);
     assert!(!ordinary.execution_policy.turbo_acceleration);
@@ -72,12 +73,18 @@ fn super_acceleration_is_captured_in_the_exact_request() {
         ordinary.execution_policy.requested_device,
         Some(DeviceClassWire::Gpu)
     );
+    assert!(ordinary.execution_policy.model_backend_overrides.is_empty());
+    assert!(ordinary.execution_policy.model_device_overrides.is_empty());
+    let mut custom_intent = ordinary_intent_for_custom;
+    custom_intent.compute_backend = Some("custom".to_string());
+    let custom = compile_analyze_request(custom_intent, &settings).unwrap();
+    assert_eq!(custom.execution_policy.requested_backend, None);
     assert_eq!(
-        ordinary.execution_policy.model_backend_overrides["rmvpe"],
+        custom.execution_policy.model_backend_overrides["rmvpe"],
         NativeBackendWire::Ggml
     );
     assert_eq!(
-        ordinary.execution_policy.model_device_overrides["rmvpe"],
+        custom.execution_policy.model_device_overrides["rmvpe"],
         DeviceClassWire::IntegratedGpu
     );
     let exact = serde_json::to_value(&accelerated).unwrap();

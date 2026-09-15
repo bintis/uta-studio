@@ -700,10 +700,6 @@ mod tests {
             }
         }
         assert_eq!(
-            translate_ui(UiLocale::SimplifiedChinese, "Default · cpu").as_deref(),
-            Some("默认 · cpu")
-        );
-        assert_eq!(
             translate_ui(UiLocale::Japanese, "Use vulkan").as_deref(),
             Some("vulkan を使用")
         );

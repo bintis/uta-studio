@@ -92,7 +92,7 @@ pub(crate) enum SettingsCommand {
     OpenSettingsSelect(SettingsSelectKind),
     SelectSettingsValue(SettingsSelectKind, String),
     ToggleModelRuntimeSelect(String),
-    SetModelBackend(String, Option<String>),
+    SetModelBackend(String, String),
     SetModelDevice(String, Option<String>),
     SelectModelTuning(String),
     SetModelParameter(String, String, String),

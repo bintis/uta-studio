@@ -12,32 +12,42 @@ pub enum SetupStep {
     Finish,
 }
 
+/// Global runtime routing. `Ggml` and `LibtorchXpu` route every model to that
+/// backend and leave saved per-model choices inactive; `Custom` routes each
+/// model by its own saved backend and device choice.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, TS, PartialEq, Eq)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
 pub enum ComputeBackend {
     #[default]
-    Auto,
     Ggml,
     LibtorchXpu,
+    Custom,
 }
 
 impl ComputeBackend {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Auto => "auto",
             Self::Ggml => "ggml",
             Self::LibtorchXpu => "libtorch_xpu",
+            Self::Custom => "custom",
         }
     }
 
-    /// Maps the persisted settings spelling to the setup selection.
-    pub fn from_setting(value: Option<&str>) -> Self {
-        match value.and_then(crate::backend_cli::NativeBackendWire::parse_setting) {
-            Some(crate::backend_cli::NativeBackendWire::Ggml) => Self::Ggml,
-            Some(crate::backend_cli::NativeBackendWire::LibtorchXpu) => Self::LibtorchXpu,
-            None => Self::Auto,
+    pub fn parse(value: &str) -> Option<Self> {
+        if value == "custom" {
+            return Some(Self::Custom);
         }
+        match crate::backend_cli::NativeBackendWire::parse_setting(value)? {
+            crate::backend_cli::NativeBackendWire::Ggml => Some(Self::Ggml),
+            crate::backend_cli::NativeBackendWire::LibtorchXpu => Some(Self::LibtorchXpu),
+        }
+    }
+
+    /// Maps the persisted settings spelling; an absent or unknown value is
+    /// the pinned GGML Vulkan route.
+    pub fn from_setting(value: Option<&str>) -> Self {
+        value.and_then(Self::parse).unwrap_or_default()
     }
 }
 

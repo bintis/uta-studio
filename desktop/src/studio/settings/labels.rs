@@ -24,7 +24,9 @@ pub(crate) fn settings_select_value(kind: SettingsSelectKind, config: &AppConfig
     match kind {
         SettingsSelectKind::UiLanguage => config.ui_language(),
         SettingsSelectKind::AnalysisTarget => config.analysis_default_target().as_str(),
-        SettingsSelectKind::ComputeBackend => config.compute_backend.as_deref().unwrap_or("auto"),
+        SettingsSelectKind::ComputeBackend => {
+            app_core::ComputeBackend::from_setting(config.compute_backend.as_deref()).as_str()
+        }
     }
 }
 
@@ -43,11 +45,13 @@ pub(crate) fn settings_select_label(kind: SettingsSelectKind, value: &str) -> &'
             "instrumental" => "Instrumental",
             _ => "Full candidate chart",
         },
-        SettingsSelectKind::ComputeBackend => match value {
-            "ggml" | "ggml_vulkan" | "vulkan" => "GGML Vulkan",
-            "libtorch_xpu" => "LibTorch XPU",
-            _ => "Pinned default (GGML Vulkan)",
-        },
+        SettingsSelectKind::ComputeBackend => {
+            match app_core::ComputeBackend::from_setting(Some(value)) {
+                app_core::ComputeBackend::Ggml => "GGML Vulkan",
+                app_core::ComputeBackend::LibtorchXpu => "LibTorch XPU",
+                app_core::ComputeBackend::Custom => "Custom",
+            }
+        }
     }
 }
 
@@ -69,9 +73,9 @@ pub(crate) fn settings_select_options(
             ("instrumental", "Instrumental"),
         ],
         SettingsSelectKind::ComputeBackend => &[
-            ("auto", "Pinned default (GGML Vulkan)"),
             ("ggml", "GGML Vulkan"),
             ("libtorch_xpu", "LibTorch XPU"),
+            ("custom", "Custom"),
         ],
     }
 }

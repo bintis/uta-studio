@@ -113,3 +113,23 @@ fn settings_rows_share_one_right_hand_control_column() {
     assert!(analysis.matches("SETTINGS_COPY_BASIS").count() >= 3);
     assert!(models.contains("SETTINGS_WIDE_CONTROL_WIDTH"));
 }
+
+#[test]
+fn compute_backend_offers_both_backends_and_custom_per_model_routing() {
+    use crate::studio::SettingsSelectKind;
+    assert_eq!(
+        super::labels::settings_select_options(SettingsSelectKind::ComputeBackend)
+            .iter()
+            .map(|(value, _)| *value)
+            .collect::<Vec<_>>(),
+        ["ggml", "libtorch_xpu", "custom"]
+    );
+    let config = app_core::AppConfig::default();
+    assert_eq!(
+        super::labels::settings_select_value(SettingsSelectKind::ComputeBackend, &config),
+        "ggml"
+    );
+    let models = include_str!("models.rs");
+    assert!(models.contains("if custom_routing && let Some(snapshot)"));
+    assert!(!models.contains("Default · "));
+}

@@ -46,8 +46,9 @@ pub struct AppConfig {
     /// percent of fully opaque. Has no effect when transparency is off.
     #[serde(default)]
     pub window_opacity_percent: Option<u32>,
-    /// Native acceleration preference. Production still uses only validated
-    /// per-model routes and never treats this as permission to fall back.
+    /// Global runtime routing: `ggml` or `libtorch_xpu` routes every model to
+    /// that backend, and `custom` applies `model_backend_overrides` and
+    /// `model_device_overrides`. A selected backend never falls back to the other.
     pub compute_backend: Option<String>,
     /// Global device-class preference (`cpu`, `gpu`, `integrated_gpu`),
     /// orthogonal to `compute_backend`'s runtime choice. CPU is an explicit
@@ -72,15 +73,17 @@ pub struct AppConfig {
     /// stops the reference lane from leaving most of the machine idle.
     #[serde(default)]
     pub cpu_thread_count: Option<u32>,
-    /// Explicit model-specific backend choices. Missing entries use Runtime
-    /// Manager's pinned route and never imply fallback. Super acceleration
-    /// preserves these entries but omits them from its automatically routed requests.
+    /// Explicit model-specific backend choices, applied only while
+    /// `compute_backend` is `custom`. Missing entries use Runtime Manager's
+    /// pinned route and never imply fallback. A global backend and Super
+    /// acceleration preserve these entries but omit them from requests.
     #[serde(default)]
     pub model_backend_overrides: BTreeMap<String, String>,
     /// Explicit model-specific device-class preference (`cpu`, `gpu`,
     /// `integrated_gpu`), orthogonal to `model_backend_overrides`'s runtime
-    /// choice. CPU must be selected directly and is never a fallback. These
-    /// saved choices are inactive while Super acceleration owns placement.
+    /// choice and likewise applied only while `compute_backend` is `custom`.
+    /// CPU must be selected directly and is never a fallback. These saved
+    /// choices are inactive while Super acceleration owns placement.
     #[serde(default)]
     pub model_device_overrides: BTreeMap<String, String>,
     /// Model-owned quality controls snapshotted for future analysis only.
@@ -166,10 +169,8 @@ impl AppConfig {
             self.data_path = Some(Self::default_data_path());
         }
         self.compute_backend = Some(
-            self.compute_backend
-                .as_deref()
-                .and_then(NativeBackendWire::parse_setting)
-                .map_or("auto", NativeBackendWire::setting_value)
+            crate::ComputeBackend::from_setting(self.compute_backend.as_deref())
+                .as_str()
                 .to_string(),
         );
         self.model_backend_overrides.retain(|model_id, backend| {
@@ -579,7 +580,13 @@ mod tests {
             ..AppConfig::default()
         }
         .with_defaults();
-        assert_eq!(config.compute_backend.as_deref(), Some("auto"));
+        assert_eq!(config.compute_backend.as_deref(), Some("ggml"));
+        let custom = AppConfig {
+            compute_backend: Some("custom".to_string()),
+            ..AppConfig::default()
+        }
+        .with_defaults();
+        assert_eq!(custom.compute_backend.as_deref(), Some("custom"));
     }
 
     #[test]

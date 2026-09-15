@@ -668,6 +668,12 @@ pub fn compile_analyze_request(
     });
     audio_sources.extend(reused_step_one_sources);
     ensure_original_mix_source(&intent.source, &mut audio_sources);
+    let routing = match intent.compute_backend.as_deref() {
+        None => crate::ComputeBackend::default(),
+        Some(configured) => crate::ComputeBackend::parse(configured)
+            .ok_or_else(|| format!("unsupported analysis compute backend: {configured}"))?,
+    };
+    let per_model_routing = routing == crate::ComputeBackend::Custom;
     Ok(AnalyzeRequestWire {
         contract: ANALYZE_REQUEST_CONTRACT.to_string(),
         version: ANALYZE_REQUEST_VERSION,
@@ -702,19 +708,15 @@ pub fn compile_analyze_request(
             // Super mode owns placement. Manual choices remain persisted in
             // AppConfig and become active again when the mode is disabled,
             // but they are deliberately absent from this exact request.
-            requested_backend: if intent.turbo_acceleration {
-                None
-            } else {
-                match intent.compute_backend.as_deref() {
-                    None | Some("auto") => None,
-                    Some(configured) => {
-                        Some(NativeBackendWire::parse_setting(configured).ok_or_else(|| {
-                            format!("unsupported analysis compute backend: {configured}")
-                        })?)
-                    }
-                }
+            requested_backend: match routing {
+                _ if intent.turbo_acceleration => None,
+                crate::ComputeBackend::Ggml => Some(NativeBackendWire::Ggml),
+                crate::ComputeBackend::LibtorchXpu => Some(NativeBackendWire::LibtorchXpu),
+                crate::ComputeBackend::Custom => None,
             },
-            model_backend_overrides: if intent.turbo_acceleration {
+            // A global backend routes every model; saved per-model choices
+            // stay persisted and apply only in Custom routing.
+            model_backend_overrides: if intent.turbo_acceleration || !per_model_routing {
                 BTreeMap::new()
             } else {
                 intent
@@ -745,7 +747,7 @@ pub fn compile_analyze_request(
                     }
                 }
             },
-            model_device_overrides: if intent.turbo_acceleration {
+            model_device_overrides: if intent.turbo_acceleration || !per_model_routing {
                 BTreeMap::new()
             } else {
                 intent

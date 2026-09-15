@@ -219,14 +219,13 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
                             };
                         }
                         SettingsSelectKind::ComputeBackend => {
-                            // "auto" keeps each model's Runtime Manager-pinned route;
-                            // an explicit backend applies to every model without a
-                            // per-model override and never falls back.
-                            proposed.compute_backend = Some(match value.as_str() {
-                                "ggml" | "ggml_vulkan" | "vulkan" => "ggml".to_string(),
-                                "libtorch_xpu" => "libtorch_xpu".to_string(),
-                                _ => "auto".to_string(),
-                            });
+                            // A backend routes every model; Custom applies the
+                            // saved per-model choices. Neither falls back.
+                            proposed.compute_backend = Some(
+                                app_core::ComputeBackend::from_setting(Some(value))
+                                    .as_str()
+                                    .to_string(),
+                            );
                         }
                     },
                     AppConfig::save,
@@ -238,10 +237,15 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
                     )),
                     Ok(()) => Some(match kind {
                         SettingsSelectKind::UiLanguage => "Interface language updated.".to_string(),
-                        SettingsSelectKind::ComputeBackend => format!(
-                            "Compute backend set to {}. It applies to future analysis requests; per-model runtime choices below take precedence, and an unavailable backend fails in Plan Preview without fallback.",
-                            settings_select_label(*kind, value)
-                        ),
+                        SettingsSelectKind::ComputeBackend => {
+                            match app_core::ComputeBackend::from_setting(Some(value)) {
+                                app_core::ComputeBackend::Custom => "Custom routing selected. Each model uses its own device and runtime choice below for future analysis requests.".to_string(),
+                                _ => format!(
+                                    "Every model now uses {} for future analysis requests. Saved per-model choices stay inactive until Custom is selected; an unavailable backend fails in Plan Preview without fallback.",
+                                    settings_select_label(*kind, value)
+                                ),
+                            }
+                        }
                         _ => localized_message(
                             &studio.shell.config,
                             UiMessage::AnalysisEngineSelected,
@@ -329,9 +333,7 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
         }
         UiCommand::Settings(SettingsCommand::SetModelBackend(model_id, backend)) => {
             studio.dialogs.open_model_runtime_select = None;
-            let valid = backend
-                .as_deref()
-                .is_none_or(|backend| matches!(backend, "ggml" | "libtorch_xpu"));
+            let valid = matches!(backend.as_str(), "ggml" | "libtorch_xpu");
             if studio.shell.config.turbo_acceleration.unwrap_or(false) {
                 studio.shell.notice = Some(
                     "Super acceleration owns per-model routing. The saved manual backend was not changed."
@@ -342,15 +344,10 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
             } else {
                 let result = save_config_change(
                     &mut studio.shell.config,
-                    |proposed| match backend {
-                        Some(backend) => {
-                            proposed
-                                .model_backend_overrides
-                                .insert(model_id.clone(), backend.clone());
-                        }
-                        None => {
-                            proposed.model_backend_overrides.remove(model_id);
-                        }
+                    |proposed| {
+                        proposed
+                            .model_backend_overrides
+                            .insert(model_id.clone(), backend.clone());
                     },
                     AppConfig::save,
                 );

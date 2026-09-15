@@ -466,13 +466,9 @@ fn request_compiler_forwards_the_explicit_libtorch_xpu_selection() {
         request.execution_policy.requested_backend,
         Some(NativeBackendWire::LibtorchXpu)
     );
-    assert_eq!(
-        request
-            .execution_policy
-            .model_backend_overrides
-            .get("rmvpe"),
-        Some(&NativeBackendWire::Ggml)
-    );
+    // A global backend routes every model: the saved rmvpe choice stays
+    // persisted but is not sent until Custom routing is selected.
+    assert!(request.execution_policy.model_backend_overrides.is_empty());
     assert_eq!(
         serde_json::to_value(&request.execution_policy).unwrap()["requested_backend"],
         "libtorch_xpu"
@@ -521,7 +517,7 @@ fn request_compiler_preserves_per_model_backend_choices() {
             lyrics: StudioLyricsContext::default(),
             target_override: Some(AnalysisDefaultTarget::Instrumental),
             requested_outputs: None,
-            compute_backend: None,
+            compute_backend: Some("custom".to_string()),
             model_backend_overrides: BTreeMap::from([
                 (
                     "bs_roformer_leap_xe90_vocals".to_string(),

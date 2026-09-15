@@ -1934,8 +1934,6 @@
   "Refresh runtime status after installing the packaged Runtime Manager.": "安装打包的运行时管理器后，重新检查运行时状态。",
   "Model backend capabilities unavailable": "无法获取模型后端能力",
   "DEVICE": "设备",
-  "Default · {default}": "默认 · {default}",
-  "Default · {}": "默认 · {}",
   "Available runtimes · {capabilities}": "可用运行时 · {capabilities}",
   "Model ID · {}": "模型 ID · {}",
   "Status · {}": "状态 · {}",
@@ -2092,13 +2090,10 @@
   "Rerun": "重新运行",
   "Completed successfully · outputs and run history are retained until you rerun or delete this entry": "运行已成功完成 · 输出和运行历史会保留，直到你重新运行或删除此记录",
   "Compute backend": "计算后端",
-  "Native runtime for every model that has no per-model runtime choice below. GGML Vulkan is the pinned default; LibTorch XPU runs the same models natively on the Intel Arc GPU and needs the installed LibTorch XPU runtime. A selected backend never falls back to the other.": "用于下方没有单独运行时选择的所有模型的原生运行时。GGML Vulkan 是固定默认值；LibTorch XPU 在 Intel Arc GPU 上原生运行相同模型，需要已安装的 LibTorch XPU 运行时。所选后端不会回退到另一个后端。",
-  "Pinned default (GGML Vulkan)": "固定默认（GGML Vulkan）",
   "GGML Vulkan": "GGML Vulkan",
   "LibTorch XPU": "LibTorch XPU",
   "Native library not installed": "原生库未安装",
   "LibTorch XPU runs on the discrete Intel GPU only; CPU and iGPU selections fail instead of falling back.": "LibTorch XPU 仅在独立 Intel GPU 上运行；选择 CPU 或 iGPU 会直接失败，不会回退。",
-  "Compute backend set to {}. It applies to future analysis requests; per-model runtime choices below take precedence, and an unavailable backend fails in Plan Preview without fallback.": "计算后端已设为 {}。它适用于之后的分析请求；下方的每模型运行时选择优先，不可用的后端会在计划预览中直接失败，不会回退。",
   "osu!lazer": "osu!lazer",
   "Export to a Studio-managed hand-off folder and open it with the installed osu!lazer.": "导出到 Uta! Studio 管理的中转文件夹，并用已安装的 osu!lazer 打开。",
   "Export to osu!lazer": "导出到 osu!lazer",
@@ -2133,5 +2128,9 @@
   "Every model of the selected level is already installed.": "所选级别的模型均已安装。",
   "{} of {} models could not be installed: {}": "{} 个模型（共 {} 个）安装失败：{}",
   "Complete set": "完整",
-  "Reopen the first-run guide and choose a level: Standard, High quality, or Complete set. Nothing downloads until you confirm a level.": "重新打开首次运行向导并选择级别：标准、高质量或完整。确认级别前不会下载任何内容。"
+  "Reopen the first-run guide and choose a level: Standard, High quality, or Complete set. Nothing downloads until you confirm a level.": "重新打开首次运行向导并选择级别：标准、高质量或完整。确认级别前不会下载任何内容。",
+  "Every model uses the selected runtime. Choose Custom to set each installed model's device and runtime. These controls do not select workflow outputs.": "所有模型都使用所选运行时。选择“自定义”可为每个已安装模型单独设置设备和运行时。这些控件不会选择工作流输出。",
+  "GGML Vulkan or LibTorch XPU runs every model on that runtime; Custom shows each model's own device and runtime choice. GGML Vulkan is the pinned default, and LibTorch XPU runs the same models natively on the Intel Arc GPU with the installed LibTorch XPU runtime. A selected backend never falls back to the other.": "选择 GGML Vulkan 或 LibTorch XPU 时，所有模型都在该运行时上运行；“自定义”会显示每个模型各自的设备和运行时选择。GGML Vulkan 是固定默认值；LibTorch XPU 需已安装 LibTorch XPU 运行时，在 Intel Arc GPU 上原生运行相同的模型。所选后端绝不会回退到另一个。",
+  "Custom routing selected. Each model uses its own device and runtime choice below for future analysis requests.": "已选择自定义路由。之后的分析请求中，每个模型将使用下方各自的设备和运行时选择。",
+  "Every model now uses {} for future analysis requests. Saved per-model choices stay inactive until Custom is selected; an unavailable backend fails in Plan Preview without fallback.": "之后的分析请求中，所有模型都将使用 {}。已保存的逐模型设置在选择“自定义”之前不会生效；不可用的后端会在计划预览中直接失败，不会回退。"
 }

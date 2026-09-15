@@ -40,6 +40,9 @@ pub(crate) fn spawn_model_settings(
     );
 
     let automatic_routing = session.config.turbo_acceleration.unwrap_or(false);
+    let custom_routing =
+        app_core::ComputeBackend::from_setting(session.config.compute_backend.as_deref())
+            == app_core::ComputeBackend::Custom;
     spawn_settings_group(
         parent,
         font.clone(),
@@ -47,8 +50,10 @@ pub(crate) fn spawn_model_settings(
         "MODEL RUNTIME ROUTING",
         if automatic_routing {
             "Super acceleration owns backend and device placement for future requests. Saved manual choices remain unchanged and return when Super acceleration is turned off."
-        } else {
+        } else if custom_routing {
             "Choose a device and Runtime Manager route per installed model. These controls do not select workflow outputs."
+        } else {
+            "Every model uses the selected runtime. Choose Custom to set each installed model's device and runtime. These controls do not select workflow outputs."
         },
         |group| {
             spawn_select_setting_row_enabled(
@@ -60,7 +65,7 @@ pub(crate) fn spawn_model_settings(
                 if automatic_routing {
                     "Automatic scheduling is active. The Engine assigns each complete model to one GPU from measured model/device costs and dependency readiness; it never splits a model across GPUs or falls back to CPU."
                 } else {
-                    "Native runtime for every model that has no per-model runtime choice below. GGML Vulkan is the pinned default; LibTorch XPU runs the same models natively on the Intel Arc GPU and needs the installed LibTorch XPU runtime. A selected backend never falls back to the other."
+                    "GGML Vulkan or LibTorch XPU runs every model on that runtime; Custom shows each model's own device and runtime choice. GGML Vulkan is the pinned default, and LibTorch XPU runs the same models natively on the Intel Arc GPU with the installed LibTorch XPU runtime. A selected backend never falls back to the other."
                 },
                 SettingsSelectKind::ComputeBackend,
                 session,
@@ -75,7 +80,8 @@ pub(crate) fn spawn_model_settings(
                 automatic_routing,
                 UiAction::from(SettingsCommand::ToggleTurboAcceleration),
             );
-            if let Some(snapshot) = session.model_settings_job.current.as_ref() {
+            // Per-model routing stays hidden and inactive until Custom.
+            if custom_routing && let Some(snapshot) = session.model_settings_job.current.as_ref() {
                 spawn_model_backend_settings(
                     group,
                     font.clone(),
@@ -85,7 +91,7 @@ pub(crate) fn spawn_model_settings(
                     &snapshot.runtime_models,
                     session.open_model_runtime_select.as_deref(),
                 );
-            } else {
+            } else if custom_routing {
                 let (title, description) = if session.model_settings_job.receiver.is_some() {
                     (
                 "Reading model parameters…",
@@ -463,13 +469,11 @@ fn selected_runtime_label(
     {
         return backend_label(capability.backend).to_string();
     }
-    format!(
-        "Default · {}",
-        model
-            .selected_backend
-            .map(backend_label)
-            .unwrap_or("Unresolved")
-    )
+    model
+        .selected_backend
+        .map(backend_label)
+        .unwrap_or("Unresolved")
+        .to_string()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -832,22 +836,8 @@ fn spawn_runtime_options(
             ZIndex(61),
         ))
         .with_children(|menu| {
-            let default = model
-                .selected_backend
-                .map(backend_label)
-                .unwrap_or("Unresolved");
-            spawn_runtime_option(
-                menu,
-                font.clone(),
-                icons.clone(),
-                theme,
-                format!("Default · {default}"),
-                selected.is_none(),
-                UiAction::from(SettingsCommand::SetModelBackend(
-                    model.model_id.clone(),
-                    None,
-                )),
-            );
+            // Without a saved choice the model runs its pinned route.
+            let pinned = model.selected_backend.map(backend_value);
             for capability in model.backends.iter().filter(|capability| {
                 capability.validation != app_core::RuntimeValidationPresentation::Unsupported
             }) {
@@ -862,10 +852,10 @@ fn spawn_runtime_options(
                         backend_label(capability.backend),
                         validation_label(capability.validation)
                     ),
-                    selected == Some(value),
+                    selected.or(pinned) == Some(value),
                     UiAction::from(SettingsCommand::SetModelBackend(
                         model.model_id.clone(),
-                        Some(value.to_string()),
+                        value.to_string(),
                     )),
                 );
             }

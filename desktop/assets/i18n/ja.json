@@ -1934,8 +1934,6 @@
   "Refresh runtime status after installing the packaged Runtime Manager.": "同梱の Runtime Manager をインストールした後、ランタイム状態を再確認してください。",
   "Model backend capabilities unavailable": "モデルバックエンドの機能を取得できません",
   "DEVICE": "デバイス",
-  "Default · {default}": "既定 · {default}",
-  "Default · {}": "既定 · {}",
   "Available runtimes · {capabilities}": "利用可能なランタイム · {capabilities}",
   "Model ID · {}": "モデル ID · {}",
   "Status · {}": "状態 · {}",
@@ -2092,13 +2090,10 @@
   "Rerun": "再実行",
   "Completed successfully · outputs and run history are retained until you rerun or delete this entry": "正常に完了しました · 出力と実行履歴は、再実行またはこの記録を削除するまで保持されます",
   "Compute backend": "計算バックエンド",
-  "Native runtime for every model that has no per-model runtime choice below. GGML Vulkan is the pinned default; LibTorch XPU runs the same models natively on the Intel Arc GPU and needs the installed LibTorch XPU runtime. A selected backend never falls back to the other.": "下でモデル別のランタイムを選んでいないすべてのモデルに使うネイティブランタイムです。GGML Vulkan が固定の既定値で、LibTorch XPU は同じモデルを Intel Arc GPU 上でネイティブに実行し、インストール済みの LibTorch XPU ランタイムが必要です。選択したバックエンドが別のバックエンドにフォールバックすることはありません。",
-  "Pinned default (GGML Vulkan)": "固定の既定値（GGML Vulkan）",
   "GGML Vulkan": "GGML Vulkan",
   "LibTorch XPU": "LibTorch XPU",
   "Native library not installed": "ネイティブライブラリ未インストール",
   "LibTorch XPU runs on the discrete Intel GPU only; CPU and iGPU selections fail instead of falling back.": "LibTorch XPU は外付け Intel GPU でのみ動作します。CPU や iGPU を選ぶとフォールバックせずに失敗します。",
-  "Compute backend set to {}. It applies to future analysis requests; per-model runtime choices below take precedence, and an unavailable backend fails in Plan Preview without fallback.": "計算バックエンドを {} に設定しました。今後の解析リクエストに適用されます。下のモデル別ランタイム選択が優先され、利用できないバックエンドはフォールバックせずにプラン確認で失敗します。",
   "osu!lazer": "osu!lazer",
   "Export to a Studio-managed hand-off folder and open it with the installed osu!lazer.": "Studio 管理のハンドオフフォルダにエクスポートし、インストール済みの osu!lazer で開きます。",
   "Export to osu!lazer": "osu!lazer にエクスポート",
@@ -2133,5 +2128,9 @@
   "Every model of the selected level is already installed.": "選択したレベルのモデルはすべてインストール済みです。",
   "{} of {} models could not be installed: {}": "{} 個のモデル（全 {} 個）をインストールできませんでした：{}",
   "Complete set": "フルセット",
-  "Reopen the first-run guide and choose a level: Standard, High quality, or Complete set. Nothing downloads until you confirm a level.": "初回ガイドを再度開き、標準・高品質・完全からレベルを選びます。レベルを確定するまで何もダウンロードされません。"
+  "Reopen the first-run guide and choose a level: Standard, High quality, or Complete set. Nothing downloads until you confirm a level.": "初回ガイドを再度開き、標準・高品質・完全からレベルを選びます。レベルを確定するまで何もダウンロードされません。",
+  "Every model uses the selected runtime. Choose Custom to set each installed model's device and runtime. These controls do not select workflow outputs.": "すべてのモデルが選択したランタイムを使用します。「カスタム」を選ぶと、インストール済みの各モデルのデバイスとランタイムを個別に設定できます。これらの設定はワークフローの出力を選択しません。",
+  "GGML Vulkan or LibTorch XPU runs every model on that runtime; Custom shows each model's own device and runtime choice. GGML Vulkan is the pinned default, and LibTorch XPU runs the same models natively on the Intel Arc GPU with the installed LibTorch XPU runtime. A selected backend never falls back to the other.": "GGML Vulkan または LibTorch XPU を選ぶと、すべてのモデルがそのランタイムで動作します。「カスタム」では各モデルのデバイスとランタイムを個別に選べます。GGML Vulkan が固定の既定値で、LibTorch XPU はインストール済みの LibTorch XPU ランタイムにより Intel Arc GPU 上で同じモデルをネイティブ実行します。選択したバックエンドが他方へフォールバックすることはありません。",
+  "Custom routing selected. Each model uses its own device and runtime choice below for future analysis requests.": "カスタムルーティングを選択しました。今後の解析リクエストでは、各モデルが下の個別のデバイスとランタイム設定を使用します。",
+  "Every model now uses {} for future analysis requests. Saved per-model choices stay inactive until Custom is selected; an unavailable backend fails in Plan Preview without fallback.": "今後の解析リクエストでは、すべてのモデルが {} を使用します。保存済みのモデル別設定は「カスタム」を選ぶまで無効です。利用できないバックエンドはフォールバックせずプラン プレビューで失敗します。"
 }

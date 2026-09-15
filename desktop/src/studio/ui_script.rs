@@ -609,7 +609,7 @@ fn parse_settings(name: &str, arguments: &serde_json::Value) -> Result<SettingsC
         }
         "set_model_backend" => SettingsCommand::SetModelBackend(
             text(arguments, "model_id")?,
-            optional_text(arguments, "backend")?,
+            text(arguments, "backend")?,
         ),
         "set_model_device" => SettingsCommand::SetModelDevice(
             text(arguments, "model_id")?,
@@ -1056,15 +1056,15 @@ mod tests {
             ),
             UiCommand::Settings(SettingsCommand::SetModelBackend(
                 "rmvpe".to_string(),
-                Some("libtorch_xpu".to_string())
+                "libtorch_xpu".to_string()
             ))
         );
-        assert_eq!(
-            parse(
+        assert!(
+            parse_ui_command(
                 "ui.settings.set_model_backend",
-                serde_json::json!({"model_id": "rmvpe", "backend": null})
-            ),
-            UiCommand::Settings(SettingsCommand::SetModelBackend("rmvpe".to_string(), None))
+                &serde_json::json!({"model_id": "rmvpe", "backend": null})
+            )
+            .is_err()
         );
     }
 

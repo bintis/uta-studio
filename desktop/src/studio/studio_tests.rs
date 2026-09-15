@@ -238,7 +238,7 @@ mod tests {
     }
 
     #[test]
-    fn setup_request_treats_unrecognized_backend_strings_as_auto() {
+    fn setup_request_treats_unrecognized_backend_strings_as_the_pinned_ggml_route() {
         let config = AppConfig {
             compute_backend: Some("intel".to_string()),
             ..AppConfig::default()
@@ -250,7 +250,7 @@ mod tests {
                 tier: None,
             },
         );
-        assert_eq!(folders.compute_backend, app_core::ComputeBackend::Auto);
+        assert_eq!(folders.compute_backend, app_core::ComputeBackend::Ggml);
     }
 
     #[test]
