@@ -1195,3 +1195,29 @@ real-song quality measurement, listening, Windows, installed executable replacem
 ## Operation provenance
 
 Per the user's 2026-09-07 direction, each independent change and subsequent execution is committed and recorded with `tools/record-operation.py`. A missing completion record means unknown outcome. See `docs/ROFORMER_OPERATION_RECORDING.md`.
+
+## Qwen XPU power-off follow-up — unverified source candidate (2026-09-15)
+
+Latest inspected production evidence reaches Qwen ASR **strict XPU** decoder layer
+zero, with QKV/cache completion followed by `decoder.attention_tile` await at
+16:55:45.462 JST. The actual native library reports source `bc587e29` plus dirty
+changes; this is not solely a stale-worker/build mismatch. Nearby integrated-GPU
+FCPE progress and buffered-detail tail loss prevent attribution to one operator
+or an exact power-off instant. No prior-boot kernel evidence was obtained.
+
+Candidate `a7dd3508` replaces only Qwen strict XPU attention's repeated GQA cache
+and broadcasted matmul chain with per-physical-KV-head FP32 matrix contractions,
+explicit operator completion and durable operator diagnostics. Complete causal
+and acoustic-window context, masks, precision, cancellation and error propagation
+are retained by design; no backend substitution, retry or CPU fallback was added.
+The CPU-only Qwen check now invokes this production helper against independent
+double references and covers spare-cache poisoning, strided views, masks, tails,
+output ownership and completion failures. **New C++ checks are not compiled or
+executed.** Source whitespace and canonical product identity checks passed;
+no model/GPU execution, installation or settings changes occurred in this task.
+
+Next: the user's rebuild must include the native `libuta_libtorch.so`, not only
+the Rust worker; CPU oracle execution and actual stability verification remain.
+`integration_ready`/`production_ready` are unchanged. Full evidence, source
+analysis, operation receipts and uncertainty are in
+[the current LibTorch incident record](../../docs/design/runtime/LIBTORCH_EXECUTION.md#qwen-xpu-power-off-follow-up--code-candidate-not-stability-acceptance-2026-09-15).

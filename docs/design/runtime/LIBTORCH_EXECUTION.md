@@ -1,5 +1,65 @@
 # Native LibTorch execution alongside GGML
 
+## Qwen XPU power-off follow-up — code candidate, not stability acceptance (2026-09-15)
+
+The latest inspected production journal is
+`/home/bintis/Documents/uta-studio/analysis-logs/native-17286-1789458937411542550.jsonl`.
+It identifies `qwen3_asr_1_7b`, `libtorch_xpu`, device 0, **strict** precision,
+LibTorch 2.13.0, native source `bc587e2985b3fcf975073d0ba28fc5b9e67e0249` with
+`native_source_dirty=true`, and boot `e1cfd8ba-500c-40b8-8c15-95a96b703d77`.
+Thus this incident did load a newly rebuilt native library; the commit alone does
+not reconstruct its dirty source. Weight upload, encoding, decoder positioning,
+layer-zero QKV and the cache completion are recorded. Its last retained event is
+`qwen_stage_await / decoder.attention_tile` at **2026-09-15 16:55:45.462 JST**.
+The companion engine log still records integrated-GPU Vulkan FCPE progress at
+16:55:45.587 JST. Neither timestamp is an established power-off time or proof
+that Qwen, FCPE, a particular kernel, or concurrent work caused the power loss.
+The journal explicitly allows loss of an unfocused buffered detail tail. A
+read-only kernel-journal tool request was blocked; no prior-boot kernel evidence
+was obtained or elevated access attempted in this follow-up.
+
+Source inspection found that the strict Qwen branch still called generic
+`dense_attention`: repeat the visible KV heads for GQA, then submit a chain of
+four-dimensional matmul/softmax/value operations before the outer tile wait.
+The existing Qwen CPU check tested partitioning with a double reference callback,
+not the actual production strict implementation. These are concrete execution
+and coverage differences, **not an established driver defect or hardware cause**.
+
+Candidate **`a7dd3508`** replaces only Qwen's strict XPU attention with
+`native/qwen_strict_attention.hpp`: pack one physical KV head, flatten its query
+heads into matrix rows, and use explicit two-dimensional FP32 `mm` contractions.
+It preserves complete visible keys, absolute causal/window masks, grouped-head
+mapping, all-masked-row zero behavior and independent output storage. The 16 MiB
+score scheduling target changes query work units, never accepted context; at
+least one complete key row is retained. Packing, scores, softmax and output-copy
+completion are explicit while their results are alive, including cancellation
+and error propagation. No retry, half-precision substitution, CPU fallback,
+backend/configuration change or model-store mutation was added.
+
+Native `attention_operator_begin/await/complete` boundaries carry shape, cache
+stride and group/row details through the existing journal callback. Unlike
+buffered `qwen_*` progress, these boundaries use its durable path. This adds
+synchronization and diagnostic I/O; throughput is **not measured**. Persistence
+attempts still cannot guarantee a complete record through physical power loss.
+API semantics were cross-checked against PyTorch's primary documentation for
+[non-broadcasting mm](https://docs.pytorch.org/docs/2.14/generated/torch.mm.html)
+and [GQA/mask semantics](https://docs.pytorch.org/docs/2.14/generated/torch.nn.functional.scaled_dot_product_attention.html);
+these references do not establish the cause of this machine's failure.
+
+The existing CPU-only `uta-libtorch-qwen-attention-check` now invokes the actual
+helper inside window/cache tests and includes independent full-context double
+oracles, poisoned spare cache capacity, nonunit strides/offsets, multi-head
+boolean/additive masks, single-token/tail cases, output ownership, cancellation
+and injected completion failures. **These new C++ tests have not been compiled
+or executed**, per the user's code-only / user-build-and-test scope. Executed:
+source diff whitespace check and canonical product identity scan, both passed
+(operation `20260915T081403-ef0b7b48f864`). Implementation intent:
+`20260915T080421-d8e29093b6cc`; source commit operation:
+`20260915T081308-85c1b3ee4ef5`. No inference, GPU test, installation, power/driver
+setting change, or stability/readiness promotion occurred. Next verification
+belongs to the user's native-library rebuild and controlled testing; rebuilding
+only the Rust worker cannot validate this C++ change.
+
 ## Scope and status
 
 Authorized on 2026-09-10: implement independent native LibTorch execution for all seventeen current catalog resources, retaining GGML as a separate backend. This authorization supersedes the former single-GGML model-computation restriction for this work only. Native-only inference, the Studio/Analysis Engine/Runtime Manager process boundaries, read-only source media, and explicit device selection remain unchanged.
