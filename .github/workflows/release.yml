@@ -470,6 +470,9 @@ jobs:
           %files
           %license %{_licensedir}/uta-studio/*
           %{_bindir}/uta-studio
+          %{_bindir}/uta-analyze
+          %{_bindir}/uta-runtime
+          %{_bindir}/uta-ggml-worker
           %{_libexecdir}/uta-studio/
           %{_datadir}/uta-studio/
           %{_datadir}/applications/uta-studio.desktop
