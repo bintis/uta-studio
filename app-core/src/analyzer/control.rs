@@ -52,15 +52,26 @@ pub(crate) fn create_analysis_log(file_hash: &str, started_at_ms: i64) -> Option
         .append(true)
         .open(&path)
         .ok()?;
-    use std::io::Write as _;
     let record = serde_json::json!({
         "timestamp_ms": unix_time_ms(),
         "record_type": "run_requested",
         "run_id": run_id,
         "file_hash": file_hash,
     });
-    let _ = serde_json::to_writer(&mut file, &record);
-    let _ = writeln!(file);
+    let result = write_analysis_record(&mut file, &record).and_then(|_| {
+        #[cfg(unix)]
+        {
+            std::fs::File::open(&root)?.sync_all()?;
+            if let Some(parent) = root.parent() {
+                std::fs::File::open(parent)?.sync_all()?;
+            }
+        }
+        Ok(())
+    });
+    if let Err(error) = result {
+        tracing::warn!(path = %path.display(), %error, "Could not persist analysis run intent");
+        return None;
+    }
     Some(path)
 }
 
@@ -71,47 +82,63 @@ pub(crate) fn append_analysis_lifecycle_log(
     let Some(path) = path else {
         return;
     };
-    if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(path) {
-        use std::io::Write as _;
-        let mut record = serde_json::to_value(event).unwrap_or_default();
-        record["record_type"] = serde_json::json!("engine_lifecycle");
-        let _ = serde_json::to_writer(&mut file, &record);
-        let _ = writeln!(file);
-    }
+    let mut record = serde_json::to_value(event).unwrap_or_default();
+    record["record_type"] = serde_json::json!("engine_lifecycle");
+    append_analysis_record(path, &record);
 }
 
 pub(crate) fn append_analysis_log_path(path: Option<&Path>, message: &str) {
     let Some(path) = path else {
         return;
     };
-    if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(path) {
-        use std::io::Write as _;
-        let record = serde_json::json!({
-            "timestamp_ms": unix_time_ms(),
-            "record_type": "engine_event",
-            "message": message,
-        });
-        let _ = serde_json::to_writer(&mut file, &record);
-        let _ = writeln!(file);
-    }
+    let record = serde_json::json!({
+        "timestamp_ms": unix_time_ms(),
+        "record_type": "engine_event",
+        "message": message,
+    });
+    append_analysis_record(path, &record);
 }
 
 fn append_analysis_log_terminal(path: Option<&Path>, status: &str, message: Option<&str>) {
     let Some(path) = path else {
         return;
     };
-    if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(path) {
-        use std::io::Write as _;
-        let record = serde_json::json!({
-            "timestamp_ms": unix_time_ms(),
-            "record_type": "history_terminal",
-            "status": status,
-            "message": message,
-        });
-        let _ = serde_json::to_writer(&mut file, &record);
-        let _ = writeln!(file);
+    let record = serde_json::json!({
+        "timestamp_ms": unix_time_ms(),
+        "record_type": "history_terminal",
+        "status": status,
+        "message": message,
+    });
+    append_analysis_record(path, &record);
+}
+
+fn write_analysis_record(
+    file: &mut std::fs::File,
+    record: &serde_json::Value,
+) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let mut bytes = serde_json::to_vec(record).map_err(std::io::Error::other)?;
+    bytes.push(b'\n');
+    file.write_all(&bytes)?;
+    // Closing a File (or flushing a pipe) does not commit its data to storage.
+    // These low-volume lifecycle records must survive independently of the
+    // desktop's asynchronous debug snapshot. No filesystem error is success.
+    file.sync_data()
+}
+
+fn append_analysis_record(path: &Path, record: &serde_json::Value) {
+    let result = std::fs::OpenOptions::new()
+        .append(true)
+        .open(path)
+        .and_then(|mut file| write_analysis_record(&mut file, record));
+    if let Err(error) = result {
+        tracing::warn!(path = %path.display(), %error, "Could not persist analysis lifecycle record");
     }
 }
+
+#[cfg(test)]
+#[path = "control/log_tests.rs"]
+mod log_tests;
 
 pub fn analysis_log_path_for(run_id: Option<i64>, file_hash: &str) -> Option<PathBuf> {
     if let Some(run_id) = run_id {
