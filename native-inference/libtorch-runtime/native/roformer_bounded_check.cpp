@@ -173,6 +173,53 @@ void failures_stop_submission() {
     require(cancelled && completed == 1, "cancellation did not stop between tiles");
 }
 
+void row_tiles_are_views_not_full_chunk_copies() {
+    auto base = fixture({2, 3, 7, 34}, 0.4);
+    for (const auto& input : std::vector<at::Tensor>{
+             base.select(0, 0).select(0, 0).slice(-1, 0, 34, 2),
+             base.select(0, 0).transpose(0, 1).slice(-1, 0, 34, 2),
+             base.transpose(0, 2).slice(-1, 0, 34, 2),
+             base.contiguous(), base.narrow(1, 0, 0)}) {
+        const auto rows = input.numel() / input.size(-1);
+        // The independent oracle may pack; the production traversal must not.
+        auto expected = input.reshape({rows, input.size(-1)});
+        int64_t completed = 0;
+        uta::torch_native::for_roformer_row_tiles(input, 5,
+            [&](const at::Tensor& tile, int64_t start, int64_t count) {
+                require(tile.is_alias_of(input), "row traversal copied storage before tiling");
+                require(start == completed && count > 0 && count <= 5, "row traversal lost its bound or order");
+                require(at::equal(tile, expected.narrow(0, start, count)), "transposed row traversal changed logical order");
+                completed += count;
+            });
+        require(completed == rows, "row traversal lost a leading axis or empty/tail case");
+    }
+}
+
+void repeated_attention_preserves_prior_results() {
+    // Exercise the fourth call and return to an earlier shape. Retain all
+    // outputs so accidental scratch reuse would corrupt a previous result.
+    // This is an operator ownership oracle, not a simulated GPU power loss.
+    std::vector<at::Tensor> results, expected_results;
+    int64_t pass = 0;
+    for (const int64_t rows : {65, 65, 129, 63, 65}) {
+        auto query = fixture({2, rows, 3, 8}, 0.3 + pass).transpose(1, 2);
+        auto key = fixture({2, rows, 3, 8}, 0.7 + pass).transpose(1, 2);
+        auto value = fixture({2, rows, 3, 8}, 1.1 + pass).transpose(1, 2);
+        const double scale = 1.0 / std::sqrt(8.0);
+        auto expected = at::matmul(at::softmax(
+            at::matmul(query.to(at::kDouble), key.to(at::kDouble).transpose(-1, -2)) * scale, -1),
+            value.to(at::kDouble));
+        auto actual = uta::torch_native::bounded_roformer_strict_attention(query, key, value, scale,
+            [] {}, [](const char*, int64_t, int64_t) {});
+        require(!actual.is_alias_of(query) && !actual.is_alias_of(key) && !actual.is_alias_of(value),
+                "attention output aliases a caller input");
+        results.push_back(actual);
+        expected_results.push_back(expected);
+        for (std::size_t index = 0; index < results.size(); ++index) compare(results[index], expected_results[index]);
+        ++pass;
+    }
+}
+
 void production_workspace_geometry() {
     constexpr int64_t maximum_scores = 4 * 1024 * 1024;
     // Check the full production axis sizes without allocating/running a full
@@ -202,6 +249,8 @@ int main() {
         }
         negative_infinity_row_keeps_zero_output();
         failures_stop_submission();
+        row_tiles_are_views_not_full_chunk_copies();
+        repeated_attention_preserves_prior_results();
         production_workspace_geometry();
         std::cout << "Bounded RoFormer FP32, layout, complete-context, tail and completion checks passed (CPU oracle only)\n";
         return 0;
