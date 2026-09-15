@@ -6,6 +6,7 @@
 #[allow(dead_code)]
 #[path = "../../ggml-runtime/src/acceleration.rs"]
 pub mod acceleration;
+mod diagnostics;
 mod ffi;
 pub mod firered;
 pub mod game;
@@ -102,10 +103,21 @@ impl Library {
                 path.display()
             ));
         }
-        let api = Arc::new(ffi::Api::load(path)?);
+        diagnostics::record("library_load_begin", &path.to_string_lossy());
+        let api = Arc::new(ffi::Api::load(path).map_err(|error| {
+            diagnostics::record("library_load_failed", &error);
+            error
+        })?);
+        // SAFETY: a process-lifetime callback; it does not call back into this
+        // library or an accelerator, and it contains panics at the ABI boundary.
+        unsafe {
+            (api.set_diagnostic_callback)(Some(diagnostics::native_event));
+        }
+        diagnostics::record("library_load_complete", &path.to_string_lossy());
         // SAFETY: symbols were loaded with their declared ABI, and the API owns
         // the library while its immutable build-info string is copied.
         let description = unsafe { copy_text((api.build_info)(), "native build capabilities")? };
+        diagnostics::record("library_build", &description);
         let info: BuildInfo = serde_json::from_str(&description)
             .map_err(|error| format!("invalid LibTorch build capabilities: {error}"))?;
         Ok(Self {
@@ -149,6 +161,15 @@ impl Library {
             .to_str()
             .ok_or_else(|| "native model path is not UTF-8".to_string())?;
         let path = cstring(path)?;
+        diagnostics::record(
+            "model_request",
+            &format!(
+                "model={resource} backend={} device={device} precision={} path={}",
+                backend.name(),
+                precision.name(),
+                model_path.display()
+            ),
+        );
         // SAFETY: all C strings are valid for these synchronous calls. Both
         // native handles retain ownership independently of caller strings.
         unsafe {

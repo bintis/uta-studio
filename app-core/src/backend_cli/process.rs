@@ -94,9 +94,16 @@ fn native_command_with_debug(program: impl AsRef<OsStr>, debug: bool) -> Command
     let mut command = Command::new(program);
     if debug {
         command.env("UTA_STUDIO_DEBUG", "1");
+        // The native worker writes here before device/weight/compute calls.
+        // A desktop stderr mirror alone cannot preserve an abrupt host loss.
+        command.env(
+            "UTA_STUDIO_NATIVE_LOG_DIRECTORY",
+            crate::cache::uta_studio_dir().join("analysis-logs"),
+        );
     } else {
         // The persisted app setting owns future workers, not the parent's env.
         command.env_remove("UTA_STUDIO_DEBUG");
+        command.env_remove("UTA_STUDIO_NATIVE_LOG_DIRECTORY");
     }
     #[cfg(windows)]
     let command = {
@@ -210,12 +217,20 @@ mod tests {
         assert!(command.get_envs().any(|(key, value)| {
             key == OsStr::new("UTA_STUDIO_DEBUG") && value == Some(OsStr::new("1"))
         }));
+        let directory = crate::cache::uta_studio_dir().join("analysis-logs");
+        assert!(command.get_envs().any(|(key, value)| {
+            key == OsStr::new("UTA_STUDIO_NATIVE_LOG_DIRECTORY")
+                && value == Some(directory.as_os_str())
+        }));
         let command = native_command_with_debug("unused-backend", false);
         assert!(
             command
                 .get_envs()
                 .any(|(key, value)| { key == OsStr::new("UTA_STUDIO_DEBUG") && value.is_none() })
         );
+        assert!(command.get_envs().any(|(key, value)| {
+            key == OsStr::new("UTA_STUDIO_NATIVE_LOG_DIRECTORY") && value.is_none()
+        }));
     }
 
     #[test]

@@ -1,6 +1,7 @@
 #include "api.h"
 #include "runtime.hpp"
 #include "native_build.hpp"
+#include "diagnostics.hpp"
 #include <c10/core/DeviceGuard.h>
 #include <c10/core/InferenceMode.h>
 #include <chrono>
@@ -15,6 +16,7 @@ using uta::torch_native::Inputs;
 using uta::torch_native::Plan;
 using uta::torch_native::Runtime;
 using uta::torch_native::Weights;
+using uta::torch_native::diagnostic_event;
 
 struct UtaLibtorchRuntime { std::shared_ptr<Runtime> runtime; };
 struct UtaLibtorchModel {
@@ -39,6 +41,7 @@ void save_error() noexcept {
     try { throw; }
     catch (const std::exception& error) { try { error_text = error.what(); } catch (...) {} }
     catch (...) { try { error_text = "unknown native LibTorch exception"; } catch (...) {} }
+    diagnostic_event("native_error", error_text.c_str());
 }
 const char* required(const char* value, const char* description) {
     if (!value || !*value) throw std::invalid_argument(std::string("missing ") + description);
@@ -101,12 +104,14 @@ const char* uta_libtorch_last_error(void) noexcept { return error_text.c_str(); 
 UtaLibtorchRuntime* uta_libtorch_runtime_create(const char* backend, int device, const char* precision) noexcept {
     try {
         error_text.clear();
+        diagnostic_event("device_create_begin", required(backend, "native backend"));
         c10::InferenceMode inference;
         auto result = std::make_unique<UtaLibtorchRuntime>();
         std::cerr << "[uta-libtorch-lifecycle] stage=device_begin backend=" << required(backend, "native backend")
                   << " device=" << device << " precision=" << required(precision, "native precision") << std::endl;
         result->runtime = std::make_shared<Runtime>(required(backend, "native backend"), device, required(precision, "native precision"));
         std::cerr << "[uta-libtorch-lifecycle] stage=device_complete" << std::endl;
+        diagnostic_event("device_create_complete", backend);
         return result.release();
     } catch (...) { save_error(); return nullptr; }
 }
@@ -119,21 +124,29 @@ UtaLibtorchModel* uta_libtorch_model_open(UtaLibtorchRuntime* runtime, const cha
         if (!runtime || !runtime->runtime) throw std::invalid_argument("native runtime handle is null");
         const std::string model_resource = required(resource, "model resource");
         const std::string model_path = required(path, "GGUF path");
+        diagnostic_event("model_open_begin", model_resource.c_str());
         c10::InferenceMode inference;
         c10::DeviceGuard guard(runtime->runtime->device);
         std::cerr << "[uta-libtorch-lifecycle] stage=weights_begin model=" << model_resource << std::endl;
+        diagnostic_event("weights_load_begin", model_resource.c_str());
         auto weights = std::make_shared<Weights>(model_path, runtime->runtime->device,
             [&] { runtime->runtime->synchronize(); });
         std::cerr << "[uta-libtorch-lifecycle] stage=weights_complete model=" << model_resource << std::endl;
         auto result = std::make_unique<UtaLibtorchModel>();
         result->metadata = weights->container.metadata_json();
         result->plan = uta::torch_native::make_plan(model_resource, runtime->runtime, std::move(weights));
+        diagnostic_event("model_open_await", model_resource.c_str());
         runtime->runtime->synchronize();
+        diagnostic_event("model_open_complete", model_resource.c_str());
         return result.release();
     } catch (...) { save_error(); return nullptr; }
 }
 void uta_libtorch_model_free(UtaLibtorchModel* model) noexcept {
-    try { delete model; } catch (...) { save_error(); }
+    diagnostic_event("model_free_begin", "model and resident weights");
+    try {
+        delete model;
+        diagnostic_event("model_free_complete", "model and resident weights");
+    } catch (...) { save_error(); }
 }
 const char* uta_libtorch_model_metadata(const UtaLibtorchModel* model) noexcept {
     if (!model) return nullptr;
@@ -149,6 +162,7 @@ UtaLibtorchResult* uta_libtorch_model_forward(UtaLibtorchModel* model, const cha
         if (!model || !model->plan) throw std::invalid_argument("native model handle is null");
         if (input_count && !inputs) throw std::invalid_argument("native input array is null");
         required(operation, "native model operation");
+        diagnostic_event("forward_begin", operation);
         std::lock_guard lock(model->execution);
         auto& plan = *model->plan;
         c10::InferenceMode inference;
@@ -160,20 +174,24 @@ UtaLibtorchResult* uta_libtorch_model_forward(UtaLibtorchModel* model, const cha
         Inputs prepared;
         for (size_t index = 0; index < input_count; ++index) {
             const std::string name = required(inputs[index].name, "native tensor name");
+            diagnostic_event("input_copy_begin", name.c_str());
             if (!prepared.tensors.emplace(name, input_tensor(inputs[index], plan.runtime->device)).second)
                 throw std::invalid_argument("duplicate native tensor input: " + name);
         }
         plan.runtime->synchronize();
         result->timings.upload_seconds = seconds(begin);
+        diagnostic_event("input_copy_complete", operation);
         begin = Clock::now();
         const bool profile = plan.runtime->profile_submission;
         const auto cpu_begin = profile ? std::clock() : std::clock_t{};
+        diagnostic_event("compute_begin", operation);
         auto output = plan.forward(operation, prepared);
         const auto submitted = profile ? Clock::now() : Clock::time_point{};
         const auto cpu_submitted = profile ? std::clock() : std::clock_t{};
         plan.runtime->synchronize();
         const auto cpu_completed = profile ? std::clock() : std::clock_t{};
         result->timings.synchronized_compute_seconds = seconds(begin);
+        diagnostic_event("compute_complete", operation);
         if (profile) {
             const auto cpu_seconds = [](std::clock_t first, std::clock_t last) {
                 if (first == std::clock_t(-1) || last == std::clock_t(-1) || last < first)
@@ -194,6 +212,7 @@ UtaLibtorchResult* uta_libtorch_model_forward(UtaLibtorchModel* model, const cha
             result->tensors.push_back({name, copied, copied.sizes().vec()});
         }
         result->timings.readback_seconds = seconds(begin);
+        diagnostic_event("forward_complete", operation);
         return result.release();
     } catch (...) { save_error(); return nullptr; }
 }

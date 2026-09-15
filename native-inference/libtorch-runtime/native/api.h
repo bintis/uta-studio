@@ -37,6 +37,11 @@ typedef struct UtaLibtorchTimings {
 
 /* Read-only build capabilities; this does not initialize any accelerator. */
 UTA_LIBTORCH_EXPORT const char* uta_libtorch_build_info(void) UTA_LIBTORCH_NOEXCEPT;
+/* Process-lifetime diagnostic callback. Both strings are borrowed for the
+ * synchronous call. The callback must not throw, re-enter this library or call
+ * accelerator APIs. NULL disables it; it never controls model eligibility. */
+typedef void (*UtaLibtorchDiagnosticCallback)(const char* phase, const char* detail);
+UTA_LIBTORCH_EXPORT void uta_libtorch_set_diagnostic_callback(UtaLibtorchDiagnosticCallback callback) UTA_LIBTORCH_NOEXCEPT;
 UTA_LIBTORCH_EXPORT size_t uta_libtorch_tensor_layout_size(void) UTA_LIBTORCH_NOEXCEPT;
 /* Error text is thread-local and valid until the next call on that thread. */
 UTA_LIBTORCH_EXPORT const char* uta_libtorch_last_error(void) UTA_LIBTORCH_NOEXCEPT;

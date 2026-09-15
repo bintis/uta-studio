@@ -16,6 +16,8 @@ pub struct Tensor {
 }
 
 type BuildInfo = unsafe extern "C" fn() -> *const c_char;
+pub type DiagnosticCallback = unsafe extern "C" fn(*const c_char, *const c_char);
+type SetDiagnosticCallback = unsafe extern "C" fn(Option<DiagnosticCallback>);
 type LayoutSize = unsafe extern "C" fn() -> usize;
 type LastError = unsafe extern "C" fn() -> *const c_char;
 type RuntimeCreate = unsafe extern "C" fn(*const c_char, i32, *const c_char) -> *mut Runtime;
@@ -33,6 +35,7 @@ type ResultFree = unsafe extern "C" fn(*mut ResultHandle);
 
 pub struct Api {
     pub build_info: BuildInfo,
+    pub set_diagnostic_callback: SetDiagnosticCallback,
     last_error: LastError,
     pub runtime_create: RuntimeCreate,
     pub runtime_free: RuntimeFree,
@@ -46,7 +49,7 @@ pub struct Api {
     pub result_timings: ResultTimings,
     pub result_free: ResultFree,
     // Dropped after all call sites have released their Arc<Api> ownership.
-    _library: libloading::Library,
+    _library: Option<libloading::Library>,
 }
 impl Api {
     pub fn load(path: &Path) -> Result<Self, String> {
@@ -75,6 +78,7 @@ impl Api {
             }
             Ok(Self {
                 build_info: symbol!("build_info", BuildInfo),
+                set_diagnostic_callback: symbol!("set_diagnostic_callback", SetDiagnosticCallback),
                 last_error: symbol!("last_error", LastError),
                 runtime_create: symbol!("runtime_create", RuntimeCreate),
                 runtime_free: symbol!("runtime_free", RuntimeFree),
@@ -87,7 +91,7 @@ impl Api {
                 result_tensor: symbol!("result_tensor", ResultTensor),
                 result_timings: symbol!("result_timings", ResultTimings),
                 result_free: symbol!("result_free", ResultFree),
-                _library: library,
+                _library: Some(library),
             })
         }
     }
@@ -102,5 +106,18 @@ impl Api {
                 CStr::from_ptr(pointer).to_string_lossy().into_owned()
             }
         }
+    }
+}
+
+impl Drop for Api {
+    fn drop(&mut self) {
+        // Arc<Api> is still the ownership boundary. No model can call a native
+        // symbol here; capture dlclose separately from model destruction.
+        crate::diagnostics::record("library_unload_begin", "last native API owner");
+        drop(self._library.take());
+        crate::diagnostics::record(
+            "library_unload_complete",
+            "dlclose returned; not host stability",
+        );
     }
 }

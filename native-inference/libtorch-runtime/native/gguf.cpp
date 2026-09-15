@@ -1,5 +1,6 @@
 #include "gguf.hpp"
 #include "weight_upload.hpp"
+#include "diagnostics.hpp"
 #include <cstdlib>
 #include <iostream>
 #include <algorithm>
@@ -273,15 +274,22 @@ Weights::Weights(const std::string& path, const at::Device& selected, const std:
         (enabled("UTA_STUDIO_DEBUG") || enabled("UTA_STUDIO_LIBTORCH_TRACE_SYNC"));
     for (const auto& name : container.tensor_names()) {
         if (trace_upload) std::cerr << "[uta-libtorch-load] stage=read tensor=" << name << std::endl;
+        if (bounded_upload) diagnostic_event("weight_read_begin", name.c_str());
         auto tensor = container.read_tensor(name);
         if (bounded_upload) {
             if (trace_upload) std::cerr << "[uta-libtorch-load] stage=upload tensor=" << name
                                        << " elements=" << tensor.numel() << " tile_bytes=4194304" << std::endl;
+            diagnostic_event("weight_upload_begin", name.c_str());
             tensor = upload_weight_in_tiles(tensor, device, [&](int64_t copied, int64_t total) {
                 complete();
+                if (trace_upload) {
+                    const auto detail = name + " elements=" + std::to_string(copied) + '/' + std::to_string(total);
+                    diagnostic_event("weight_upload_progress", detail.c_str());
+                }
                 if (trace_upload) std::cerr << "[uta-libtorch-load] stage=uploaded tensor=" << name
                                            << " elements=" << copied << '/' << total << std::endl;
             });
+            diagnostic_event("weight_upload_complete", name.c_str());
         } else {
             // Other model/backend loading policies are unchanged.
             tensor = tensor.to(at::TensorOptions().device(device).dtype(tensor.is_floating_point() ? at::kFloat : at::kLong));

@@ -1,5 +1,6 @@
 #include "runtime.hpp"
 #include "convolution_projection.hpp"
+#include "diagnostics.hpp"
 #include "mixed_attention.hpp"
 #include "qwen_attention.hpp"
 #include <array>
@@ -95,11 +96,14 @@ private:
         // The successful traced Qwen runs waited at these boundaries. That
         // completion must not disappear when DEBUG/TRACE_SYNC is off: bound
         // queued activations and surface errors before advancing the cache.
+        diagnostic_event("qwen_stage_await", stage.c_str());
         if (runtime->stage_synchronization) runtime->checkpoint(stage);
         else runtime->synchronize();
+        diagnostic_event("qwen_stage_complete", stage.c_str());
         check_cancel();
     }
     at::Tensor attention(const at::Tensor& query, const at::Tensor& key, const at::Tensor& value, const at::Tensor& mask = {}, bool grouped = false) const {
+        diagnostic_event("qwen_attention_begin", runtime->precision.c_str());
         if (runtime->precision != "mixed_attention") return dense_attention(query, key, value, mask);
         // Use the already explicit, bounded mixed algorithm for XPU Qwen too.
         // Avoid the masked/GQA fused SDPA route; retain FP16 input/output
@@ -142,6 +146,7 @@ private:
         for (int64_t layer = 0; layer < 3; ++layer) {
             check_cancel();
             const auto prefix = aligner ? "audio.encoder.conv" + std::to_string(layer + 1) : "enc.conv." + std::to_string(layer);
+            diagnostic_event("qwen_convolution_begin", prefix.c_str());
             // Keep all acoustic chunks on the GPU, but avoid gfx1103 MIOpen
             // convolution solvers that fault for the thirty-second batch shape.
             auto convolved = runtime->backend == "libtorch_rocm"
@@ -169,6 +174,7 @@ private:
         for (int64_t layer = 0; layer < encoder_layers; ++layer) {
             check_cancel();
             const auto prefix = aligner ? "audio.encoder.blk." + std::to_string(layer) + '.' : "enc.blocks." + std::to_string(layer) + '.';
+            diagnostic_event("qwen_encoder_layer_begin", prefix.c_str());
             auto normalized = weights->norm(value, prefix + names[0]);
             auto query = layout(weights->linear(normalized, prefix + names[1]));
             auto key = layout(weights->linear(normalized, prefix + names[2]));
@@ -221,6 +227,7 @@ private:
         for (int64_t layer = 0; layer < decoder_layers; ++layer) {
             check_cancel();
             const auto prefix = (aligner ? "blk." : "dec.blocks.") + std::to_string(layer) + '.';
+            diagnostic_event("qwen_decoder_layer_begin", prefix.c_str());
             const auto linear = [&](const at::Tensor& input, size_t item) { return at::linear(input, weights->get(prefix + names[item] + ".weight")); };
             auto normalized = decoder_norm(value, prefix + names[0] + ".weight");
             auto query = rotary_split(decoder_norm(layout(linear(normalized, 4), heads), prefix + names[2] + ".weight"), positions, theta);
