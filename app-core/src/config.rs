@@ -34,7 +34,8 @@ pub struct AppConfig {
     pub export_path: Option<PathBuf>,
     pub fullscreen: Option<bool>,
     pub dark_mode: Option<bool>,
-    /// Persisted local DEBUG preference; desktop applies tracing and capture at startup.
+    /// Persisted local DEBUG preference. Core restores capture before resuming
+    /// analysis; desktop subsequently applies its tracing filter.
     #[serde(default)]
     pub debug_logging: bool,
     /// Whether the application surface should let the native compositor show

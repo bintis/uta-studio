@@ -1,9 +1,10 @@
 //! Producer-side native fault records. A pipe flush is not a disk sync.
 //!
 //! Studio supplies its existing analysis-log directory before spawning workers.
-//! Device/model/error boundaries and an explicitly focused operator trace are
-//! synchronized on the invoking thread. Other scheduling details are batched;
-//! their unsynchronized tail may be lost. No inference scheduling is changed.
+//! Device/model/error boundaries, Qwen layer/attention boundaries and explicitly
+//! focused operator details are synchronized on the invoking thread. Other
+//! scheduling details are batched; their unsynchronized tail may be lost.
+//! Native device waits and tensor lifetimes are unchanged, but I/O timing changes.
 use std::ffi::{CStr, c_char};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -12,7 +13,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 mod buffering;
-use buffering::{RecordBuffer, focus_matches, is_detail};
+use buffering::{RecordBuffer, requires_sync};
 
 static JOURNAL: OnceLock<Mutex<Option<Journal>>> = OnceLock::new();
 
@@ -74,9 +75,10 @@ impl Journal {
         result.record("journal_opened", &path.to_string_lossy())?;
         let policy = serde_json::json!({
             "focused_scope": result.focus,
-            "durable": "device/model/forward/error boundaries and focused events",
-            "details": "64 KiB batches; synchronize on next event after one second",
-            "limitation": "unfocused tail can be lost; a submit marker does not prove device execution",
+            "durable": "device/model/forward/error, Qwen layer/attention entry, completed attention tiles, and focused events",
+            "details": "known Qwen strict operator triplets and other scheduling details use 64 KiB batches; synchronize on next event after one second",
+            "limitation": "unfocused tail can be lost before a durable boundary; one second is checked on the next event, not by a timer; a submit marker does not prove device execution",
+            "device_completion": "native GPU synchronization and tensor lifetimes are unchanged by journal batching",
         });
         result.record("journal_policy", &policy.to_string())?;
         let _ = writeln!(
@@ -88,7 +90,7 @@ impl Journal {
     }
 
     fn record(&mut self, phase: &str, detail: &str) -> io::Result<()> {
-        let durable = !is_detail(phase) || focus_matches(self.focus.as_deref(), detail);
+        let durable = requires_sync(phase, detail, self.focus.as_deref());
         let record = serde_json::json!({
             "record_type": "native_execution",
             "pid": std::process::id(),

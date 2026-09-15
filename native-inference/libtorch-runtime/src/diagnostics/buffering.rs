@@ -32,6 +32,42 @@ pub(super) fn focus_matches(focus: Option<&str>, detail: &str) -> bool {
         })
 }
 
+/// Disk persistence only: this never controls a native device wait or tensor
+/// lifetime. Qwen's strict operator triplets previously forced three disk syncs
+/// for every already-synchronized small GPU step in both ASR and alignment.
+/// Keep all records, but amortize only these known details between durable
+/// layer/attention entries and completed outer attention tiles.
+/// An explicitly focused trace remains synchronous at every matching event.
+pub(super) fn requires_sync(phase: &str, detail: &str, focus: Option<&str>) -> bool {
+    if focus_matches(focus, detail) {
+        return true;
+    }
+    match phase {
+        "qwen_encoder_layer_begin" | "qwen_decoder_layer_begin" | "qwen_attention_begin" => true,
+        "qwen_stage_complete"
+            if matches!(detail, "encoder.attention_window" | "decoder.attention_tile") =>
+        {
+            true
+        }
+        "attention_operator_begin" | "attention_operator_await" | "attention_operator_complete" => {
+            // Do not broaden this to every attention_* event or every *_begin.
+            // Unknown scopes/operators and all error phases retain persistence.
+            !matches!(
+                detail.split_ascii_whitespace().next(),
+                Some(
+                    "qwen.strict.output_allocate"
+                        | "qwen.strict.kv_pack"
+                        | "qwen.strict.query_view"
+                        | "qwen.strict.scores"
+                        | "qwen.strict.softmax"
+                        | "qwen.strict.values"
+                )
+            )
+        }
+        _ => !is_detail(phase),
+    }
+}
+
 #[derive(Default)]
 pub(super) struct RecordBuffer {
     bytes: Vec<u8>,

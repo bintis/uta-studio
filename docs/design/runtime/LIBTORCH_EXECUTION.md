@@ -1,5 +1,203 @@
 # Native LibTorch execution alongside GGML
 
+## Completed Qwen run and logging-only performance candidate (2026-09-15)
+
+**Implementation intent, recorded before source edits:** the user reports the
+run finished and authorizes a conservative speed repair for both Qwen models.
+Keep `cb3eda61` query views, FP32, full context/masks, every existing native GPU
+synchronization, cancellation and failure propagation unchanged. Modify only
+the Rust journal's persistence classification: batch known Qwen strict operator
+triplets through the existing bounded writer, retain synchronous layer/attention
+entry and outer attention-tile completion records, and preserve explicit trace
+focus. Add CPU-only regression source; do not compile, test, install or execute
+models/GPU workloads under the continuing user-build/test scope.
+
+The current command request for Git status/log was blocked before execution.
+This is a file-editor intent record, not a successful `record-operation.py`
+receipt or Git commit. Read each target before a line-verified edit; preserve
+previous documentation changes and all unrelated work. Validation and handoff
+must distinguish saved source from unexecuted tests and measured production.
+
+The completed Engine journal is
+`/home/bintis/Documents/uta-studio/analysis-logs/1789463585368-22d75205517d56fb1fe946e4a66e02b0-22635-1.jsonl`.
+Both Qwen workers report clean native build `715f7d3c` (lines 79 and 574),
+including `cb3eda61`, strict XPU. ASR: node start **18:16:46.509 JST** (line 40),
+31/31 at line 392, node complete **19:01:10.336 JST** (line 395),
+**2663.827 s / 44 min 23.827 s**. Forced aligner: start **19:01:44.006 JST**
+(line 571), 31/31 at line 609, complete **19:12:29.808 JST** (line 612),
+**645.802 s / 10 min 45.802 s**. Combined enclosing node wall time is
+**3309.629 s / 55 min 9.629 s**, not pure GPU time. Final publication and
+`history_terminal: completed` are recorded at **19:13:21.918/919 JST**
+(lines 649–650). Total run-request-to-terminal wall time is **3616.551 s**.
+This records a completed user run without a reported power loss, not a blanket
+long-term stability qualification, isolated benchmark or quality acceptance.
+The two native log files are approximately 1549 MB (ASR) and 401 MB (aligner)
+in the viewer's rounded listing; no byte-exact totals or full phase accounting
+have been obtained. This candidate changes synchronization frequency, not event
+count: it does not promise smaller complete logs or a measured speedup.
+
+### Persistence implementation and verification boundary
+
+`src/diagnostics/buffering.rs::requires_sync` is now the shared production policy
+used by `Journal::record` for both Qwen models. Only the six known strict
+operator scopes (output allocation, KV preparation, query view, scores, softmax
+and values) in begin/await/complete events enter the existing 64 KiB/next-event
+one-second batch writer. Unknown attention scopes/operators and native error
+events retain immediate persistence. The existing trace focus overrides batching.
+
+Qwen encoder/decoder layer entry, attention entry and completed outer
+`encoder.attention_window` / `decoder.attention_tile` events remain synchronous
+durable boundaries. A completion boundary drains preceding details in order;
+an interrupted batch may lose detail and does not invent completion. The header
+policy record describes these limits explicitly.
+
+No C++ file, GPU wait, per-head query-view calculation, cache lifetime, precision,
+context/mask, cancellation or GPU error path was changed. Disk synchronization
+is not a GPU dependency, but reducing I/O delays changes submission cadence.
+This candidate therefore still requires a user-controlled stability and timing
+comparison. No speedup or hardware safety guarantee is asserted.
+
+CPU-only regression source exercises the actual policy and bounded writer for
+both model identities, normal/focused traces, 73 synthetic operator steps,
+order-preserving boundary drain, byte/time thresholds, interrupted tails and
+write/sync failures. These are source fixtures, not executed tests, syscall
+measurements or GPU benchmarks. The candidate is in the Rust worker journal:
+rebuilding only `libuta_libtorch.so` does not activate it.
+
+Remote writes to the policy/helper and production Journal call site were
+acknowledged before the Codex tunnel disconnected. The test/import patch and
+this final documentation were prepared separately for recovery. No compilation,
+test execution, installation, new GPU workload, Git commit or successful
+repository-wide validation is claimed. Reconcile the remaining patch against
+the working tree before the user's build.
+
+## User-observed continued execution and severe slowdown (2026-09-15)
+
+The user reports: **“好像确实没崩溃” (the current run appears not to have
+crashed)** after the query-view candidate, but execution has become **“非常非常慢”
+(extremely slow)**. Preserve both observations together. This is provisional
+in-run human feedback, not completed full-song acceptance or a claim that the
+power-loss cause has been resolved. Earlier power-loss evidence remains valid.
+
+Current task: record that feedback, then inspect bounded snapshots of existing
+production logs and the relevant source to separate inference, device waits and
+journal overhead. Do not stop/restart the active task, compile/install anything,
+change logging/settings/precision, or launch a model/GPU/profile experiment.
+The initial shell request for status and an operation-intent record was blocked
+before execution; no successful recorder receipt or new commit is asserted for
+that request. The bounded findings below come from the Engine journal and source,
+not an executed whole-native-journal timing profiler.
+
+### Actual running build and measured Engine progress
+
+Read source: `/home/bintis/Documents/uta-studio/analysis-logs/1789463585368-22d75205517d56fb1fe946e4a66e02b0-22635-1.jsonl`.
+Line 79 embeds the loaded native library's own build metadata:
+`native_source_commit=715f7d3cd9f27a28769518d4726de7bafa07b246`,
+`native_source_dirty=false`, `device=xpu:0`, strict precision. This includes
+`cb3eda61`; the current run is not a stale-library observation.
+
+At the **2026-09-15 18:29:38.344 JST** inspection boundary, line 371 records
+Qwen **10/31** completed measured work units. Earlier reads in this same review
+showed 8/31, then the later read showed 10/31. This establishes actual progress
+past the previous second-window failure boundary, not just an unchanged UI.
+No Qwen node-completed event was present in that inspected range; no full-song
+or long-term stability acceptance follows from this partial run.
+
+The Qwen node began at **18:16:46.509 JST** (line 40): **771.835 seconds / about
+12 minutes 52 seconds** to the inspected 10/31 event. Library loading took
+0.304 seconds (lines 78–79), and model open/device initialization/weight upload
+5.491 seconds (lines 80–81); together **5.795 seconds**. The slow tail is not
+explained by initial library/model loading. Leap completed its node in
+220.514 seconds (lines 4 and 38); RMVPE, FCPE, Basic Pitch, GAME and JBM555 also
+have completed nodes by line 363. Their completion does not prove background
+host isolation or GPU utilization. No CPU/GPU utilization was measured here.
+
+Adjacent Qwen work-unit progress intervals, calculated only from the actual
+`event_at_ms` values (first interval starts at 0/31, line 82):
+
+| Completed work units | Recorded JST | Since preceding progress event (seconds) |
+| --- | --- | ---: |
+| 0/31 | 18:17:02.030 | — |
+| 1/31 | 18:17:42.419 | 40.389 |
+| 2/31 | 18:18:07.410 | 24.991 |
+| 3/31 | 18:18:32.953 | 25.543 |
+| 4/31 | 18:20:11.158 | 98.205 |
+| 5/31 | 18:21:14.507 | 63.349 |
+| 6/31 | 18:22:49.438 | 94.931 |
+| 7/31 | 18:24:52.039 | 122.601 |
+| 8/31 | 18:26:12.614 | 80.575 |
+| 9/31 | 18:28:12.948 | 120.334 |
+| 10/31 | 18:29:38.344 | 85.396 |
+
+Supporting lines: 340, 350, 364–371. These are enclosing wall intervals, not
+pure GPU, attention, fsync or equal-token-count benchmarks. No per-window token
+counts were obtained; varying output length could also change each interval.
+Do not infer a leak, hang, fixed throughput, remaining completion time, or an
+exact share of disk-versus-device wait from this table.
+
+The directory listing separately reported `native-33823-1789463816126142357.jsonl`
+as approximately **401 MB** during an earlier snapshot, alongside approximately
+485 MB for the preceding Leap journal `native-22723-1789463585652209474.jsonl`.
+Those are tool-reported rounded sizes at a different observation point, not
+byte-exact simultaneous totals or a count of successful disk synchronizations.
+
+### Source-confirmed scheduling and persistence overhead
+
+In `native-inference/libtorch-runtime/native/qwen.cpp:129–137`, each strict
+attention operation sends `attention_operator_begin`, then an await event,
+performs the required device synchronization, and sends a complete event.
+All three events are producer-thread callbacks. In
+`src/diagnostics/buffering.rs:10–21`, **`attention_operator_*` does not match the
+batched `qwen_*` or listed RoFormer detail phases**. Therefore
+`src/diagnostics.rs:90–104` sets `durable=true`, and
+`src/diagnostics/buffering.rs:58–75` immediately writes/synchronizes each one
+through `File::sync_data` (`src/diagnostics.rs:112–115`). The existing 64 KiB /
+one-second detail batching does not amortize these particular events. This was
+the preceding candidate's deliberate fault-localization policy, not evidence
+that the batch writer itself stopped working.
+
+`native/qwen_strict_attention.hpp:58–103` now schedules per query head. For the
+recorded one-batch, 16-query-head/8-KV-head geometry with one query tile, the
+source schedules **1 output allocation + 8 KV preparations + 16 × 4 per-head
+steps = 73 completion callbacks and 219 durable event writes** per attention
+call, before outer layer/cache/feed-forward checkpoints. The previous grouped
+candidate scheduled 41 callbacks / 123 events for that geometry: callback/event
+counts increase by about 78%, **not a measured 78% wall-time regression**.
+These are source-derived counts assuming an active healthy journal, not traced
+system-call counts. The view-only `query_view` steps also incur their events and
+device completion callbacks. Per-head matrix products additionally split the
+work into more sequential submissions without changing the mathematical context.
+
+The two leading source-supported performance concerns are therefore synchronous
+per-operator journal persistence and fine-grained per-head device completion /
+submission overhead. Exact attribution is still unmeasured. `File::sync_data`
+is disk-content synchronization, not an in-memory log append; XPU synchronization
+waits for device work, not disk persistence. API semantics were checked in the
+[Rust File documentation](https://doc.rust-lang.org/std/fs/struct.File.html#method.sync_data)
+and [PyTorch XPU synchronization documentation](https://docs.pytorch.org/docs/2.14/generated/torch.xpu.synchronize.html).
+These references explain the APIs, not this host's measured time distribution.
+
+### Next performance work and verification boundary
+
+Preserve the query-view change, FP32/context/mask semantics and successful
+execution evidence. First distinguish the disk-recording policy from GPU
+completion/resource-lifetime safety; do not blanket-remove both kinds of waits
+or restore the cross-head gather. A separate future candidate can evaluate
+batching repetitive detail records while retaining deliberate durable fault
+boundaries and unchanged GPU completion, then separately examine redundant
+view-only completion/submission costs. Even reducing log persistence changes
+submission cadence and unsynced-tail visibility, so it is not automatically a
+risk-free speed switch or grounds for stability promotion. No such candidate
+was implemented or activated in this documentation/read-only review.
+
+The shell requests for operation recording/status and full native-journal timing
+aggregation were blocked before execution. Native-journal read/search also
+exceeded the viewer's 5 MB limit; its suggested shell text search was rejected
+by tool routing. Consequently no full-native phase totals, fsync timing, new
+operation receipt, repository-wide check, or Git commit is reported here.
+Documentation was saved with the file editor and read back; no application code,
+running worker, installed runtime, user settings or model data was modified.
+
 ## Latest production replay — Qwen query-view candidate (2026-09-15)
 
 The user's subsequent production run loaded native source **`203c026a` with

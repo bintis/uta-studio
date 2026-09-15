@@ -1,7 +1,10 @@
 use super::*;
+use super::buffering::{focus_matches, is_detail};
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::time::Duration;
+
+mod attention;
 
 #[derive(Default)]
 struct ObservedWriter {

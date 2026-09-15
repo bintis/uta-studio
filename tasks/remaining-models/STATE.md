@@ -1,5 +1,33 @@
 # Remaining Models + Final Feature Closure — State
 
+## Completed Qwen production run; logging-only performance candidate (2026-09-15)
+
+The user reports completion without another power loss. Engine journal
+`1789463585368-22d75205517d56fb1fe946e4a66e02b0-22635-1.jsonl` now records
+ASR and forced aligner both at 31/31, their completed nodes (lines 395/612),
+publication and `history_terminal: completed` (lines 649/650). Clean loaded
+native build is `715f7d3c`, including query-view repair `cb3eda61`.
+Enclosing node durations are **2663.827 s ASR** and **645.802 s alignment**;
+the entire requested run ends at **19:13:21.919 JST** after **3616.551 s**.
+These are completed-run observations, not long-term stability or quality
+qualification and not pure GPU timings.
+
+The performance candidate changes only the shared Rust journal persistence
+policy: known Qwen strict operator triplets are batched with the existing
+bounded writer; layer/attention starts, completed outer attention tiles,
+native errors and selected trace focus retain durable recording. All C++ GPU
+completion, query-view/FP32/context/mask and error/cancellation paths remain
+unchanged. Detail-event counts and complete log sizes are not reduced.
+Disk timing and submission cadence change; actual speed/stability remain
+unmeasured. CPU regression source is prepared but unexecuted.
+
+The remote command for Git status was blocked, then the tunnel disconnected
+during test editing. No new commit or successful repository check is asserted.
+The remaining test/import/documentation patch needs working-tree reconciliation
+before the user builds. This Rust worker change cannot be activated by a DSO-only
+rebuild. See [complete run and candidate](../../docs/design/runtime/LIBTORCH_EXECUTION.md#completed-qwen-run-and-logging-only-performance-candidate-2026-09-15).
+No `integration_ready` / `production_ready` promotion.
+
 **Updated:** 2026-09-14 (fusion activity, independent lyric timing and measured regression follow-up)
 **Owner:** Rust + upstream-GGML migration
 
@@ -1249,3 +1277,41 @@ rebuild the native DSO as well as Rust before testing this candidate.
 Detailed evidence and operation receipts:
 [latest LibTorch production replay](../../docs/design/runtime/LIBTORCH_EXECUTION.md#latest-production-replay--qwen-query-view-candidate-2026-09-15).
 No `integration_ready` / `production_ready` promotion.
+
+## Qwen continued execution with severe slowdown — provisional observation (2026-09-15)
+
+User feedback: the current run appears not to crash, but is extremely slow.
+The new Engine journal `1789463585368-22d75205517d56fb1fe946e4a66e02b0-22635-1.jsonl`
+confirms a clean loaded native build `715f7d3c` (including `cb3eda61`) at line 79.
+Its observed Qwen progress advanced from 8/31 to **10/31 at 18:29:38.344 JST**
+(line 371), beyond the earlier second-window failure. This is partial in-run
+progress, not a finished full-song or long-term power-loss qualification.
+No `integration_ready` / `production_ready` promotion.
+
+Measured Engine timing: **771.835 seconds** from Qwen node start to 10/31;
+library load plus model open/device initialization/weight upload only
+**5.795 seconds**. Adjacent work-unit intervals are 40.389, 24.991, 25.543,
+98.205, 63.349, 94.931, 122.601, 80.575, 120.334 and 85.396 seconds. They include
+all enclosing work and are not equal-token-count or pure-GPU measurements.
+Leap, RMVPE, FCPE, Basic Pitch, GAME and JBM555 nodes have completed. An earlier
+directory listing reported the current Qwen native journal at roughly 401 MB.
+
+Source review confirms that `attention_operator_begin/await/complete` are all
+synchronously durable: they are not included in the existing 64 KiB/one-second
+batched-detail classification. Each strict per-head step therefore records
+three disk-content sync attempts plus its GPU-completion callback. For the
+16-query/8-KV-head one-batch, one-query-tile geometry, source-derived scheduling
+is 73 completion callbacks / 219 durable events per attention call, versus
+41 / 123 in the prior grouped candidate. These are not measured syscall counts
+or a measured percentage of wall time. Journal persistence and fine-grained
+submission/device completion are leading performance concerns; token counts,
+GPU utilization, disk-wait share and kernel timings remain unmeasured.
+
+Only documentation was changed. No build, application-code edit, installation,
+logging-setting change, worker interruption or GPU/model/profile execution.
+Command execution was blocked and the native journal exceeds the viewer limit;
+no successful new recorder receipt, Git commit or repository check is asserted.
+Preserve the query-view fix and GPU completion while separately evaluating any
+future log-batching candidate; changing logging also changes timing and the
+recoverable failure tail. Full measured intervals, source references and limits:
+[continued execution and slowdown](../../docs/design/runtime/LIBTORCH_EXECUTION.md#user-observed-continued-execution-and-severe-slowdown-2026-09-15).
