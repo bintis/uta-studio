@@ -205,8 +205,9 @@ target_link_libraries(uta-libtorch-rotary-check PRIVATE "${native_torch_cpu}" "$
 target_link_options(uta-libtorch-rotary-check PRIVATE "-Wl,--disable-new-dtags")
 set_target_properties(uta-libtorch-rotary-check PROPERTIES BUILD_RPATH "${native_paths}")
 
-# The Qwen partition/cache oracle deliberately links CPU ATen only. GPU mixed
-# arithmetic is covered separately by the explicitly selected partition check.
+# Exercise the production strict head-group helper and window/cache composition
+# against CPU double oracles. Only CPU ATen is linked; this is not GPU stability
+# coverage. Mixed arithmetic retains its separately selected partition check.
 add_executable(uta-libtorch-qwen-attention-check qwen_attention_check.cpp)
 target_compile_features(uta-libtorch-qwen-attention-check PRIVATE cxx_std_20)
 target_compile_definitions(uta-libtorch-qwen-attention-check PRIVATE _GLIBCXX_USE_CXX11_ABI=${TORCH_CXX_ABI})

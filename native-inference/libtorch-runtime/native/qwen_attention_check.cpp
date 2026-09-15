@@ -1,4 +1,5 @@
 #include "qwen_attention.hpp"
+#include "qwen_strict_attention_check.hpp"
 #include <ATen/Parallel.h>
 #include <c10/core/InferenceMode.h>
 #include <cmath>
@@ -41,7 +42,7 @@ void check_windows(int64_t rows, int64_t window) {
             require(current_query.size(2) <= window && current_key.size(2) == current_query.size(2),
                     "encoder crossed an acoustic window boundary");
             ++submitted;
-            return reference(current_query, current_key, current_value, mask);
+            return uta::torch_native::qwen_strict_checks::execute(current_query, current_key, current_value, mask);
         }, [&] { require(submitted == completed, "encoder queued a window before completing its predecessor"); },
         [&] { ++completed; });
     require(completed == (rows + window - 1) / window, "encoder did not complete every window including its tail");
@@ -60,7 +61,7 @@ void check_causal(int64_t rows, int64_t past) {
                     "decoder allocated a prompt-sized attention mask");
             require(mask.size(1) == current_key.size(2), "decoder mask does not cover its complete causal history");
             ++submitted;
-            return reference(current_query, current_key, current_value, mask);
+            return uta::torch_native::qwen_strict_checks::execute(current_query, current_key, current_value, mask);
         }, [&] { require(submitted == completed, "decoder queued work before tile completion"); },
         [&] { ++completed; });
     require(completed == (rows + 63) / 64, "decoder did not complete every query tile");
@@ -95,7 +96,8 @@ int main() {
             check_causal(rows, 37);  // resident-cache continuation, including a single token
         }
         check_cancellation_and_invalid_cache();
-        std::cout << "Qwen attention window, causal-cache, tail and cancellation checks passed (CPU oracle only)\n";
+        uta::torch_native::qwen_strict_checks::run();
+        std::cout << "Qwen production strict attention, window/cache, masks, ownership and completion checks passed (CPU oracle only)\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
