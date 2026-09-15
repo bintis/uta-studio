@@ -256,7 +256,7 @@ mod tests {
     fn off_filter_does_not_enable_debug() {
         let filter = normal_log_filter().to_string();
         assert!(!filter.contains("debug"));
-        assert!(filter.contains("icu_provider=error"));
+        assert!(!filter.contains("icu_provider=error"));
     }
     #[test]
     fn debug_toggle_is_a_registered_mutation() {

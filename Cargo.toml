@@ -1,5 +1,6 @@
 [workspace]
 resolver = "3"
+exclude = ["vendor/parley"]
 members = [
   "analysis-engine",
   "app-core",
@@ -17,3 +18,9 @@ members = [
   "xtask",
   "utz-export",
 ]
+
+# Parley keeps its segmentation constructors private. Carry the minimal source
+# fix here so packaged desktop builds load ICU's compiled CJK dictionaries;
+# changing the registry cache or suppressing ICU errors would not fix layout.
+[patch.crates-io]
+parley = { path = "vendor/parley" }

@@ -289,7 +289,9 @@ pub(crate) fn capture_debug_screenshot(
 }
 
 pub(crate) fn studio_log_filter() -> String {
-    format!("{DEFAULT_FILTER},icu_provider=error")
+    // Dictionary data is loaded by the pinned Parley source patch. Keep real
+    // ICU data failures visible instead of masking them at the logger.
+    DEFAULT_FILTER.to_string()
 }
 
 /// Application-lifecycle log capture. Per-song analysis progress, model

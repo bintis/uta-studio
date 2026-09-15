@@ -252,8 +252,8 @@ mod tests {
     }
 
     #[test]
-    fn expected_icu_cjk_fallback_does_not_flood_desktop_logs() {
-        assert!(studio_log_filter().contains("icu_provider=error"));
+    fn icu_data_failures_are_not_hidden_by_the_desktop_filter() {
+        assert!(!studio_log_filter().contains("icu_provider=error"));
     }
 
     #[test]
