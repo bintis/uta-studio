@@ -1198,7 +1198,7 @@ Per the user's 2026-09-07 direction, each independent change and subsequent exec
 
 ## Qwen XPU power-off follow-up — unverified source candidate (2026-09-15)
 
-Latest inspected production evidence reaches Qwen ASR **strict XPU** decoder layer
+Earlier inspected production evidence reaches Qwen ASR **strict XPU** decoder layer
 zero, with QKV/cache completion followed by `decoder.attention_tile` await at
 16:55:45.462 JST. The actual native library reports source `bc587e29` plus dirty
 changes; this is not solely a stale-worker/build mismatch. Nearby integrated-GPU
@@ -1221,3 +1221,31 @@ the Rust worker; CPU oracle execution and actual stability verification remain.
 `integration_ready`/`production_ready` are unchanged. Full evidence, source
 analysis, operation receipts and uncertainty are in
 [the current LibTorch incident record](../../docs/design/runtime/LIBTORCH_EXECUTION.md#qwen-xpu-power-off-follow-up--code-candidate-not-stability-acceptance-2026-09-15).
+
+## Latest production replay — Qwen query-view candidate (2026-09-15)
+
+The user's next run loaded clean native source `203c026a`, including the prior
+strict attention change. Leap strict XPU completed all 24 mask invocations and
+unloaded; RMVPE, FCPE and Basic Pitch also completed their Engine nodes. Qwen
+completed its first window (1/31), encoded the second, and advanced to decoder
+`dec.blocks.13.`. The retained tail is now `qwen.strict.query_pack` await at
+**17:42:41.992 JST**, not the earlier first-layer attention boundary. Its 16,064
+completed operator triplets pair correctly; only that final operator is pending.
+Nearby integrated-GPU GAME execution and absent incident-time kernel errors
+prevent assigning the power loss to one kernel. The kernel capture retained
+100 boot-time records, not a diagnosis. Whole-machine stability still failed.
+
+Candidate `cb3eda6` removes the app-owned cross-head Q gather by using per-head
+`select`/`narrow` views and shared physical KV data. FP32/full-context attention,
+mask mapping, completion, error propagation and cancellation remain; there is
+no retry, backend substitution, configuration change or GPU run. Per-head work
+adds completion calls; neither speed nor a stability improvement is measured.
+CPU-only regression source now covers narrowed 122-row prefill (64/58), inferred
+378-row cache capacity with poisoned spare rows, Q view alias/stride/offset
+properties and independent double numerical references. **No C++ build or CPU
+oracle execution occurred.** Source diff/identity checks passed. The user must
+rebuild the native DSO as well as Rust before testing this candidate.
+
+Detailed evidence and operation receipts:
+[latest LibTorch production replay](../../docs/design/runtime/LIBTORCH_EXECUTION.md#latest-production-replay--qwen-query-view-candidate-2026-09-15).
+No `integration_ready` / `production_ready` promotion.

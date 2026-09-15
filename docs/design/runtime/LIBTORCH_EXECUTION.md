@@ -1,8 +1,85 @@
 # Native LibTorch execution alongside GGML
 
+## Latest production replay — Qwen query-view candidate (2026-09-15)
+
+The user's subsequent production run loaded native source **`203c026a` with
+`native_source_dirty=false`**, including `a7dd3508`; it did not merely reuse the
+older attention implementation. Boot: `412adb98-9543-4940-bb3f-35258fe4f0c3`.
+The user reports another whole-machine power loss. The following are retained
+execution boundaries, not an assertion of an exact hardware failure instant.
+
+| Retained event (JST, 2026-09-15) | Evidence |
+| --- | --- |
+| 17:41:48.641 | Leap strict XPU completed its 24th mask invocation; all 24 have compute/forward completion. |
+| 17:41:48.772 | Leap model release and library unload completed; the Engine marks the node complete at 17:41:49.605. |
+| 17:42:32.043 | Qwen completed its first window and cleared the session; the Engine records 1/31 measured work units. |
+| 17:42:39.712 | Qwen completed the second window's encoding/session setup and entered decode. |
+| 17:42:41.992 | Second-window decoder `dec.blocks.13.` has an unmatched `attention_operator_await` for `qwen.strict.query_pack`. |
+
+Production evidence is under `/home/bintis/Documents/uta-studio/analysis-logs/`:
+`native-34720-1789461507813458265.jsonl` (Leap),
+`native-36762-1789461719617243904.jsonl` (Qwen), and
+`1789461507528-22d75205517d56fb1fe946e4a66e02b0-34632-1.jsonl` (Engine).
+Qwen has **16,064 correctly paired begin/await/complete operator triplets**,
+including 3,312 prior query packs; the only pending operator is the final query
+pack at lines 55,562–55,563. Its retained geometry is batch 0, KV head 0,
+64 query rows, 64 visible keys, 16 query/8 KV heads, width 128, KV head stride
+48,384 and row stride 128. Layer-13 QKV/cache and that attention call's output
+allocation/KV packing have completed; the corresponding score multiplication
+has no begin record. These observations narrow the retained boundary but do
+not establish a defective copy kernel, a memory fault, or a hardware cause.
+
+RMVPE, FCPE and Basic Pitch also reached Engine completion. Integrated-GPU
+Vulkan GAME was still active (2/8 at 17:42:41.304), so this was not an isolated
+Qwen run. The matching debug session's kernel capture did start successfully,
+but `debug-logs/session-1789461507230455912-34632-0/kernel.jsonl` retains only
+100 boot-time records, with no incident-time error report. Silence is not
+stability evidence. The retained boot differs from the subsequent inspection
+boot `7e134230-5d71-4588-94bb-d83278237d75`.
+
+**Candidate `cb3eda6`** changes only strict Qwen XPU query handling: replace the
+cross-head `contiguous().view(...)` pack with individual query-head `select` /
+`narrow` views, and compute each head's FP32 matrix products against its shared
+physical KV head. A cropped query tile can retain gaps between parent heads;
+flattening multiple heads can therefore require a gather copy. The new helper
+removes that app-owned Q allocation/copy. It adds no sleep, power-limit change,
+model disablement, context truncation, retry or fallback.
+All existing device-completion/error/cancellation boundaries remain, including
+the now view-only `query_view` step. Mask application follows the individual
+query head, not the shared KV head. The generic runtime, mixed route, precision
+policy, cache geometry and RoFormer implementation are unchanged.
+
+The journal now also names the individual query head and Q strides/storage
+offset. Those Q layout facts were absent from the failed trace: synthetic
+head-major, interleaved and channel-strided fixtures cover alternatives instead
+of claiming to have recovered unrecorded tensor contents. Tests also compose
+the actual causal helper over 122 rows split into 64/58 and a 378-row KV cache
+(capacity inferred from the recorded stride and the session allocation code),
+with poisoned spare capacity, independent double references, alias/offset
+checks and retained completion-failure/cancellation checks.
+
+PyTorch's [view semantics](https://docs.pytorch.org/docs/2.14/tensor_view.html)
+and [strided two-dimensional mm](https://docs.pytorch.org/docs/2.14/generated/torch.mm.html)
+were consulted for API semantics only. Backend-internal `mm` preparation can
+still copy/reorder; this is not a claim of end-to-end zero-copy execution or
+bitwise equivalence. Per-head scheduling increases operation/completion counts;
+performance and actual host stability are **unmeasured**.
+
+Verification in this follow-up: source whitespace and canonical product-name
+checks passed (`20260915T085712-95f880f9fbbb`); callback sites and source diffs were
+reviewed. **No C++ compilation, CPU oracle execution, GPU/model execution,
+installation, settings change or readiness promotion.** The user's rebuild must
+include `libuta_libtorch.so`; only rebuilding Rust cannot exercise this change.
+Implementation intent: `20260915T085224-05c9b0fdda5e`; source commit receipt:
+`20260915T085749-7160a6f48f81`. Stream summary:
+`20260915T084816-bee68d3b758b`; exact operator pairing/kernel evidence and handoff
+intent: `20260915T085854-af3ceb55c542`. The earlier reader operation
+`20260915T084737-bbc421e2e4c2` had no script on the child stdin and produced no
+analysis evidence; its zero exit is not a completed journal review.
+
 ## Qwen XPU power-off follow-up — code candidate, not stability acceptance (2026-09-15)
 
-The latest inspected production journal is
+The earlier inspected production journal is
 `/home/bintis/Documents/uta-studio/analysis-logs/native-17286-1789458937411542550.jsonl`.
 It identifies `qwen3_asr_1_7b`, `libtorch_xpu`, device 0, **strict** precision,
 LibTorch 2.13.0, native source `bc587e2985b3fcf975073d0ba28fc5b9e67e0249` with
