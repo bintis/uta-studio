@@ -64,8 +64,18 @@ impl RuntimeManager {
     ) -> RuntimeManagerResult<ResourcePlan> {
         let mut expanded = Vec::new();
         let mut visiting = BTreeSet::new();
+        let runtime_present = |runtime: &ResourceRef| {
+            self.status(runtime, policy)
+                .is_ok_and(|status| plan_satisfied(runtime, &status))
+        };
         for resource in resources {
-            expand_resource(self.catalog(), resource, &mut visiting, &mut expanded)?;
+            expand_resource(
+                self.catalog(),
+                resource,
+                &runtime_present,
+                &mut visiting,
+                &mut expanded,
+            )?;
         }
         let mut seen = BTreeSet::new();
         expanded.retain(|resource| seen.insert(resource.clone()));
@@ -82,10 +92,7 @@ impl RuntimeManager {
         };
         for resource in expanded {
             let status = self.status(&resource, policy)?;
-            if status.install_state.locally_present()
-                && !status.reasons.contains(&ReadinessReason::Legacy)
-                && (resource.kind == ResourceKind::Model || status.executable_ready)
-            {
+            if plan_satisfied(&resource, &status) {
                 plan.satisfied.push(resource);
                 continue;
             }
@@ -640,9 +647,58 @@ fn validate_leaf_filename(filename: &str) -> RuntimeManagerResult<()> {
     }
 }
 
+fn plan_satisfied(resource: &ResourceRef, status: &crate::state::ResourceStatus) -> bool {
+    status.install_state.locally_present()
+        && !status.reasons.contains(&ReadinessReason::Legacy)
+        && (resource.kind == ResourceKind::Model || status.executable_ready)
+}
+
+/// Every runtime a model names executes the same GGUF, so they are alternative
+/// routes rather than joint requirements: the present runtimes satisfy the
+/// model and absent alternatives are not planned. With none present the plan
+/// carries only the pinned backend's runtime, which a package without any
+/// runtime then reports as missing.
+fn model_dependencies(
+    entry: &ModelCatalogEntry,
+    runtime_present: &dyn Fn(&ResourceRef) -> bool,
+) -> Vec<ResourceRef> {
+    let runtimes = entry
+        .dependencies
+        .iter()
+        .filter(|dependency| dependency.kind == ResourceKind::Runtime)
+        .collect::<Vec<_>>();
+    let mut routes = runtimes
+        .iter()
+        .copied()
+        .filter(|runtime| runtime_present(runtime))
+        .collect::<Vec<_>>();
+    if routes.is_empty() {
+        routes.extend(
+            entry
+                .pinned_backend
+                .and_then(|backend| {
+                    runtimes
+                        .iter()
+                        .find(|runtime| runtime.id == backend.runtime_id())
+                })
+                .or_else(|| runtimes.first())
+                .copied(),
+        );
+    }
+    entry
+        .dependencies
+        .iter()
+        .filter(|dependency| {
+            dependency.kind != ResourceKind::Runtime || routes.contains(dependency)
+        })
+        .cloned()
+        .collect()
+}
+
 fn expand_resource(
     catalog: &ResourceCatalog,
     resource: &ResourceRef,
+    runtime_present: &dyn Fn(&ResourceRef) -> bool,
     visiting: &mut BTreeSet<ResourceRef>,
     output: &mut Vec<ResourceRef>,
 ) -> RuntimeManagerResult<()> {
@@ -658,7 +714,7 @@ fn expand_resource(
     let dependencies = match resource.kind {
         ResourceKind::Model => catalog
             .model(&resource.id)
-            .map(|entry| entry.dependencies.clone())
+            .map(|entry| model_dependencies(entry, runtime_present))
             .unwrap_or_default(),
         ResourceKind::Bundle => catalog
             .bundles
@@ -668,7 +724,7 @@ fn expand_resource(
         ResourceKind::Runtime | ResourceKind::Tool => Vec::new(),
     };
     for dependency in dependencies {
-        expand_resource(catalog, &dependency, visiting, output)?;
+        expand_resource(catalog, &dependency, runtime_present, visiting, output)?;
     }
     visiting.remove(resource);
     if resource.kind != ResourceKind::Bundle {
@@ -1203,6 +1259,125 @@ fn publish_io(error: std::io::Error) -> RuntimeManagerError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::catalog::{LIBTORCH_XPU_RUNTIME_ID, NativeBackend};
+
+    fn scratch_root(label: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "uta-runtime-install-{label}-{}-{}",
+            std::process::id(),
+            unique_operation_id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn worker_executable(root: &Path) -> PathBuf {
+        let path = root.join("uta-ggml-worker");
+        std::fs::write(&path, b"#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        path
+    }
+
+    /// A fresh store with the packaged worker and no LibTorch XPU runtime.
+    fn fresh_store_paths(root: &Path) -> StorePaths {
+        StorePaths::new(root.join("store"))
+            .with_runtime_override("uta-ggml-worker", worker_executable(root))
+            .with_runtime_library_root(LIBTORCH_XPU_RUNTIME_ID, root.join("libtorch-xpu"))
+    }
+
+    fn planned_resources(plan: &ResourcePlan) -> Vec<String> {
+        plan.to_add
+            .iter()
+            .map(|item| item.resource.to_string())
+            .collect()
+    }
+
+    struct FixedTransport;
+
+    impl AcquisitionTransport for FixedTransport {
+        fn download(
+            &self,
+            _url: &str,
+            destination: &Path,
+            _maximum_bytes: Option<u64>,
+        ) -> RuntimeManagerResult<()> {
+            std::fs::write(destination, b"gguf").map_err(publish_io)
+        }
+    }
+
+    #[test]
+    fn one_present_runtime_satisfies_every_model_route() {
+        let root = scratch_root("one-runtime");
+        let manager = RuntimeManager::with_default_catalog(fresh_store_paths(&root)).unwrap();
+        for model in manager.catalog().models.keys() {
+            let plan = manager
+                .plan(
+                    &[ResourceRef::model(model.clone()).unwrap()],
+                    RuntimePolicy::Production,
+                )
+                .unwrap();
+            assert!(
+                planned_resources(&plan)
+                    .iter()
+                    .all(|resource| resource.starts_with("model:")),
+                "{model}: {:?}",
+                planned_resources(&plan)
+            );
+            assert!(
+                plan.satisfied
+                    .contains(&ResourceRef::runtime("ggml_vulkan").unwrap())
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_package_without_any_runtime_reports_only_the_pinned_runtime() {
+        let root = scratch_root("no-runtime");
+        let manager =
+            RuntimeManager::with_default_catalog(StorePaths::new(root.join("store"))).unwrap();
+        let plan = manager
+            .plan(
+                &[ResourceRef::model("rmvpe").unwrap()],
+                RuntimePolicy::Production,
+            )
+            .unwrap();
+        assert_eq!(
+            planned_resources(&plan),
+            [
+                format!("runtime:{}", NativeBackend::Ggml.runtime_id()),
+                "model:rmvpe".to_string()
+            ]
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn managed_download_installs_and_resolves_without_libtorch_runtime() {
+        let root = scratch_root("managed-download");
+        let manager = RuntimeManager::with_default_catalog(fresh_store_paths(&root)).unwrap();
+        let resource = ResourceRef::model("bs_roformer_leap_xe90_vocals").unwrap();
+        let result = manager
+            .install_with_transport(
+                std::slice::from_ref(&resource),
+                RuntimePolicy::Production,
+                &MutationOptions { confirmed: true },
+                &FixedTransport,
+            )
+            .unwrap();
+        assert_eq!(result.changed, [resource.clone()]);
+        let resolved = manager
+            .resolve_model(&resource.id, RuntimePolicy::Production)
+            .unwrap();
+        assert_eq!(resolved.backend, NativeBackend::Ggml);
+        assert_eq!(resolved.runtime_id, "ggml_vulkan");
+        drop(resolved);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn local_import_publishes_a_complete_named_artifact_set() {
