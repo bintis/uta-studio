@@ -14,12 +14,13 @@
 # otherwise acquire clones the latest upstream default branch, recursively.
 # Only one source/build layout is used. No release wheel or version selector.
 #
-# acquire | build | manifest | all (default). Downloads occur only on acquire.
+# acquire | build | native | manifest | all (default). Downloads occur only on acquire.
+# native rebuilds only the app bridge against installed dependencies.
 set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 native_source="$repo_root/native-inference/libtorch-runtime/native"
-runtime_root="${UTA_STUDIO_LIBTORCH_RUNTIME_DIR:-$HOME/.local/share/uta-studio/runtime/libtorch-xpu}"
+runtime_root="${UTA_STUDIO_LIBTORCH_RUNTIME_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/uta-studio/runtime/libtorch-xpu}"
 work_root="${UTA_STUDIO_LIBTORCH_WORK_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/uta-studio/libtorch-xpu}"
 source_root="${UTA_STUDIO_LIBTORCH_SOURCE_DIR:-$work_root/source}"
 source_repository="https://github.com/pytorch/pytorch.git"
@@ -116,7 +117,8 @@ build() {
     -DTORCH_CXX_ABI=1
   cmake --build "$work_root/build" --target uta_libtorch \
     -j "${UTA_STUDIO_LIBTORCH_BUILD_JOBS:-4}"
-  cp "$work_root/build/libuta_libtorch.so" "$runtime_root/lib/libuta_libtorch.so"
+  python3 "$repo_root/native-inference/libtorch-runtime/publish-native-xpu.py" \
+    "$work_root/build" "$runtime_root"
   # Provenance only, never compared against an allowed commit/release/hash.
   printf '%s\n' "$actual_commit" > "$runtime_root/source-commit.txt"
   git -C "$source_root" status --porcelain > "$runtime_root/source-status.txt"
@@ -157,7 +159,8 @@ manifest() {
 case "${1:-all}" in
   acquire) acquire ;;
   build) build ;;
+  native) bash "$repo_root/native-inference/libtorch-runtime/rebuild-native-xpu.sh" ;;
   manifest) manifest ;;
   all) acquire; build; manifest ;;
-  *) printf 'usage: install-libtorch-xpu-runtime.sh [acquire|build|manifest|all]\n' >&2; exit 2 ;;
+  *) printf 'usage: install-libtorch-xpu-runtime.sh [acquire|build|native|manifest|all]\n' >&2; exit 2 ;;
 esac

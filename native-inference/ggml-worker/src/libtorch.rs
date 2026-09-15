@@ -128,14 +128,24 @@ impl Runtime {
         }
     }
 
-    /// Opens one model session on the explicitly selected XPU device. The
-    /// precision policy follows the recorded full-song qualification: mixed
-    /// attention for the six separators, strict for every other model.
+    /// Opens one model session on the explicitly selected XPU device. Production
+    /// uses strict arithmetic. Record the actual library before device creation;
+    /// a fresh Rust worker does not establish which native code it has loaded.
     pub fn open(&self, model_id: &str, model_path: &Path, config: &Value) -> Result<Model, String> {
         let device = device_index(config)?;
         self.apply_environment();
+        crate::audio_cache::diagnostic(&format!(
+            "Native library loading: model={model_id} library={}",
+            self.library.display()
+        ));
         let library = Library::load(&self.library)?;
         let info = library.build_info();
+        crate::audio_cache::diagnostic(&format!(
+            "Native library loaded: model={model_id} library={} device=xpu:{device} precision={:?} build={}",
+            self.library.display(),
+            precision(model_id),
+            library.build_description()
+        ));
         if info.compiled_backend != BACKEND {
             return Err(format!(
                 "installed native library at {} was built for {}, not {BACKEND}",
@@ -143,13 +153,21 @@ impl Runtime {
                 info.compiled_backend
             ));
         }
-        library.open(
+        crate::audio_cache::diagnostic(&format!(
+            "Native model opening: model={model_id} path={}",
+            model_path.display()
+        ));
+        let model = library.open(
             model_id,
             model_path,
             Backend::LibtorchXpu,
             device,
             precision(model_id),
-        )
+        )?;
+        crate::audio_cache::diagnostic(&format!(
+            "Native model opened: model={model_id}; device initialization and weight upload completed"
+        ));
+        Ok(model)
     }
 }
 

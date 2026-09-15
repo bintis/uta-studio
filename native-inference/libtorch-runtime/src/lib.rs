@@ -90,6 +90,7 @@ pub struct BuildInfo {
 pub struct Library {
     api: Arc<ffi::Api>,
     info: BuildInfo,
+    description: String,
 }
 impl Library {
     /// Opens only the named native library and reads its build capabilities.
@@ -104,13 +105,22 @@ impl Library {
         let api = Arc::new(ffi::Api::load(path)?);
         // SAFETY: symbols were loaded with their declared ABI, and the API owns
         // the library while its immutable build-info string is copied.
-        let info = unsafe { copy_text((api.build_info)(), "native build capabilities")? };
-        let info: BuildInfo = serde_json::from_str(&info)
+        let description = unsafe { copy_text((api.build_info)(), "native build capabilities")? };
+        let info: BuildInfo = serde_json::from_str(&description)
             .map_err(|error| format!("invalid LibTorch build capabilities: {error}"))?;
-        Ok(Self { api, info })
+        Ok(Self {
+            api,
+            info,
+            description,
+        })
     }
     pub fn build_info(&self) -> &BuildInfo {
         &self.info
+    }
+    /// Verbatim metadata from the loaded DSO, including source provenance.
+    /// This is diagnostic information, not a version or commit eligibility test.
+    pub fn build_description(&self) -> &str {
+        &self.description
     }
     pub fn open(
         &self,

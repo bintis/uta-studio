@@ -1,5 +1,6 @@
 #include "api.h"
 #include "runtime.hpp"
+#include "native_build.hpp"
 #include <c10/core/DeviceGuard.h>
 #include <c10/core/InferenceMode.h>
 #include <chrono>
@@ -87,6 +88,8 @@ const char* uta_libtorch_build_info(void) noexcept {
                 first = false;
             }
             result += "],\"roformer_projection_math\":\"ieee\"";
+            result += ",\"native_source_commit\":" + uta::torch_native::json_string(UTA_NATIVE_SOURCE_COMMIT);
+            result += std::string(",\"native_source_dirty\":") + (UTA_NATIVE_SOURCE_DIRTY ? "true" : "false");
             return result + ",\"qualification\":\"not_asserted\"}";
         }();
         return description.c_str();

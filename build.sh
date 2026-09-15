@@ -26,6 +26,15 @@ printf 'Building Uta! Studio with %s (%s)\n' \
 
 cd "$repo_root"
 tools/check-product-identity.sh
+# The worker dlopens this app-owned bridge from the installed runtime. Cargo
+# does not rebuild it. Refresh it before publishing new Rust executables so
+# native fixes cannot be silently left in the source tree after a normal build.
+libtorch_runtime="${UTA_STUDIO_LIBTORCH_RUNTIME_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/uta-studio/runtime/libtorch-xpu}"
+if [[ -f "$libtorch_runtime/runtime-manifest.json" ]]; then
+    bash "$repo_root/native-inference/libtorch-runtime/rebuild-native-xpu.sh"
+else
+    printf 'LibTorch XPU is not installed; no native bridge was updated.\n'
+fi
 # Studio discovers packaged machine-protocol executables beside its own
 # binary. Build that complete local set together so a fresh UI cannot talk to
 # stale Runtime Manager / Analysis Engine policy from an earlier build.

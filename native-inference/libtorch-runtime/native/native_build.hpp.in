@@ -1,0 +1,4 @@
+#pragma once
+// Source observations only; never an allow-list or compatibility gate.
+#define UTA_NATIVE_SOURCE_COMMIT "@native_source_commit@"
+#define UTA_NATIVE_SOURCE_DIRTY @native_source_dirty@

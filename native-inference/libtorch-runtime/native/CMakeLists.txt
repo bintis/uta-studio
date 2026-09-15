@@ -14,6 +14,22 @@ if(NOT EXISTS "${TORCH_INCLUDE_ROOT}/ATen/ATen.h")
   message(FATAL_ERROR "TORCH_ROOT must identify the selected native runtime; dependencies are not downloaded by this build")
 endif()
 
+# Diagnostic provenance is embedded in the actual DSO, not inferred from the
+# separately built Rust worker or used as a commit-equality eligibility check.
+execute_process(COMMAND git rev-parse HEAD WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+  OUTPUT_VARIABLE native_source_commit OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET RESULT_VARIABLE source_result)
+execute_process(COMMAND git status --porcelain -- . WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+  OUTPUT_VARIABLE native_source_status OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET RESULT_VARIABLE status_result)
+if(NOT source_result EQUAL 0)
+  set(native_source_commit "unavailable")
+endif()
+set(native_source_dirty "false")
+if(NOT status_result EQUAL 0 OR NOT native_source_status STREQUAL "")
+  set(native_source_dirty "true")
+endif()
+configure_file(native_build.hpp.in native_build.hpp @ONLY)
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/native-build-info.json"
+  "{\"native_source_commit\":\"${native_source_commit}\",\"native_source_dirty\":${native_source_dirty}}\n")
 add_library(uta_libtorch SHARED
   api.cpp gguf.cpp runtime.cpp roformer.cpp rmvpe.cpp fcpe.cpp basic_pitch.cpp jbm.cpp
   game.cpp qwen.cpp firered.cpp note_network.cpp stars.cpp rosvot.cpp)
@@ -23,6 +39,7 @@ target_compile_definitions(uta_libtorch PRIVATE _GLIBCXX_USE_CXX11_ABI=${TORCH_C
 target_include_directories(uta_libtorch SYSTEM PRIVATE
   "${TORCH_INCLUDE_ROOT}" "${TORCH_INCLUDE_ROOT}/torch/csrc/api/include")
 target_include_directories(uta_libtorch PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>")
+target_include_directories(uta_libtorch PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 set(native_components torch torch_cpu c10)
 set(native_paths "${TORCH_ROOT}/lib")
 if(UTA_LIBTORCH_BACKEND STREQUAL "rocm")
