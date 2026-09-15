@@ -10,7 +10,9 @@
 
 use std::collections::HashSet;
 
-use utz::{NoteBonus, NotePitch, ScoringMode, VocalChart, VocalMode, VocalNote, VocalTrackRole};
+use uta_studio_chart::{
+    NoteBonus, NotePitch, ScoringMode, VocalChart, VocalMode, VocalNote, VocalTrackRole,
+};
 
 /// The shortest authorable note. Matches the analyzer-era editor so existing
 /// charts keep their timing behaviour.
@@ -255,7 +257,7 @@ pub struct ClipboardNote {
     pub(crate) pitch: Option<NotePitch>,
     pub(crate) kind: NoteKind,
     pub(crate) weight: f64,
-    pub(crate) lyrics: Vec<utz::LyricToken>,
+    pub(crate) lyrics: Vec<uta_studio_chart::LyricToken>,
 }
 
 pub(crate) struct FlatNote {

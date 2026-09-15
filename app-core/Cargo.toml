@@ -30,7 +30,8 @@ hex = "0.4"
 md-5 = "0.11"
 regex = "1"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
-utz = { path = "../vendor/utz" }
+uta-studio-chart = { path = "../studio-chart" }
+utz.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

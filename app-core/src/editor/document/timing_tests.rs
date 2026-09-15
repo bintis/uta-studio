@@ -13,11 +13,11 @@ fn independent_document() -> EditorDocument {
     extra.join_before = LyricJoin::None;
     extra.reading = Some("に".into());
     extra.timing_unresolved = true;
-    extra.timing = Some(utz::LyricTiming {
+    extra.timing = Some(uta_studio_chart::LyricTiming {
         start: 1_000_000,
         duration: 500_000,
     });
-    document.token_mut(word(0)).unwrap().timing = Some(utz::LyricTiming {
+    document.token_mut(word(0)).unwrap().timing = Some(uta_studio_chart::LyricTiming {
         start: 500_000,
         duration: 500_000,
     });
@@ -39,7 +39,7 @@ fn geometry(document: &EditorDocument) -> Vec<(u64, u64, Option<NotePitch>)> {
 #[test]
 fn independent_unresolved_point_survives_reload_and_explicit_resize() {
     let mut document = independent_document();
-    document.token_mut(word(1)).unwrap().timing = Some(utz::LyricTiming {
+    document.token_mut(word(1)).unwrap().timing = Some(uta_studio_chart::LyricTiming {
         start: 1_000_000,
         duration: 0,
     });
@@ -114,7 +114,7 @@ fn independent_timing_note_edits_preserve_words_and_global_shift_moves_both() {
 #[test]
 fn independent_timing_uses_overlapping_pitch_away_from_its_carrier() {
     let mut document = independent_document();
-    document.token_mut(word(0)).unwrap().timing = Some(utz::LyricTiming {
+    document.token_mut(word(0)).unwrap().timing = Some(uta_studio_chart::LyricTiming {
         start: 2_100_000,
         duration: 300_000,
     });
@@ -242,7 +242,7 @@ fn independent_timing_short_syllable_intervals_are_nonzero() {
     let mut document = independent_document();
     document.set_language(Some("en".into()));
     document.set_lyric_text(word(0), "away");
-    document.token_mut(word(0)).unwrap().timing = Some(utz::LyricTiming {
+    document.token_mut(word(0)).unwrap().timing = Some(uta_studio_chart::LyricTiming {
         start: 500_000,
         duration: 2,
     });
@@ -410,7 +410,7 @@ fn independent_timing_tab_visits_words_that_share_a_note_with_a_continuation() {
 fn independent_timing_note_split_keeps_unoccupied_halves_saveable() {
     for (start, duration) in [(100_000, 300_000), (1_200_000, 300_000)] {
         let mut document = document(&[(0.0, 2.0, 60, "word")]);
-        document.token_mut(word(0)).unwrap().timing = Some(utz::LyricTiming { start, duration });
+        document.token_mut(word(0)).unwrap().timing = Some(uta_studio_chart::LyricTiming { start, duration });
         document.split_notes(&selection(&[0]), 1.0);
         let lyrics = document.lyrics();
         let written = lyrics

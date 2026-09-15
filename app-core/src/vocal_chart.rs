@@ -1,4 +1,4 @@
-//! UTZ 0.3 vocal-chart authoring model and analyzer import.
+//! Internal vocal-chart authoring model and analyzer import.
 
 use serde_json::Value;
 
@@ -8,7 +8,7 @@ use crate::{
     authoring::{load_pitch_guide, load_transcript},
     cache::CacheDir,
 };
-use utz::{
+use uta_studio_chart::{
     DEFAULT_TIMEBASE, LyricJoin, LyricTextToken, LyricToken, NoteBonus, NotePitch, NoteScoring,
     ScoringMode, VocalChart, VocalMode, VocalNote, VocalPhrase, VocalTrack, VocalTrackRole,
 };
@@ -108,14 +108,14 @@ fn load_chart_path(path: &std::path::Path) -> Result<VocalChart, UtaStudioError>
     {
         return migrate_engine_candidate_chart(&value);
     }
-    if value.get("format").and_then(Value::as_str) == Some(utz::VOCAL_CHART_FORMAT)
+    if value.get("format").and_then(Value::as_str) == Some(uta_studio_chart::VOCAL_CHART_FORMAT)
         && value
             .get("format_version")
             .and_then(Value::as_str)
             .is_some_and(|version| version.starts_with("0.2."))
     {
-        value["format_version"] = Value::String(utz::VOCAL_CHART_VERSION.to_string());
-        value["timebase"] = Value::from(utz::UTZ_TIMEBASE);
+        value["format_version"] = Value::String(uta_studio_chart::VOCAL_CHART_VERSION.to_string());
+        value["timebase"] = Value::from(uta_studio_chart::UTZ_TIMEBASE);
     }
     let chart: VocalChart = serde_json::from_value(value)?;
     chart
@@ -124,7 +124,7 @@ fn load_chart_path(path: &std::path::Path) -> Result<VocalChart, UtaStudioError>
     Ok(chart)
 }
 
-/// Projects the Engine-owned canonical candidate into the strict UTZ 0.3
+/// Projects the Engine-owned canonical candidate into the internal
 /// authoring chart. Canonical regions without a word remain analysis evidence;
 /// UTZ notes must own real lyric tokens, so they are not fabricated as lyrics.
 pub(crate) fn migrate_engine_candidate_chart(
@@ -133,7 +133,7 @@ pub(crate) fn migrate_engine_candidate_chart(
     if candidate.get("contract").and_then(Value::as_str)
         != Some("uta.analysis-engine.candidate-vocal-chart")
         || candidate.get("version").and_then(Value::as_u64) != Some(1)
-        || candidate.get("timebase").and_then(Value::as_u64) != Some(utz::UTZ_TIMEBASE)
+        || candidate.get("timebase").and_then(Value::as_u64) != Some(uta_studio_chart::UTZ_TIMEBASE)
     {
         return Err(UtaStudioError::Other(
             "Engine candidate chart contract is invalid".to_string(),
@@ -882,7 +882,7 @@ fn units_to_seconds_with_timebase(value: u64, timebase: u64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::{migrate_analyzer_chart, migrate_engine_candidate_chart, migrate_pitch_evidence};
-    use utz::{DEFAULT_TIMEBASE, LyricToken, ScoringMode};
+    use uta_studio_chart::{DEFAULT_TIMEBASE, LyricToken, ScoringMode};
 
     #[test]
     fn migrates_note_owned_lyrics_and_unpitched_words() {
@@ -945,7 +945,7 @@ mod tests {
 
         let chart = migrate_analyzer_chart(&transcript, &notes).unwrap();
         chart.validate().unwrap();
-        let phrase_text = |phrase: &utz::VocalPhrase| {
+        let phrase_text = |phrase: &uta_studio_chart::VocalPhrase| {
             phrase
                 .notes
                 .iter()
@@ -993,7 +993,7 @@ mod tests {
         let LyricToken::Text(world) = &notes[2].lyrics[0] else {
             panic!("the unpitched word must own text")
         };
-        assert_eq!(world.join_before, utz::LyricJoin::Space);
+        assert_eq!(world.join_before, uta_studio_chart::LyricJoin::Space);
     }
 
     #[test]
@@ -1055,7 +1055,7 @@ mod tests {
             panic!("the covered word remains a text lyric");
         };
         assert_eq!(second.text, "now");
-        assert_eq!(second.join_before, utz::LyricJoin::Space);
+        assert_eq!(second.join_before, uta_studio_chart::LyricJoin::Space);
     }
 
     #[test]

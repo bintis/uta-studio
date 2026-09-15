@@ -51,7 +51,7 @@ mod tests {
         let value = serde_json::json!({
             "format": "uta.vocal-chart",
             "format_version": "0.3.0",
-            "timebase": utz::UTZ_TIMEBASE,
+            "timebase": uta_studio_chart::UTZ_TIMEBASE,
             "language": "en",
             "tracks": [{
                 "id": "lead", "role": "lead", "part": null,
@@ -111,7 +111,7 @@ mod tests {
         let note = &merged.tracks[0].phrases[0].notes[0];
         assert_eq!(note.pitch.unwrap().midi, 64);
         assert_eq!(merged.tracks[0].singer.as_deref(), Some("Singer"));
-        let utz::LyricToken::Text(text) = &note.lyrics[0] else {
+        let uta_studio_chart::LyricToken::Text(text) = &note.lyrics[0] else {
             panic!("expected text lyric")
         };
         assert_eq!(text.text, "old");
@@ -125,8 +125,8 @@ mod tests {
             file_hash: hash.to_string(),
             vocal_chart: crate::VocalChart {
                 format: "uta.vocal-chart".into(),
-                format_version: utz::VOCAL_CHART_VERSION.into(),
-                timebase: utz::UTZ_TIMEBASE,
+                format_version: uta_studio_chart::VOCAL_CHART_VERSION.into(),
+                timebase: uta_studio_chart::UTZ_TIMEBASE,
                 language: Some("en".into()),
                 tracks: Vec::new(),
             },
@@ -253,7 +253,7 @@ mod tests {
         let candidate_value = serde_json::json!({
             "format": "uta.vocal-chart",
             "format_version": "0.3.0",
-            "timebase": utz::UTZ_TIMEBASE,
+            "timebase": uta_studio_chart::UTZ_TIMEBASE,
             "language": "en",
             "tracks": [{
                 "id": "lead", "role": "lead", "part": null,
@@ -279,7 +279,7 @@ mod tests {
         let authored_value = serde_json::json!({
             "format": "uta.vocal-chart",
             "format_version": "0.3.0",
-            "timebase": utz::UTZ_TIMEBASE,
+            "timebase": uta_studio_chart::UTZ_TIMEBASE,
             "language": "en",
             "tracks": [{
                 "id": "lead", "role": "lead", "part": null,

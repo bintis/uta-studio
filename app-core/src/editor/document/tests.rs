@@ -2,7 +2,7 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
 
-    use utz::{
+    use uta_studio_chart::{
         DEFAULT_TIMEBASE, LyricJoin, LyricTextToken, LyricToken, NoteBonus, NotePitch, NoteScoring,
         ScoringMode, VocalChart, VocalMode, VocalNote, VocalPhrase, VocalTrack, VocalTrackRole,
     };
@@ -57,9 +57,9 @@ mod tests {
     /// Editor documents may temporarily contain a pitched note without lyrics.
     /// That is an editable incomplete state, not an exportable UTZ 0.3 chart.
     fn assert_editor_structure(chart: &VocalChart) {
-        assert_eq!(chart.format, utz::VOCAL_CHART_FORMAT);
-        assert_eq!(chart.format_version, utz::VOCAL_CHART_VERSION);
-        assert_eq!(chart.timebase, utz::UTZ_TIMEBASE);
+        assert_eq!(chart.format, uta_studio_chart::VOCAL_CHART_FORMAT);
+        assert_eq!(chart.format_version, uta_studio_chart::VOCAL_CHART_VERSION);
+        assert_eq!(chart.timebase, uta_studio_chart::UTZ_TIMEBASE);
         for track in &chart.tracks {
             assert!(!track.id.trim().is_empty());
             for phrase in &track.phrases {

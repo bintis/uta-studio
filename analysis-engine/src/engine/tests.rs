@@ -278,7 +278,7 @@ fn pure_typed_candidate_outputs_are_published_and_manifest_valid() {
         analysis.chart_references.phrase_ids[0],
         chart.tracks[0].phrases[0].id
     );
-    assert_eq!(chart.format, utz::VOCAL_CHART_FORMAT);
+    assert_eq!(chart.format, uta_studio_chart::VOCAL_CHART_FORMAT);
     assert_eq!(chart.tracks[0].phrases[0].notes[0].id, "game-note-0");
     assert_eq!(chart.tracks[0].phrases[0].notes[0].scoring.weight, 1.0);
 

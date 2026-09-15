@@ -476,7 +476,7 @@ pub(crate) fn validate_pitch_notes(value: &serde_json::Value) -> ArtifactHealth 
 }
 
 pub(crate) fn validate_authored_chart(value: &serde_json::Value) -> ArtifactHealth {
-    match serde_json::from_value::<utz::VocalChart>(value.clone()) {
+    match serde_json::from_value::<uta_studio_chart::VocalChart>(value.clone()) {
         Ok(chart) => match chart.validate() {
             Ok(()) => ArtifactHealth {
                 status: ArtifactHealthStatus::Valid,

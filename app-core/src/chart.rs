@@ -13,7 +13,7 @@ use std::{
 
 use serde::Serialize;
 use ts_rs::TS;
-use utz::VocalChart;
+use uta_studio_chart::VocalChart;
 
 use crate::{
     analysis_artifact::{
@@ -1130,7 +1130,8 @@ mod candidate_chart_status_tests {
         let path = materialize_candidate_chart(&cache, hash, &transcript_path).unwrap();
         assert_eq!(path, cache.candidate_chart_path(hash));
         assert_ne!(path, transcript_path);
-        let chart: utz::VocalChart = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let chart: uta_studio_chart::VocalChart =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
         chart.validate().unwrap();
 
         cache.clear_all();

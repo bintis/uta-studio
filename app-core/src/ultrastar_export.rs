@@ -13,7 +13,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use utz::{LyricJoin, LyricToken, VocalChart, VocalNote, VocalTrack, VocalTrackRole};
+use uta_studio_chart::{LyricJoin, LyricToken, VocalChart, VocalNote, VocalTrack, VocalTrackRole};
 
 use crate::{
     audio_format::{export_extension as audio_export_extension, transcode_audio},
@@ -577,7 +577,7 @@ mod tests {
         publish_staged_ultrastar_bundle, ultrastar_note_kind,
     };
     use crate::{editor::NoteKind, usdx::validate_usdx_str, vocal_chart::migrate_analyzer_chart};
-    use utz::VocalChart;
+    use uta_studio_chart::VocalChart;
 
     type TestNote<'a> = (f64, f64, u8, &'a str, &'a str);
 
@@ -746,15 +746,15 @@ mod tests {
         );
         for note in &mut chart.tracks[0].phrases[0].notes {
             for token in &mut note.lyrics {
-                if let utz::LyricToken::Text(token) = token {
+                if let uta_studio_chart::LyricToken::Text(token) = token {
                     token.timing_unresolved = true;
                 }
             }
         }
         let unmeasured = &mut chart.tracks[0].phrases[0].notes[2];
         unmeasured.pitch = None;
-        unmeasured.vocal_mode = utz::VocalMode::Freestyle;
-        unmeasured.scoring.mode = utz::ScoringMode::None;
+        unmeasured.vocal_mode = uta_studio_chart::VocalMode::Freestyle;
+        unmeasured.scoring.mode = uta_studio_chart::ScoringMode::None;
         let text = build_ultrastar_text(
             "Title",
             "Artist",
@@ -780,22 +780,22 @@ mod tests {
         let mut chart = chart("ja", &[&[(0.0, 1.0, 60, "切れ", "normal")]]);
         let timebase = chart.timebase;
         let note = &mut chart.tracks[0].phrases[0].notes[0];
-        let utz::LyricToken::Text(first) = &mut note.lyrics[0] else {
+        let uta_studio_chart::LyricToken::Text(first) = &mut note.lyrics[0] else {
             panic!("fixture lyric");
         };
-        first.timing = Some(utz::LyricTiming {
+        first.timing = Some(uta_studio_chart::LyricTiming {
             start: timebase / 10,
             duration: timebase * 4 / 10,
         });
         let mut second = first.clone();
         second.id = "independent-next-word".into();
         second.text = "に".into();
-        second.join_before = utz::LyricJoin::None;
-        second.timing = Some(utz::LyricTiming {
+        second.join_before = uta_studio_chart::LyricJoin::None;
+        second.timing = Some(uta_studio_chart::LyricTiming {
             start: timebase * 6 / 10,
             duration: timebase * 3 / 10,
         });
-        note.lyrics.push(utz::LyricToken::Text(second));
+        note.lyrics.push(uta_studio_chart::LyricToken::Text(second));
         chart.validate().expect("independent word ranges are valid");
         let before = chart.clone();
         let text = build_ultrastar_text(
@@ -822,15 +822,19 @@ mod tests {
 
     /// Splits a chart's notes over a second lead track, assigning both
     /// tracks contiguous duet parts the way `EditorDocument` would.
-    fn with_duet_track(chart: &mut VocalChart, singer: &str, notes: Vec<utz::VocalNote>) {
+    fn with_duet_track(
+        chart: &mut VocalChart,
+        singer: &str,
+        notes: Vec<uta_studio_chart::VocalNote>,
+    ) {
         chart.tracks[0].part = Some(1);
-        chart.tracks.push(utz::VocalTrack {
+        chart.tracks.push(uta_studio_chart::VocalTrack {
             id: "duet".into(),
-            role: utz::VocalTrackRole::Lead,
+            role: uta_studio_chart::VocalTrackRole::Lead,
             part: Some(2),
             singer: Some(singer.into()),
             scoring_enabled: true,
-            phrases: vec![utz::VocalPhrase {
+            phrases: vec![uta_studio_chart::VocalPhrase {
                 id: "duet-phrase".into(),
                 notes,
             }],
@@ -847,15 +851,17 @@ mod tests {
                 let mut note = note.clone();
                 note.id = "duet-note".into();
                 note.start += chart.timebase;
-                note.lyrics = vec![utz::LyricToken::Text(utz::LyricTextToken {
-                    timing: None,
-                    timing_unresolved: false,
-                    id: "duet-lyric".into(),
-                    text: "partner".into(),
-                    join_before: utz::LyricJoin::Space,
-                    reading: None,
-                    phonemes: None,
-                })];
+                note.lyrics = vec![uta_studio_chart::LyricToken::Text(
+                    uta_studio_chart::LyricTextToken {
+                        timing: None,
+                        timing_unresolved: false,
+                        id: "duet-lyric".into(),
+                        text: "partner".into(),
+                        join_before: uta_studio_chart::LyricJoin::Space,
+                        reading: None,
+                        phonemes: None,
+                    },
+                )];
                 note
             })
             .collect();
@@ -888,9 +894,9 @@ mod tests {
     #[test]
     fn a_single_sung_track_keeps_the_plain_single_player_body() {
         let mut chart = chart("en", &[&[(0.0, 0.5, 60, "lead", "normal")]]);
-        chart.tracks.push(utz::VocalTrack {
+        chart.tracks.push(uta_studio_chart::VocalTrack {
             id: "harmony".into(),
-            role: utz::VocalTrackRole::Harmony,
+            role: uta_studio_chart::VocalTrackRole::Harmony,
             part: None,
             singer: None,
             scoring_enabled: false,

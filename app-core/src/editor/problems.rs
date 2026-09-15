@@ -358,15 +358,19 @@ mod tests {
     #[test]
     fn independent_lyrics_across_notes_and_empty_slots_match_format_validity() {
         let mut chart = document(&[(0.0, 1.0, 60, "held"), (1.0, 2.0, 62, "slot")]).to_chart();
-        let timing = utz::LyricTiming {
+        let timing = uta_studio_chart::LyricTiming {
             start: 500_000,
             duration: 1_000_000,
         };
-        let utz::LyricToken::Text(held) = &mut chart.tracks[0].phrases[0].notes[0].lyrics[0] else {
+        let uta_studio_chart::LyricToken::Text(held) =
+            &mut chart.tracks[0].phrases[0].notes[0].lyrics[0]
+        else {
             panic!("text token");
         };
         held.timing = Some(timing);
-        let utz::LyricToken::Text(slot) = &mut chart.tracks[0].phrases[0].notes[1].lyrics[0] else {
+        let uta_studio_chart::LyricToken::Text(slot) =
+            &mut chart.tracks[0].phrases[0].notes[1].lyrics[0]
+        else {
             panic!("text token");
         };
         slot.text.clear();
@@ -378,11 +382,13 @@ mod tests {
         assert!(kinds(&report).contains(&ProblemKind::ScorableNoteWithoutLyric));
         let saved = document.to_chart();
         saved.validate().unwrap();
-        let restored: utz::VocalChart =
+        let restored: uta_studio_chart::VocalChart =
             serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
         restored.validate().unwrap();
         assert_eq!(restored.tracks[0].phrases[0].notes.len(), 2);
-        let utz::LyricToken::Text(held) = &restored.tracks[0].phrases[0].notes[0].lyrics[0] else {
+        let uta_studio_chart::LyricToken::Text(held) =
+            &restored.tracks[0].phrases[0].notes[0].lyrics[0]
+        else {
             panic!("text token");
         };
         assert_eq!(held.timing, Some(timing));
@@ -402,9 +408,10 @@ mod tests {
     #[test]
     fn an_unresolved_continuation_remains_a_format_error() {
         let mut chart = document(&[(0.0, 1.0, 60, "one")]).to_chart();
-        chart.tracks[0].phrases[0].notes[0].lyrics = vec![utz::LyricToken::Continuation {
-            continuation_of: "missing-lyric".into(),
-        }];
+        chart.tracks[0].phrases[0].notes[0].lyrics =
+            vec![uta_studio_chart::LyricToken::Continuation {
+                continuation_of: "missing-lyric".into(),
+            }];
         let document = EditorDocument::new(chart);
         let report = document.problems();
         assert!(kinds(&report).contains(&ProblemKind::UnresolvedContinuation));

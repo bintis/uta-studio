@@ -14,10 +14,16 @@ members = [
   "native-inference/libtorch-runtime",
   "native-inference/ggml-worker",
   "native-inference/gpu-probes",
+  "studio-chart",
   "studio-diagnostics",
   "xtask",
   "utz-export",
 ]
+
+# UTZ is the published output standard, used unmodified from upstream. Studio's
+# internal chart model lives in studio-chart and is projected to it on export.
+[workspace.dependencies]
+utz = { git = "https://github.com/bintis/utz", rev = "cf1c09af3decd870a09a226ec0ead1811c52459f" }
 
 # Parley keeps its segmentation constructors private. Carry the minimal source
 # fix here so packaged desktop builds load ICU's compiled CJK dictionaries;

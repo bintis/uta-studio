@@ -1,6 +1,6 @@
 # Uta! Studio — Key Technical Conclusions
 
-**Updated:** 2026-09-14
+**Updated:** 2026-09-15
 
 ## Authority
 
@@ -12,7 +12,8 @@
 ## Imported lyrics and word timing
 
 Imported text and timed LRC remain authoritative independently from successful
-word measurements. Lyric words now carry independent editable time in UTZ;
+word measurements. Lyric words now carry independent editable time in Studio's
+internal chart model;
 several words may share a melody note, or one word may span notes. Word
 projection no longer cuts the selected melody path. Unresolved text remains
 visible, and note quantization preserves independent lyric times.
@@ -37,8 +38,9 @@ A matched replay retaining the prior six non-alignment outputs and using new Qwe
 produces **499 / 12**, versus the preceding **505 / 20**. These are distinct
 comparisons; lower short-note counts alone do not prove better transcription.
 Actual final public-chart UTZ and UltraStar exports preserve all 71 notes and
-129 characters, and both FLAC streams decode fully. UTZ additionally preserves
-the 32 independent lyric intervals; UltraStar cannot represent that timeline.
+129 characters, and both FLAC streams decode fully. That UTZ export also carried
+the 32 independent lyric intervals; since the upstream UTZ pin below, neither
+export carries that timeline and only the internal chart keeps it.
 
 Final relevant verification passes: Engine 387, Core 527 and Desktop editor 14
 tests, with two/one/zero ignored, strict Clippy and debug builds. B580 editor
@@ -57,6 +59,26 @@ readiness are unchanged; 21J remains `NEEDS_REVIEW`.
 ## Lyric sentences and Workflow quantization
 
 Generated sentence boundaries now reach UTZ phrases, while supplied plain/LRC line authority and untimed mixed-LRC text are preserved. Workflow exposes a per-song rhythm-quantization preference through the existing mutation and exact request path. The real Asphodelos rerun/export has 33 phrases instead of one, with prior melody coverage/pitch preserved; recognition/alignment omissions remain a separate quality issue. See [implementation, verification and limits](LYRIC_SENTENCE_REPAIR.md). This task does not promote runtime/model readiness.
+
+## Upstream UTZ pin (2026-09-15 JST)
+
+`utz` is the published output standard. It now resolves unmodified from
+`https://github.com/bintis/utz` at `cf1c09af`, and the diverged `vendor/utz` copy is
+removed. Studio's internal chart model is the `studio-chart` workspace crate: it keeps
+the existing cache and wire JSON, including independent lyric `timing` and
+`timing_unresolved`, and validates the standard UTZ rules on its projection plus those
+lyric-timing rules. `.utz` export writes only `VocalChart::to_utz()`, where every lyric
+follows its hosting note. Upstream's own dependencies resolve ZIP 4.6.1, replacing
+8.6.0, and add SHA-2 0.10 beside the workspace's 0.11.
+
+Verification on the uncommitted tree: workspace all-target check and affected-crate
+Clippy add no warnings; chart 4, Core 539, Engine 410 plus 4 CLI, diagnostics 1 and
+Desktop editor 22 tests pass, and the standalone fuzz targets compile. One
+worker-progress supervision test failed once in the first parallel Engine run and
+passed on rerun. A read-only replay of the two cached candidate charts (501 and 835
+notes; 203 independent and 50 unresolved lyric timings) round-trips losslessly, and
+each projection passes upstream validation, package build and readback with no timing
+fields. No real library export, running desktop pass or Nix build was executed.
 
 ## Cargo dependency upgrade (2026-09-14 JST)
 

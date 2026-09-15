@@ -249,7 +249,7 @@ pub fn merge_chart_revisions(
     candidate: &ArtifactRef,
     authored: &ArtifactRef,
     mode: ChartRevisionMergeMode,
-) -> Result<utz::VocalChart, String> {
+) -> Result<uta_studio_chart::VocalChart, String> {
     if candidate.file_hash != authored.file_hash
         || candidate.kind != ArtifactKind::CandidateChart
         || authored.kind != ArtifactKind::AuthoredChart
@@ -259,11 +259,11 @@ pub fn merge_chart_revisions(
                 .into(),
         );
     }
-    let load = |reference: &ArtifactRef| -> Result<utz::VocalChart, String> {
+    let load = |reference: &ArtifactRef| -> Result<uta_studio_chart::VocalChart, String> {
         let revision = revision_by_id(&reference.file_hash, &reference.revision_id)
             .ok_or_else(|| format!("artifact revision not found: {}", reference.revision_id))?;
         let bytes = bounded_read(&revision.path, 16 * 1024 * 1024)?;
-        let chart: utz::VocalChart =
+        let chart: uta_studio_chart::VocalChart =
             serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
         chart.validate().map_err(|error| error.to_string())?;
         Ok(chart)

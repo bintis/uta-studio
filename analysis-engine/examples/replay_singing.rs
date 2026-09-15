@@ -219,8 +219,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         .iter()
         .flat_map(|note| &note.lyrics)
         .filter_map(|token| match token {
-            utz::LyricToken::Text(token) => Some(token.text.as_str()),
-            utz::LyricToken::Continuation { .. } => None,
+            uta_studio_chart::LyricToken::Text(token) => Some(token.text.as_str()),
+            uta_studio_chart::LyricToken::Continuation { .. } => None,
         })
         .collect::<String>();
     let regions = input.report_regions.iter().map(|range| {
@@ -333,7 +333,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     write_json_artifact(
         &output,
         Path::new("vocal-chart.json"),
-        utz::VOCAL_CHART_MEDIA_TYPE,
+        uta_studio_chart::VOCAL_CHART_MEDIA_TYPE,
         &chart,
     )?;
     write_json_artifact(

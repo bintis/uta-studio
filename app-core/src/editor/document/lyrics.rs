@@ -5,7 +5,7 @@ use std::collections::{BTreeSet, HashSet};
 
 use crate::editor::seconds_to_units;
 use crate::editor::syllabize::{is_han, is_hangul, is_kana};
-use utz::{
+use uta_studio_chart::{
     LyricJoin, LyricTextToken, LyricTiming, LyricToken, NoteBonus, NoteScoring, ScoringMode,
     VocalMode, VocalNote, VocalPhrase,
 };

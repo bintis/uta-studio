@@ -1174,7 +1174,7 @@ fn validate_semantic_artifact(semantic: &str, path: &Path) -> Result<(), String>
         crate::vocal_chart::migrate_engine_candidate_chart(&value)
             .map_err(|error| format!("Engine Candidate projection is invalid: {error}"))?
     } else {
-        serde_json::from_value::<utz::VocalChart>(value)
+        serde_json::from_value::<uta_studio_chart::VocalChart>(value)
             .map_err(|error| format!("Engine Candidate VocalChart is invalid: {error}"))?
     };
     chart

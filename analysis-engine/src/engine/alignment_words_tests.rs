@@ -234,7 +234,7 @@ fn measured_character_alignment_reaches_individual_chart_notes_without_line_lyri
     for ((note, (start, end)), text) in notes.iter().zip(measured).zip(["风", "吹", "沙"]) {
         assert_eq!((note.start, note.duration), (start, end - start));
         assert_eq!(note.lyrics.len(), 1);
-        let utz::LyricToken::Text(lyric) = &note.lyrics[0] else {
+        let uta_studio_chart::LyricToken::Text(lyric) = &note.lyrics[0] else {
             panic!("each measured character needs text, not a whole-line continuation");
         };
         assert_eq!(lyric.text, text);
@@ -394,7 +394,7 @@ fn generated_sentences_reach_chart_phrases_even_when_a_sentence_end_is_unresolve
                 .iter()
                 .flat_map(|note| &note.lyrics)
                 .filter_map(|token| match token {
-                    utz::LyricToken::Text(token) => Some(token.text.as_str()),
+                    uta_studio_chart::LyricToken::Text(token) => Some(token.text.as_str()),
                     _ => None,
                 })
                 .collect::<String>())
@@ -409,7 +409,7 @@ fn generated_sentences_reach_chart_phrases_even_when_a_sentence_end_is_unresolve
         .iter()
         .flat_map(|note| &note.lyrics)
         .filter_map(|token| match token {
-            utz::LyricToken::Text(token) if !token.text.is_empty() => Some(token),
+            uta_studio_chart::LyricToken::Text(token) if !token.text.is_empty() => Some(token),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -437,7 +437,7 @@ fn generated_sentences_reach_chart_phrases_even_when_a_sentence_end_is_unresolve
         if let Some(range) = unit.measured_range {
             assert_eq!(
                 token.timing,
-                Some(utz::LyricTiming {
+                Some(uta_studio_chart::LyricTiming {
                     start: range.start,
                     duration: range.end - range.start,
                 })
@@ -448,7 +448,7 @@ fn generated_sentences_reach_chart_phrases_even_when_a_sentence_end_is_unresolve
     // preserve its full original search scope in canonical lyric evidence.
     assert_eq!(
         lyrics[1].timing,
-        Some(utz::LyricTiming {
+        Some(uta_studio_chart::LyricTiming {
             start: 250_000,
             duration: 250_000,
         })
@@ -462,7 +462,7 @@ fn generated_sentences_reach_chart_phrases_even_when_a_sentence_end_is_unresolve
         assert_eq!((note.start, note.duration), (start, end - start));
     }
     let encoded = serde_json::to_vec(&chart).unwrap();
-    let decoded: utz::VocalChart = serde_json::from_slice(&encoded).unwrap();
+    let decoded: uta_studio_chart::VocalChart = serde_json::from_slice(&encoded).unwrap();
     decoded.validate().unwrap();
     assert_eq!(decoded, chart);
 }

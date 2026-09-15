@@ -19,6 +19,7 @@ The separated-architecture handoff supersedes earlier monolithic Singing/Audio d
 ## Frozen architecture decisions
 
 - `utz` owns domain exchange semantics.
+- `utz` is used unmodified from upstream. Studio-only chart state lives in `studio-chart` and reaches `.utz` packages only as the standard projection.
 - Runtime Manager is the sole model/runtime lifecycle truth.
 - Analysis Engine executes analysis and does not download models.
 - Studio owns product workflow/control-plane behavior and does not prepare model tensors.

@@ -6,12 +6,13 @@ use crate::fusion::{
     CanonicalNote, CanonicalSingingTrack, TimeRange, validate_canonical_singing_track,
 };
 use crate::quantization::QuantizationReport;
-use utz::{
+use uta_studio_chart::{
     LyricJoin, LyricTextToken, LyricTiming, LyricToken, NoteBonus, NotePitch, NoteScoring,
     ScoringMode, VocalChart, VocalMode, VocalNote, VocalPhrase, VocalTrack, VocalTrackRole,
 };
 
-/// Newly emitted Candidate bytes use the strict UTZ VocalChart 0.3 contract.
+/// Newly emitted Candidate bytes use Studio's internal chart model, whose
+/// standard projection is the UTZ VocalChart 0.3 contract.
 /// Studio retains a read-only migration path for legacy Engine candidate/v1
 /// cache entries, but the Engine no longer emits that wrapper.
 pub type CandidateVocalChart = VocalChart;
@@ -325,7 +326,7 @@ fn phrases_by_lyric_line(
 /// caller's line id, trimmed to the UTZ id budget.
 fn phrase_id(order: usize, line_id: &str) -> String {
     let prefix = format!("phrase-{}-", order + 1);
-    let budget = utz::MAX_ID_BYTES.saturating_sub(prefix.len());
+    let budget = uta_studio_chart::MAX_ID_BYTES.saturating_sub(prefix.len());
     let mut end = line_id.len().min(budget);
     while !line_id.is_char_boundary(end) {
         end -= 1;
@@ -581,7 +582,7 @@ mod tests {
         let track = track();
         let chart = finalize_candidate_vocal_chart(&track, &"a".repeat(64), None).unwrap();
         chart.validate().unwrap();
-        assert_eq!(chart.format, utz::VOCAL_CHART_FORMAT);
+        assert_eq!(chart.format, uta_studio_chart::VOCAL_CHART_FORMAT);
         assert_eq!(chart.tracks[0].phrases[0].notes[0].id, "note-1");
         assert_eq!(chart.tracks[0].phrases[0].notes[0].start, 100_001);
         assert!(
@@ -937,7 +938,7 @@ mod tests {
         let reference = write_json_artifact(
             &root,
             Path::new("candidate/vocal-chart.json"),
-            utz::VOCAL_CHART_MEDIA_TYPE,
+            uta_studio_chart::VOCAL_CHART_MEDIA_TYPE,
             &chart,
         )
         .unwrap();
@@ -1026,7 +1027,7 @@ mod tests {
         assert_eq!(chart.tracks[0].phrases.len(), 1);
         assert_eq!(chart.tracks[0].phrases[0].id, "phrase-1");
         let long = phrase_id(41, &"line".repeat(40));
-        assert!(long.len() <= utz::MAX_ID_BYTES);
+        assert!(long.len() <= uta_studio_chart::MAX_ID_BYTES);
         assert!(long.starts_with("phrase-42-line"));
     }
 

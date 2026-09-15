@@ -35,7 +35,7 @@ pub(super) fn lyric_display_groups(track: &CanonicalSingingTrack) -> Vec<LyricDi
             })
         {
             if super::vocal_chart::lyric_join_between(Some(&previous.boundary.text), &unit.text)
-                == utz::LyricJoin::Space
+                == uta_studio_chart::LyricJoin::Space
             {
                 previous.boundary.text.push(' ');
             }

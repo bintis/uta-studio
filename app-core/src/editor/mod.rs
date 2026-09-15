@@ -1,8 +1,9 @@
 //! UI-agnostic editing model for the UTZ 0.2 vocal chart.
 //!
-//! The editor edits [`utz::VocalChart`] directly. Analyzer-era transcript and
-//! pitch-note JSON stay derived projections for export and compatibility, so an
-//! edit never round trips through a lossy re-migration.
+//! The editor edits the internal [`uta_studio_chart::VocalChart`] directly.
+//! Analyzer-era transcript and pitch-note JSON stay derived projections for
+//! export and compatibility, so an edit never round trips through a lossy
+//! re-migration.
 //!
 //! Chart positions are integer timebase units, as the format requires. Seconds
 //! appear only at the rendering and audio-seek boundary.
@@ -54,7 +55,7 @@ pub(crate) fn round_units_to_millis(units: u64, timebase: u64) -> u64 {
 #[cfg(test)]
 mod timebase_tests {
     use super::*;
-    use utz::DEFAULT_TIMEBASE;
+    use uta_studio_chart::DEFAULT_TIMEBASE;
 
     #[test]
     fn milliseconds_round_trip_without_drift() {

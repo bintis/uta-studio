@@ -85,7 +85,7 @@ impl CacheDir {
         }
     }
 
-    /// Authoritative UTZ 0.3 authoring document. Transcript and analyzer note
+    /// Authoritative internal chart authoring document. Transcript and analyzer note
     /// files remain migration/evidence inputs, not parallel chart truth.
     pub fn vocal_chart_path(&self, hash: &str) -> PathBuf {
         self.path.join(format!("{hash}_vocal_chart.json"))

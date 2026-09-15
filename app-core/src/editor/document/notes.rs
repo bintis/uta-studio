@@ -2,7 +2,7 @@ use super::*;
 use std::collections::{BTreeSet, HashSet};
 
 use crate::editor::{round_units_to_millis, seconds_to_units, units_to_seconds};
-use utz::{
+use uta_studio_chart::{
     DEFAULT_TIMEBASE, LyricJoin, LyricTextToken, LyricTiming, LyricToken, NoteBonus, NotePitch,
     NoteScoring, ScoringMode, VocalChart, VocalMode, VocalNote, VocalPhrase, VocalTrack,
     VocalTrackRole,

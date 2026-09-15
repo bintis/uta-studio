@@ -1,7 +1,7 @@
 use super::*;
 use std::collections::HashSet;
 
-use utz::{LyricJoin, LyricToken};
+use uta_studio_chart::{LyricJoin, LyricToken};
 
 pub(crate) fn parse_phrase_tokens(text: &str) -> Vec<(String, LyricJoin)> {
     let mut tokens = Vec::new();

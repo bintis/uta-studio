@@ -22,6 +22,7 @@ MANIFESTS=(
   native-inference/ggml-worker/Cargo.toml
   native-inference/gpu-probes/Cargo.toml
   runtime-manager/Cargo.toml
+  studio-chart/Cargo.toml
   studio-diagnostics/Cargo.toml
   utz-export/Cargo.toml
   xtask/Cargo.toml

@@ -148,7 +148,7 @@ mod tests {
     use super::*;
     use crate::analysis_graph::ArtifactKind;
     use crate::editor::evidence::{EvidencePoint, ReviewRegion, ReviewSeverity};
-    use utz::{
+    use uta_studio_chart::{
         DEFAULT_TIMEBASE, LyricJoin, LyricTextToken, LyricToken, NoteBonus, NotePitch, NoteScoring,
         ScoringMode, VocalChart, VocalMode, VocalNote, VocalPhrase, VocalTrack, VocalTrackRole,
     };

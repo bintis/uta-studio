@@ -1,6 +1,6 @@
 use super::*;
 use std::collections::{BTreeSet, HashSet};
-use utz::{LyricJoin, LyricTextToken, LyricTiming, LyricToken};
+use uta_studio_chart::{LyricJoin, LyricTextToken, LyricTiming, LyricToken};
 
 impl EditorDocument {
     pub(crate) fn token_at(&self, address: LyricAddress) -> Option<&LyricTextToken> {

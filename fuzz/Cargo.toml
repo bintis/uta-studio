@@ -11,7 +11,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 serde_json = "1"
 uta-studio-core = { path = "../app-core" }
-utz = { path = "../vendor/utz" }
+utz = { git = "https://github.com/bintis/utz", rev = "cf1c09af3decd870a09a226ec0ead1811c52459f" }
 
 [[bin]]
 name = "utz_package"

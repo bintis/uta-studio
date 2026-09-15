@@ -183,7 +183,7 @@ pub use source::{
     FolderSource, LibraryFolderEntry, MediaSource, active_source, list_library_folder,
 };
 pub use ultrastar_export::{export_ultrastar, validate_ultrastar_chart, validate_ultrastar_text};
-pub use utz::VocalChart;
+pub use uta_studio_chart::VocalChart;
 pub use utz_export::{
     ExportProgress, ExportableSong, export_utz, export_utz_with_progress, list_exportable_songs,
 };

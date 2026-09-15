@@ -38,7 +38,7 @@ pub struct SingingAnalysisChartReferences {
 }
 
 impl SingingAnalysisChartReferences {
-    fn from_chart(chart: &utz::VocalChart) -> Self {
+    fn from_chart(chart: &uta_studio_chart::VocalChart) -> Self {
         let Some(track) = chart.tracks.first() else {
             return Self::default();
         };
@@ -52,8 +52,8 @@ impl SingingAnalysisChartReferences {
             .iter()
             .flat_map(|note| &note.lyrics)
             .filter_map(|token| match token {
-                utz::LyricToken::Text(token) => Some(token.id.clone()),
-                utz::LyricToken::Continuation { .. } => None,
+                uta_studio_chart::LyricToken::Text(token) => Some(token.id.clone()),
+                uta_studio_chart::LyricToken::Continuation { .. } => None,
             })
             .collect::<Vec<_>>();
         note_ids.sort();
@@ -112,7 +112,7 @@ pub struct SingingAnalysis {
 impl SingingAnalysis {
     pub fn new(
         track: &CanonicalSingingTrack,
-        chart: &utz::VocalChart,
+        chart: &uta_studio_chart::VocalChart,
         candidate_evidence: Vec<SegmentCandidate>,
         candidate_hard_boundaries: HardBoundarySet,
         review_regions: Vec<SingingReviewRegion>,

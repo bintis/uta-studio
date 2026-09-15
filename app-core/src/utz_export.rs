@@ -170,7 +170,9 @@ where
         .as_deref()
         .map(|path| staging.prepare(path, "guide-vocals"))
         .transpose()?;
-    let vocal_chart = load_authoring_chart(file_hash)?;
+    // Studio-only lyric timing stays in the authoring chart; the package
+    // carries its standard UTZ projection.
+    let vocal_chart = load_authoring_chart(file_hash)?.to_utz();
 
     let instrumental_name = format!(
         "audio/instrumental.{}",

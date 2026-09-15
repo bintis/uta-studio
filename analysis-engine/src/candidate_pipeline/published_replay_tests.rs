@@ -99,8 +99,8 @@ fn replay_published_lyrics_and_candidate_pool() {
         .iter()
         .flat_map(|note| &note.lyrics)
         .filter_map(|token| match token {
-            utz::LyricToken::Text(token) => Some(token),
-            utz::LyricToken::Continuation { .. } => None,
+            uta_studio_chart::LyricToken::Text(token) => Some(token),
+            uta_studio_chart::LyricToken::Continuation { .. } => None,
         })
         .collect::<Vec<_>>();
     let text = tokens
@@ -112,7 +112,7 @@ fn replay_published_lyrics_and_candidate_pool() {
             .iter()
             .flat_map(|note| {
                 note.lyrics.iter().filter_map(move |token| {
-                    let utz::LyricToken::Text(token) = token else {
+                    let uta_studio_chart::LyricToken::Text(token) = token else {
                         return None;
                     };
                     (note.start >= 48_000_000 && note.start < 54_000_000
@@ -135,7 +135,7 @@ fn replay_published_lyrics_and_candidate_pool() {
         "pitched_under_100ms": notes.iter().filter(|note| note.pitch.is_some() && note.duration < 100_000).count(),
         "unresolved_text_groups": tokens.iter().filter(|token| token.timing_unresolved).count(),
         "multi_text_notes": notes.iter().filter(|note| note.lyrics.iter().filter(|token|
-            matches!(token, utz::LyricToken::Text(text) if !text.text.is_empty())).count() > 1).count(),
+            matches!(token, uta_studio_chart::LyricToken::Text(text) if !text.text.is_empty())).count() > 1).count(),
     });
     std::fs::create_dir(&output).expect("unique output directory");
     for (name, value) in [
@@ -163,7 +163,7 @@ fn replay_published_lyrics_and_candidate_pool() {
                 .iter()
                 .any(|token| {
                     matches!(token,
-            utz::LyricToken::Text(text) if text.id == id)
+            uta_studio_chart::LyricToken::Text(text) if text.id == id)
                 })
                 .then_some(note.start)
         })
@@ -180,7 +180,7 @@ fn replay_published_lyrics_and_candidate_pool() {
             && note
                 .lyrics
                 .iter()
-                .all(|token| matches!(token, utz::LyricToken::Text(text) if text.text.is_empty()))),
+                .all(|token| matches!(token, uta_studio_chart::LyricToken::Text(text) if text.text.is_empty()))),
         "caller line scope must not create the reported empty prefix"
     );
 }
