@@ -107,13 +107,19 @@ private:
         diagnostic_event("qwen_attention_begin", runtime->precision.c_str());
         if (runtime->precision != "mixed_attention") {
             if (runtime->backend != "libtorch_xpu") return dense_attention(query, key, value, mask);
-            const auto detail = [&](const char* stage, int64_t batch, int64_t head, int64_t row, int64_t count) {
+            const auto detail = [&](const char* stage, int64_t batch, int64_t key_head,
+                                    int64_t query_head, int64_t row, int64_t count) {
                 return std::string("qwen.strict.") + stage + " batch=" + std::to_string(batch) +
-                    " kv_head=" + std::to_string(head) + " query_row=" + std::to_string(row) +
+                    " kv_head=" + std::to_string(key_head) + " query_head=" + std::to_string(query_head) +
+                    " query_row=" + std::to_string(row) +
                     " count=" + std::to_string(count) + " query_heads=" + std::to_string(query.size(1)) +
                     " kv_heads=" + std::to_string(key.size(1)) + " queries=" + std::to_string(query.size(2)) +
                     " keys=" + std::to_string(key.size(2)) + " width=" + std::to_string(query.size(3)) +
                     " value_width=" + std::to_string(value.size(3)) +
+                    " query_head_stride=" + std::to_string(query.stride(1)) +
+                    " query_row_stride=" + std::to_string(query.stride(2)) +
+                    " query_channel_stride=" + std::to_string(query.stride(3)) +
+                    " query_storage_offset=" + std::to_string(query.storage_offset()) +
                     " key_head_stride=" + std::to_string(key.stride(1)) +
                     " key_row_stride=" + std::to_string(key.stride(2));
             };
@@ -121,10 +127,10 @@ private:
             // details. Persist intent before dispatch; completion is required
             // even when diagnostics and TRACE_SYNC are disabled.
             return qwen_strict_attention(query, key, value, mask, [this] { check_cancel(); },
-                [&](const char* stage, int64_t batch, int64_t head, int64_t row, int64_t count) {
-                    diagnostic_event("attention_operator_begin", detail(stage, batch, head, row, count).c_str());
-                }, [&](const char* stage, int64_t batch, int64_t head, int64_t row, int64_t count) {
-                    const auto label = detail(stage, batch, head, row, count);
+                [&](const char* stage, int64_t batch, int64_t key_head, int64_t query_head, int64_t row, int64_t count) {
+                    diagnostic_event("attention_operator_begin", detail(stage, batch, key_head, query_head, row, count).c_str());
+                }, [&](const char* stage, int64_t batch, int64_t key_head, int64_t query_head, int64_t row, int64_t count) {
+                    const auto label = detail(stage, batch, key_head, query_head, row, count);
                     diagnostic_event("attention_operator_await", label.c_str());
                     if (runtime->stage_synchronization) runtime->checkpoint(label);
                     else runtime->synchronize();

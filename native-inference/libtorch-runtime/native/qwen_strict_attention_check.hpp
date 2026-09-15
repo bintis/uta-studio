@@ -1,5 +1,6 @@
 #pragma once
 #include "qwen_strict_attention.hpp"
+#include "qwen_attention.hpp"
 #include <string>
 #include <tuple>
 #include <vector>
@@ -37,28 +38,33 @@ inline void verify(const at::Tensor& actual, const at::Tensor& expected) {
 inline at::Tensor execute(const at::Tensor& query, const at::Tensor& key,
                            const at::Tensor& value, const at::Tensor& mask = {}) {
     int64_t checks = 0, started = 0, completed = 0;
-    std::tuple<std::string, int64_t, int64_t, int64_t, int64_t> active;
+    std::tuple<std::string, int64_t, int64_t, int64_t, int64_t, int64_t> active;
     const auto result = qwen_strict_attention(query, key, value, mask,
         [&] {
             require(started == completed, "strict attention advanced before completing the previous operator");
             ++checks;
-        }, [&](const char* stage, int64_t batch, int64_t head, int64_t row, int64_t count) {
+        }, [&](const char* stage, int64_t batch, int64_t key_head, int64_t query_head, int64_t row, int64_t count) {
             require(checks == started + 1, "strict attention submitted an unchecked operator");
-            active = {stage, batch, head, row, count};
+            active = {stage, batch, key_head, query_head, row, count};
+            if (query_head >= 0) {
+                require(query_head < query.size(1) && key_head == query_head / (query.size(1) / key.size(1)),
+                        "strict attention mapped a query head to the wrong physical KV head");
+            }
             if (std::string(stage) == "scores") {
                 const auto group = query.size(1) / key.size(1);
                 require(count == 1 || count <= (4 * 1024 * 1024) / group / key.size(2),
                         "strict attention exceeded its score scratch schedule");
             }
             ++started;
-        }, [&](const char* stage, int64_t batch, int64_t head, int64_t row, int64_t count) {
-            require(active == std::make_tuple(std::string(stage), batch, head, row, count),
+        }, [&](const char* stage, int64_t batch, int64_t key_head, int64_t query_head, int64_t row, int64_t count) {
+            require(active == std::make_tuple(std::string(stage), batch, key_head, query_head, row, count),
                     "strict attention completed a different operator");
             require(started == completed + 1, "strict attention completed an operator twice");
             ++completed;
         });
     const auto tile = qwen_strict_query_tile(query.size(1) / key.size(1), key.size(2));
-    const auto expected = 1 + query.size(0) * key.size(1) * (1 + 4 * ((query.size(2) + tile - 1) / tile));
+    const auto expected = 1 + query.size(0) * key.size(1) +
+        query.size(0) * query.size(1) * 4 * ((query.size(2) + tile - 1) / tile);
     require(checks == expected && started == expected && completed == expected,
             "strict attention lost an operator or a final partial tile");
     require(!result.is_alias_of(query) && !result.is_alias_of(key) && !result.is_alias_of(value),
@@ -133,13 +139,13 @@ inline void check_stopping_and_budget() {
     require(qwen_strict_query_tile(16, std::numeric_limits<int64_t>::max()) == 1,
             "strict attention truncated or overflowed a complete key row");
     auto query = fixture(1, 4, 65, 8, 0.2), key = fixture(1, 2, 65, 8, 0.6), value = fixture(1, 2, 65, 8, 1.0);
-    for (const auto& phase : {"output_allocate", "kv_pack", "query_pack", "scores", "softmax", "values"}) {
+    for (const auto& phase : {"output_allocate", "kv_pack", "query_view", "scores", "softmax", "values"}) {
         std::vector<std::string> started;
         bool failed = false;
         try {
             qwen_strict_attention(query, key, value, {}, [] {},
-                [&](const char* stage, int64_t, int64_t, int64_t, int64_t) { started.emplace_back(stage); },
-                [&](const char* stage, int64_t, int64_t, int64_t, int64_t) {
+                [&](const char* stage, int64_t, int64_t, int64_t, int64_t, int64_t) { started.emplace_back(stage); },
+                [&](const char* stage, int64_t, int64_t, int64_t, int64_t, int64_t) {
                     if (std::string(stage) == phase) throw std::runtime_error("completion failure fixture");
                 });
         } catch (const std::runtime_error& error) { failed = std::string(error.what()) == "completion failure fixture"; }
@@ -151,8 +157,8 @@ inline void check_stopping_and_budget() {
     try {
         qwen_strict_attention(query, key, value, {},
             [&] { if (completed == 4) throw std::runtime_error("cancelled fixture"); },
-            [&](const char*, int64_t, int64_t, int64_t, int64_t) { ++started; },
-            [&](const char*, int64_t, int64_t, int64_t, int64_t) { ++completed; });
+            [&](const char*, int64_t, int64_t, int64_t, int64_t, int64_t) { ++started; },
+            [&](const char*, int64_t, int64_t, int64_t, int64_t, int64_t) { ++completed; });
     } catch (const std::runtime_error& error) { cancelled = std::string(error.what()) == "cancelled fixture"; }
     require(cancelled && started == 4 && completed == 4, "strict attention submitted another operator after cancellation");
     bool rejected = false;
@@ -160,9 +166,83 @@ inline void check_stopping_and_budget() {
     catch (const std::invalid_argument&) { rejected = true; }
     require(rejected, "strict attention accepted an empty KV head axis");
 }
+
+inline void check_query_view_layouts() {
+    const int64_t batches = 2, heads = 16, rows = 122, width = 128;
+    auto interleaved = fixture(batches, heads, rows, width, 0.3);
+    auto head_major = interleaved.contiguous();
+    auto strided = fixture(batches, heads, rows + 5, width * 2, 0.9).contiguous()
+        .narrow(2, 3, rows).slice(3, 0, width * 2, 2);
+    auto key = fixture(batches, 8, rows, width, 0.5), value = fixture(batches, 8, rows, width, 1.1);
+    // The outer causal helper supplies 64 rows and then 58, but head stride
+    // still spans the entire 122-row parent. The earlier grouped pack copied
+    // here; these checks require the actual production view helper to alias.
+    for (const auto& source : {head_major, interleaved, strided}) {
+        const auto original = source.clone();
+        for (const int64_t start : {0, 64}) {
+            const auto count = std::min<int64_t>(64, rows - start);
+            auto tile = source.narrow(2, start, count);
+            require(!tile.select(0, 0).narrow(0, 0, 2).is_contiguous(),
+                    "prefill view fixture lost the cross-head packing gap");
+            for (int64_t batch = 0; batch < batches; ++batch) {
+                for (int64_t head = 0; head < heads; ++head) {
+                    auto actual = qwen_strict_query_view(tile, batch, head, 0, count);
+                    require(actual.dim() == 2 && actual.size(0) == count && actual.size(1) == width,
+                            "query view changed head/tile geometry");
+                    require(actual.is_alias_of(source), "query view allocated or copied query data");
+                    require(actual.stride(0) == source.stride(2) && actual.stride(1) == source.stride(3),
+                            "query view discarded its parent strides");
+                    const auto offset = source.storage_offset() + batch * source.stride(0) +
+                        head * source.stride(1) + start * source.stride(2);
+                    require(actual.storage_offset() == offset, "query view selected the wrong head or tail offset");
+                    require(at::equal(actual, original.select(0, batch).select(0, head).narrow(0, start, count)),
+                            "query view changed input values");
+                }
+            }
+        }
+        require(at::equal(source, original), "query view changed its parent data");
+        verify(execute(source, key, value), reference(source, key, value));
+    }
+}
+
+inline void check_incident_prefill() {
+    const int64_t rows = 122, capacity = 378, width = 128;
+    auto query = fixture(1, 16, rows, width, 0.2).contiguous();
+    auto key_storage = at::full({1, 8, capacity, width}, std::numeric_limits<float>::quiet_NaN(), at::kFloat);
+    auto value_storage = at::full_like(key_storage, std::numeric_limits<float>::quiet_NaN());
+    auto key = key_storage.narrow(2, 0, rows), value = value_storage.narrow(2, 0, rows);
+    key.copy_(fixture(1, 8, rows, width, 0.6));
+    value.copy_(fixture(1, 8, rows, width, 1.0));
+    require(key.stride(1) == 48384 && key.stride(2) == 128, "incident fixture lost the recorded KV strides");
+    auto positions = at::arange(rows, at::kLong);
+    auto mask = positions.unsqueeze(1) >= positions.unsqueeze(0);
+    const auto expected = reference(query, key, value, mask);
+    const auto original_query = query.clone(), original_key = key.clone(), original_value = value.clone();
+    int64_t submitted = 0, completed = 0;
+    const auto actual = qwen_causal_attention(query, key, value, 0,
+        [&](const at::Tensor& current_query, const at::Tensor& current_key,
+            const at::Tensor& current_value, const at::Tensor& current_mask) {
+            const auto count = submitted == 0 ? 64 : 58;
+            require(current_query.size(2) == count && current_key.size(2) == (submitted == 0 ? 64 : rows),
+                    "incident fixture lost the measured 64/58 prefill partition");
+            require(current_query.stride(1) == rows * width, "prefill tile no longer retains its parent head stride");
+            ++submitted;
+            return execute(current_query, current_key, current_value, current_mask);
+        }, [&] { require(submitted == completed, "prefill advanced before completing its prior outer tile"); },
+        [&] { ++completed; });
+    require(submitted == 2 && completed == 2, "incident prefill did not finish both tiles");
+    verify(actual, expected);
+    require(at::equal(query, original_query) && at::equal(key, original_key) && at::equal(value, original_value),
+            "prefill modified its source or resident cache");
+    require(at::isnan(key_storage.narrow(2, rows, capacity - rows)).all().item<bool>() &&
+            at::isnan(value_storage.narrow(2, rows, capacity - rows)).all().item<bool>(),
+            "prefill touched poisoned spare KV capacity");
+}
 inline void run() {
     check_cache_and_masks();
     check_geometry_and_ownership();
     check_stopping_and_budget();
+    check_query_view_layouts();
+    check_incident_prefill();
 }
 } // namespace uta::torch_native::qwen_strict_checks
