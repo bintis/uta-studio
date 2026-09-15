@@ -104,6 +104,10 @@ pub struct AppConfig {
     pub ui_language: Option<String>,
     pub song_list_view: Option<String>,
     pub language_overrides: Option<HashMap<String, String>>,
+    /// Set once the operator finishes or skips the first-run setup guide, so
+    /// it opens automatically only until then. Settings can reopen it.
+    #[serde(default)]
+    pub setup_guide_completed: bool,
 }
 
 fn default_data_path_option() -> Option<PathBuf> {
@@ -141,6 +145,7 @@ impl Default for AppConfig {
             ui_language: None,
             song_list_view: None,
             language_overrides: None,
+            setup_guide_completed: false,
         }
     }
 }

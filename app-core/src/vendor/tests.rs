@@ -132,3 +132,44 @@ fn exact_strategy_status_ignores_unrelated_roformer_bundle_members() {
     assert_eq!(vocal.model_id, "bs_roformer_leap_xe90_vocals");
     assert_eq!(vocal.capability, "audio.extract_vocals");
 }
+
+#[test]
+fn setup_tiers_nest_and_report_catalog_sizes_across_the_runtime_cli() {
+    let options = setup_tier_options_with_client(&isolated_runtime_client("setup-tiers")).unwrap();
+    assert_eq!(
+        options.iter().map(|option| option.tier).collect::<Vec<_>>(),
+        SetupTier::ALL
+    );
+    for pair in options.windows(2) {
+        assert!(
+            pair[0]
+                .model_ids
+                .iter()
+                .all(|model| pair[1].model_ids.contains(model)),
+            "{:?} must include every {:?} model",
+            pair[1].tier,
+            pair[0].tier
+        );
+    }
+    let complete = options.last().unwrap();
+    assert_eq!(complete.model_ids.len(), 18);
+    for option in &options {
+        assert_eq!(option.model_ids.len(), option.tier.model_ids().len());
+        assert!(option.installed_bytes.is_some_and(|bytes| bytes > 0));
+        assert!(option.download_bytes.is_some());
+        assert!(
+            option
+                .missing_model_ids
+                .iter()
+                .all(|model| option.model_ids.contains(model))
+        );
+    }
+}
+
+#[test]
+fn setup_tier_names_round_trip() {
+    for tier in SetupTier::ALL {
+        assert_eq!(SetupTier::parse(tier.as_str()), Some(tier));
+    }
+    assert_eq!(SetupTier::parse("everything"), None);
+}

@@ -190,9 +190,9 @@ pub use utz_export::{
 pub use vendor::{
     AnalysisRuntimeStatus, AnalysisStrategyResourceStatus, ComputeBackend, ModelDownloadTarget,
     ModelInstallStatus, SetupFolders, SetupProgress, SetupStep, SetupTask, SetupTaskState,
-    analysis_runtime_status, analysis_strategy_resource_statuses, ffmpeg_path,
-    invalidate_analysis_runtime_status_cache, is_ready, model_install_statuses,
-    resolve_data_path_input, run_vendor_setup, step_download_model,
+    SetupTier, SetupTierOption, analysis_runtime_status, analysis_strategy_resource_statuses,
+    ffmpeg_path, invalidate_analysis_runtime_status_cache, is_ready, model_install_statuses,
+    resolve_data_path_input, run_vendor_setup, setup_tier_options, step_download_model,
 };
 pub use vocal_chart::migrate_analyzer_chart;
 pub use workflow::{

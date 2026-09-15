@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use super::*;
-use crate::backend_cli::AnalysisCliClient;
+use crate::backend_cli::{AnalysisCliClient, RuntimeResourceRefWire};
 use crate::cache::{relocate_app_data_path, same_path, songs_cache_dir, uta_studio_dir};
 
 fn tasks() -> Vec<SetupTask> {
@@ -133,7 +133,9 @@ pub fn run_vendor_setup(
         None,
         None,
     );
-    if let Some(target) = folders.model_target {
+    if let Some(tier) = folders.model_tier {
+        step_install_tier(tier, &mut on_progress, &mut task_list, &mut on_log)?;
+    } else if let Some(target) = folders.model_target {
         step_download_model(target, &mut on_log)?;
     } else {
         on_log("Native components verified. Install missing model families from their individual rows.".to_string());
@@ -181,4 +183,67 @@ pub fn step_download_model(
         on_output(format!("{} was installed and verified.", status.label));
     }
     Ok(())
+}
+
+/// Installs every missing model of one setup-guide level, one Runtime Manager
+/// install per model. A failed model does not stop the others; the step fails
+/// afterwards naming each model that could not be installed.
+fn step_install_tier(
+    tier: SetupTier,
+    on_progress: &mut impl FnMut(SetupProgress),
+    tasks: &mut [SetupTask],
+    on_output: &mut impl FnMut(String),
+) -> Result<(), String> {
+    let client = super::status::runtime_client()?;
+    let details = super::tiers::tier_model_details(&client, tier)?;
+    let missing = tier
+        .model_ids()
+        .iter()
+        .filter_map(|model_id| details.get(model_id).map(|details| (*model_id, details)))
+        .filter(|(_, details)| !super::tiers::model_present(details))
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        on_output("Every model of the selected level is already installed.".to_string());
+        return Ok(());
+    }
+    let total_bytes = missing
+        .iter()
+        .map(|(_, details)| details.metadata.estimated_download_bytes.unwrap_or(0))
+        .sum::<u64>();
+    let mut done_bytes = 0_u64;
+    let mut failed = Vec::new();
+    for (index, (model_id, details)) in missing.iter().enumerate() {
+        let name = details.metadata.display_name.as_str();
+        let percent = 65 + (done_bytes * 34).checked_div(total_bytes).unwrap_or(0) as usize;
+        emit(
+            on_progress,
+            tasks,
+            SetupStep::SelectedModels,
+            percent,
+            format!("Downloading {name} ({} of {})…", index + 1, missing.len()),
+            Some(done_bytes),
+            Some(total_bytes),
+        );
+        let resource = RuntimeResourceRefWire::model(*model_id)?;
+        match client.install(std::slice::from_ref(&resource)) {
+            Ok(_) => on_output(format!("{name} was installed and verified.")),
+            Err(error) => {
+                on_output(format!("{name} could not be installed: {error}"));
+                failed.push(name.to_string());
+            }
+        }
+        done_bytes += details.metadata.estimated_download_bytes.unwrap_or(0);
+    }
+    crate::invalidate_analysis_runtime_status_cache();
+    crate::audio_processing::invalidate_audio_model_catalog_cache();
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} of {} models could not be installed: {}",
+            failed.len(),
+            missing.len(),
+            failed.join(", ")
+        ))
+    }
 }

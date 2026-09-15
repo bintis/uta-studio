@@ -49,6 +49,32 @@ pub enum ModelDownloadTarget {
     Pitch,
 }
 
+/// Download level the setup guide offers. `Standard` and `Maximum` are the
+/// model sets the default workflow needs for Balanced and Maximum analysis;
+/// `Complete` adds every other catalog model.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq, Hash)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum SetupTier {
+    Standard,
+    Maximum,
+    Complete,
+}
+
+/// One setup-guide level with its models and the download still needed.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct SetupTierOption {
+    pub tier: SetupTier,
+    pub model_ids: Vec<String>,
+    pub missing_model_ids: Vec<String>,
+    /// Catalog download estimate for the missing models.
+    pub download_bytes: Option<u64>,
+    /// Catalog installed-size estimate for every model in the level.
+    pub installed_bytes: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
@@ -136,4 +162,6 @@ pub struct SetupFolders {
     pub compute_backend: ComputeBackend,
     #[serde(default)]
     pub model_target: Option<ModelDownloadTarget>,
+    #[serde(default)]
+    pub model_tier: Option<SetupTier>,
 }

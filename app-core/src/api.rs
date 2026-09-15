@@ -956,6 +956,20 @@ pub const API_CAPABILITIES: &[ApiCapability] = &[
         "Install the shared runtime or one explicitly confirmed model family"
     ),
     capability!(
+        "models",
+        "setup_tier_options",
+        "read",
+        true,
+        "List setup-guide download levels with their models, missing models, and sizes"
+    ),
+    capability!(
+        "models",
+        "install_setup_tier",
+        "external",
+        false,
+        "Download every missing model of one explicitly confirmed setup-guide level"
+    ),
+    capability!(
         "analysis",
         "inspect_analysis_node_io",
         "read",
