@@ -153,6 +153,8 @@ endforeach()
 if(UTA_LIBTORCH_BACKEND STREQUAL "rocm")
   target_compile_definitions(uta-libtorch-attention-partition-check PRIVATE UTA_LIBTORCH_ROCM=1 __HIP_PLATFORM_AMD__=1)
   target_include_directories(uta-libtorch-attention-partition-check SYSTEM PRIVATE "${ROCM_ROOT}/include")
+elseif(UTA_LIBTORCH_BACKEND STREQUAL "xpu")
+  target_compile_definitions(uta-libtorch-attention-partition-check PRIVATE UTA_LIBTORCH_XPU=1)
 endif()
 if(UTA_LIBTORCH_BACKEND STREQUAL "rocm" OR UTA_LIBTORCH_BACKEND STREQUAL "xpu")
   target_link_options(uta-libtorch-attention-partition-check PRIVATE "-Wl,--disable-new-dtags")
@@ -185,6 +187,16 @@ target_include_directories(uta-libtorch-rotary-check SYSTEM PRIVATE "${TORCH_INC
 target_link_libraries(uta-libtorch-rotary-check PRIVATE "${native_torch_cpu}" "${native_c10}")
 target_link_options(uta-libtorch-rotary-check PRIVATE "-Wl,--disable-new-dtags")
 set_target_properties(uta-libtorch-rotary-check PROPERTIES BUILD_RPATH "${native_paths}")
+
+# The Qwen partition/cache oracle deliberately links CPU ATen only. GPU mixed
+# arithmetic is covered separately by the explicitly selected partition check.
+add_executable(uta-libtorch-qwen-attention-check qwen_attention_check.cpp)
+target_compile_features(uta-libtorch-qwen-attention-check PRIVATE cxx_std_20)
+target_compile_definitions(uta-libtorch-qwen-attention-check PRIVATE _GLIBCXX_USE_CXX11_ABI=${TORCH_CXX_ABI})
+target_include_directories(uta-libtorch-qwen-attention-check SYSTEM PRIVATE "${TORCH_INCLUDE_ROOT}")
+target_link_libraries(uta-libtorch-qwen-attention-check PRIVATE "${native_torch_cpu}" "${native_c10}")
+target_link_options(uta-libtorch-qwen-attention-check PRIVATE "-Wl,--disable-new-dtags")
+set_target_properties(uta-libtorch-qwen-attention-check PROPERTIES BUILD_RPATH "${native_paths}")
 
 install(TARGETS uta_libtorch LIBRARY DESTINATION lib)
 install(FILES api.h DESTINATION include/uta_libtorch)

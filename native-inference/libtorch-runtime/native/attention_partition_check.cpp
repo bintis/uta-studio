@@ -1,4 +1,6 @@
 #include "attention_partition.hpp"
+#include "qwen_attention.hpp"
+#include <c10/core/impl/VirtualGuardImpl.h>
 #include <ATen/Context.h>
 #include <ATen/Parallel.h>
 #include <c10/core/InferenceMode.h>
@@ -59,12 +61,21 @@ void verify(const std::string& name, const at::Tensor& actual, const at::Tensor&
 }
 int main(int argc, char** argv) {
     try {
-        if (argc != 2 || std::string(argv[1]) != "rocm" || !at::globalContext().hasROCM())
-            throw std::invalid_argument("usage: uta-libtorch-attention-partition-check rocm");
+        if (argc != 2) throw std::invalid_argument("usage: uta-libtorch-attention-partition-check rocm|xpu");
+        const std::string backend = argv[1];
+#if defined(UTA_LIBTORCH_ROCM)
+        if (backend != "rocm" || !at::globalContext().hasROCM())
+            throw std::invalid_argument("this check requires its explicitly selected ROCm runtime");
+#elif defined(UTA_LIBTORCH_XPU)
+        if (backend != "xpu") throw std::invalid_argument("this check requires its explicitly selected XPU runtime");
+#else
+        throw std::invalid_argument("mixed attention requires an explicitly built GPU check, not CPU fallback");
+#endif
         c10::InferenceMode inference;
         at::set_num_threads(2);
         at::globalContext().setSDPUseMath(false);
-        const auto device = at::Device(at::kCUDA, 0);
+        const auto device = at::Device(backend == "rocm" ? at::kCUDA : at::kXPU, 0);
+        const auto complete = [&] { c10::impl::VirtualGuardImpl(device.type()).synchronizeDevice(device.index()); };
         const double scale = 0.125;
         for (const auto& shape : std::vector<std::array<int64_t, 6>>{
                  {5, 4, 263, 397, 64, 64}, {1, 8, 1001, 1001, 64, 64}, {2, 4, 61, 61, 128, 64}}) {
@@ -110,6 +121,37 @@ int main(int argc, char** argv) {
             const auto actual = uta::torch_native::explicit_mixed_attention(
                 query.to(device), key.to(device), value.to(device), {}, true, false, scale);
             verify("causal_attention", actual, expected);
+        }
+        for (const auto& shape : std::vector<std::array<int64_t, 2>>{{129, 0}, {129, 37}, {1, 37}}) {
+            const auto rows = shape[0], past = shape[1];
+            auto query = fixture({1, 8, rows, 64}, 0.23);
+            auto key = fixture({1, 2, past + rows, 64}, 0.89);
+            auto value = fixture({1, 2, past + rows, 64}, 1.61);
+            auto mask = at::arange(past, past + rows, at::kLong).unsqueeze(1) >=
+                at::arange(past + rows, at::kLong).unsqueeze(0);
+            auto expected = reference_attention(query, key, value, mask, false, true, scale);
+            auto actual = uta::torch_native::qwen_causal_attention(query.to(device), key.to(device), value.to(device), past,
+                [&](const at::Tensor& current_query, const at::Tensor& current_key,
+                    const at::Tensor& current_value, const at::Tensor& current_mask) {
+                    return uta::torch_native::explicit_mixed_attention(
+                        current_query, current_key, current_value, current_mask, false, true, scale);
+                }, [] {}, complete);
+            verify("qwen_prefill_and_resident_cache", actual, expected);
+        }
+        {
+            auto query = fixture({1, 4, 221, 64}, 0.17);
+            auto key = fixture({1, 4, 221, 64}, 0.71);
+            auto value = fixture({1, 4, 221, 64}, 1.37);
+            auto windows = at::floor_divide(at::arange(221, at::kLong), 104);
+            auto mask = windows.unsqueeze(1) == windows.unsqueeze(0);
+            auto expected = reference_attention(query, key, value, mask, false, false, scale);
+            auto actual = uta::torch_native::qwen_window_attention(query.to(device), key.to(device), value.to(device), 104,
+                [&](const at::Tensor& current_query, const at::Tensor& current_key,
+                    const at::Tensor& current_value, const at::Tensor& current_mask) {
+                    return uta::torch_native::explicit_mixed_attention(
+                        current_query, current_key, current_value, current_mask, false, false, scale);
+                }, [] {}, complete);
+            verify("qwen_encoder_acoustic_windows_and_tail", actual, expected);
         }
         return 0;
     } catch (const std::exception& error) {

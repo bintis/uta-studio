@@ -1,5 +1,7 @@
 #include "runtime.hpp"
 #include "convolution_projection.hpp"
+#include "mixed_attention.hpp"
+#include "qwen_attention.hpp"
 #include <array>
 #include <cmath>
 #include <limits>
@@ -58,7 +60,7 @@ public:
                     layer.value = at::empty({1, kv_heads, capacity, head_dimension}, options);
                 }
                 past = 0;
-                runtime->checkpoint("decoder.session");
+                complete_stage("decoder.session");
             } catch (...) { invalidate_session(); throw; }
             return {{"position", at::scalar_tensor(past, at::kLong)}};
         }
@@ -89,9 +91,23 @@ private:
         past = -1;
         capacity = 0;
     }
+    void complete_stage(const std::string& stage) const {
+        // The successful traced Qwen runs waited at these boundaries. That
+        // completion must not disappear when DEBUG/TRACE_SYNC is off: bound
+        // queued activations and surface errors before advancing the cache.
+        if (runtime->stage_synchronization) runtime->checkpoint(stage);
+        else runtime->synchronize();
+        check_cancel();
+    }
     at::Tensor attention(const at::Tensor& query, const at::Tensor& key, const at::Tensor& value, const at::Tensor& mask = {}, bool grouped = false) const {
-        return runtime->precision == "mixed_attention" ? fused_attention(query, key, value, mask, false, grouped)
-                                                       : dense_attention(query, key, value, mask);
+        if (runtime->precision != "mixed_attention") return dense_attention(query, key, value, mask);
+        // Use the already explicit, bounded mixed algorithm for XPU Qwen too.
+        // Avoid the masked/GQA fused SDPA route; retain FP16 input/output
+        // rounding and FP32 contractions/softmax. This is a selected algorithm,
+        // not an exception retry, CPU fallback, or a precision downgrade.
+        if (runtime->backend == "libtorch_xpu")
+            return explicit_mixed_attention(query, key, value, mask, false, grouped);
+        return fused_attention(query, key, value, mask, false, grouped);
     }
     at::Tensor position_encoding(int64_t rows, int64_t per_chunk) {
         if (cached_position_rows == rows && cached_chunk_rows == per_chunk) return encoder_positions;
@@ -132,22 +148,18 @@ private:
                 ? projected_convolution(value, weights->get(prefix + ".weight"), weights->optional(prefix + ".bias"),
                                         {2, 2}, {1, 1}, [this] { check_cancel(); })
                 : convolution(*weights, value, prefix, {2, 2}, {1, 1});
-            // gfx1103 long-batch execution requires this producer completion
-            // before GELU. It stays on-device and is included in model timing.
-            if (runtime->backend == "libtorch_rocm") runtime->synchronize();
-            runtime->checkpoint(prefix + ".convolution");
+            // Complete the convolution producer before consuming its result
+            // on both GPU backends, also in non-traced production execution.
+            complete_stage(prefix + ".convolution");
             value = at::gelu(convolved, "none");
-            runtime->checkpoint(prefix + ".gelu");
+            complete_stage(prefix + ".gelu");
         }
         value = value.permute({0, 3, 1, 2}).contiguous().reshape({chunks * chunk_rows, -1}).narrow(0, 0, valid_rows);
         value = at::linear(value, weights->get(encoder_prefix + ".conv_out.weight")) + position_encoding(valid_rows, chunk_rows);
-        runtime->checkpoint(encoder_prefix + ".positioned");
-        // Official encoder attention is bidirectional inside acoustic windows.
-        // Keep the complete mel/embedding timeline; only visibility is blocked.
+        complete_stage(encoder_prefix + ".positioned");
+        // Preserve every acoustic window and its complete bidirectional
+        // context, without a quadratic mask over unrelated windows.
         const auto window_rows = chunk_rows * (attention_window_frames / chunk_frames);
-        auto row_indices = at::arange(valid_rows, value.options().dtype(at::kLong));
-        auto window_indices = at::floor_divide(row_indices, window_rows);
-        auto attention_mask = window_indices.unsqueeze(1) == window_indices.unsqueeze(0);
         const std::array<std::string, 8> names = aligner
             ? std::array<std::string, 8>{"attn_norm", "attn_q", "attn_k", "attn_v", "attn_out", "ffn_norm", "ffn_up", "ffn_down"}
             : std::array<std::string, 8>{"norm_attn", "attn.q", "attn.k", "attn.v", "attn.out", "norm_ffn", "ffn.fc1", "ffn.fc2"};
@@ -161,13 +173,18 @@ private:
             auto query = layout(weights->linear(normalized, prefix + names[1]));
             auto key = layout(weights->linear(normalized, prefix + names[2]));
             auto values = layout(weights->linear(normalized, prefix + names[3]));
-            runtime->checkpoint(prefix + "qkv");
-            auto attended = attention(query, key, values, attention_mask).transpose(1, 2).reshape({valid_rows, encoder_dimension});
-            runtime->checkpoint(prefix + "attention");
+            complete_stage(prefix + "qkv");
+            auto attended = qwen_window_attention(query, key, values, window_rows,
+                [this](const at::Tensor& current_query, const at::Tensor& current_key,
+                       const at::Tensor& current_value, const at::Tensor& mask) {
+                    return attention(current_query, current_key, current_value, mask);
+                }, [this] { check_cancel(); }, [this] { complete_stage("encoder.attention_window"); })
+                .transpose(1, 2).reshape({valid_rows, encoder_dimension});
+            complete_stage(prefix + "attention");
             value = value + weights->linear(attended, prefix + names[4]);
             normalized = weights->norm(value, prefix + names[5]);
             value = value + weights->linear(at::gelu(weights->linear(normalized, prefix + names[6]), "none"), prefix + names[7]);
-            runtime->checkpoint(prefix + "feed_forward");
+            complete_stage(prefix + "feed_forward");
         }
         value = weights->norm(value, encoder_prefix + ".ln_post");
         return weights->linear(at::gelu(weights->linear(value, encoder_prefix + ".proj1"), "none"), encoder_prefix + ".proj2");
@@ -194,9 +211,7 @@ private:
             value = at::where((indices >= 0).unsqueeze(-1), injected, value).contiguous();
         }
         auto positions = at::arange(start, start + rows, tokens.options());
-        auto keys = at::arange(start + rows, tokens.options());
-        auto mask = positions.unsqueeze(1) >= keys.unsqueeze(0);
-        runtime->checkpoint("decoder.positioned");
+        complete_stage("decoder.positioned");
         const std::array<std::string, 11> names = aligner
             ? std::array<std::string, 11>{"attn_norm", "ffn_norm", "attn_q_norm", "attn_k_norm", "attn_q", "attn_k", "attn_v", "attn_output", "ffn_gate", "ffn_up", "ffn_down"}
             : std::array<std::string, 11>{"norm_attn", "norm_ffn", "attn.q_norm", "attn.k_norm", "attn.q", "attn.k", "attn.v", "attn.o", "ffn.gate", "ffn.up", "ffn.down"};
@@ -211,27 +226,32 @@ private:
             auto query = rotary_split(decoder_norm(layout(linear(normalized, 4), heads), prefix + names[2] + ".weight"), positions, theta);
             auto key = rotary_split(decoder_norm(layout(linear(normalized, 5), kv_heads), prefix + names[3] + ".weight"), positions, theta);
             auto projected_value = layout(linear(normalized, 6), kv_heads);
-            runtime->checkpoint(prefix + "qkv");
+            complete_stage(prefix + "qkv");
             if (incremental) {
                 cache[layer].key.narrow(2, start, rows).copy_(key);
                 cache[layer].value.narrow(2, start, rows).copy_(projected_value);
                 key = cache[layer].key.narrow(2, 0, start + rows);
                 projected_value = cache[layer].value.narrow(2, 0, start + rows);
-                runtime->checkpoint(prefix + "cache");
+                complete_stage(prefix + "cache");
             }
-            auto attended = attention(query, key, projected_value, mask, heads != kv_heads).transpose(1, 2).reshape({rows, heads * head_dimension});
-            runtime->checkpoint(prefix + "attention");
+            auto attended = qwen_causal_attention(query, key, projected_value, start,
+                [this](const at::Tensor& current_query, const at::Tensor& current_key,
+                       const at::Tensor& current_value, const at::Tensor& mask) {
+                    return attention(current_query, current_key, current_value, mask, heads != kv_heads);
+                }, [this] { check_cancel(); }, [this] { complete_stage("decoder.attention_tile"); })
+                .transpose(1, 2).reshape({rows, heads * head_dimension});
+            complete_stage(prefix + "attention");
             value = value + linear(attended, 7);
             normalized = decoder_norm(value, prefix + names[1] + ".weight");
             value = value + linear(at::silu(linear(normalized, 8)) * linear(normalized, 9), 10);
-            runtime->checkpoint(prefix + "feed_forward");
+            complete_stage(prefix + "feed_forward");
         }
         value = decoder_norm(value, output_norm);
         auto selected = inputs.optional("selected_rows");
         if (selected.defined()) value = value.index_select(0, selected.to(at::kLong));
         else value = value.narrow(0, rows - 1, 1);
         auto logits = at::linear(value, weights->get(head_name));
-        runtime->checkpoint("decoder.logits");
+        complete_stage("decoder.logits");
         if (incremental) past += rows;
         return {{"logits", logits}, {"position", at::scalar_tensor(incremental ? past : rows, at::kLong)}};
     }
