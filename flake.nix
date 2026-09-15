@@ -83,6 +83,16 @@
           # the whole dependency graph from scratch every time.
           cargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
             src = craneLib.cleanCargoSource src;
+            # Crane stubs every local Cargo.toml so registry crates can be
+            # cached independently of app sources. The crates-io parley patch
+            # is a path crate, so restore its real sources; otherwise
+            # bevy_text compiles against an empty parley and packaging fails.
+            extraDummyScript = ''
+              mkdir -p "$out/vendor"
+              rm -rf "$out/vendor/parley"
+              cp -r ${./vendor/parley} "$out/vendor/parley"
+              chmod -R u+w "$out/vendor/parley"
+            '';
           });
         in {
           default = self.packages.${pkgs.stdenv.hostPlatform.system}."uta-studio";
