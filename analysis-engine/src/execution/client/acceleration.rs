@@ -201,7 +201,9 @@ pub(super) fn start_next(task: &NativeTask) -> Option<String> {
         let current_lane = preload_lane(&task.config);
         let spec = context.schedule[context.cursor..]
             .iter()
-            .find(|spec| spec.model_id != task.model_id && preload_lane(&spec.config) != current_lane)?
+            .find(|spec| {
+                spec.model_id != task.model_id && preload_lane(&spec.config) != current_lane
+            })?
             .clone();
         let result = (|| {
             let mut process = WorkerProcess::spawn(&spec.executable, &spec.environment)?;

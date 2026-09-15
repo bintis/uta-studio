@@ -45,7 +45,10 @@ pub(super) fn requires_sync(phase: &str, detail: &str, focus: Option<&str>) -> b
     match phase {
         "qwen_encoder_layer_begin" | "qwen_decoder_layer_begin" | "qwen_attention_begin" => true,
         "qwen_stage_complete"
-            if matches!(detail, "encoder.attention_window" | "decoder.attention_tile") =>
+            if matches!(
+                detail,
+                "encoder.attention_window" | "decoder.attention_tile"
+            ) =>
         {
             true
         }

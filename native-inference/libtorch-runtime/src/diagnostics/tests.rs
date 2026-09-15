@@ -1,5 +1,5 @@
-use super::*;
 use super::buffering::{focus_matches, is_detail};
+use super::*;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::time::Duration;

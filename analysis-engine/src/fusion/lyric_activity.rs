@@ -10,11 +10,16 @@ const LEXICAL_ONSET_CONTEXT: u64 = 60_000;
 pub(super) fn native_lexical_prefix_duration(candidate: &SegmentCandidate) -> u64 {
     if !candidate.target.is_pitched()
         || candidate.boundary_fractional_midi.is_none()
-        || !matches!(candidate.boundary_kind, BoundaryEvidenceKind::Game | BoundaryEvidenceKind::AdvancedNote)
+        || !matches!(
+            candidate.boundary_kind,
+            BoundaryEvidenceKind::Game | BoundaryEvidenceKind::AdvancedNote
+        )
     {
         return 0;
     }
-    let Some(prefix) = candidate.voicing_evidence.as_ref()
+    let Some(prefix) = candidate
+        .voicing_evidence
+        .as_ref()
         .and_then(|evidence| evidence.unsupported_ranges.first())
         .filter(|range| range.start == candidate.range.start && range.end < candidate.range.end)
     else {
@@ -22,8 +27,13 @@ pub(super) fn native_lexical_prefix_duration(candidate: &SegmentCandidate) -> u6
     };
     let duration = prefix.end - prefix.start;
     let body = candidate.continuous_pitch_observed_duration.unwrap_or(0);
-    if body <= duration || candidate.rmvpe_voiced_ratio.is_none_or(|ratio| ratio <= 0.0)
-        || candidate.fcpe_observed_ratio.is_none_or(|ratio| ratio <= 0.0)
+    if body <= duration
+        || candidate
+            .rmvpe_voiced_ratio
+            .is_none_or(|ratio| ratio <= 0.0)
+        || candidate
+            .fcpe_observed_ratio
+            .is_none_or(|ratio| ratio <= 0.0)
     {
         return 0;
     }
@@ -31,7 +41,8 @@ pub(super) fn native_lexical_prefix_duration(candidate: &SegmentCandidate) -> u6
         constraint.kind == BoundaryConstraintKind::WordStart
             && constraint.time.abs_diff(candidate.range.start) < LEXICAL_ONSET_CONTEXT
             && constraint.time < prefix.end
-            && constraint.time.abs_diff(candidate.range.start) <= constraint.time.abs_diff(candidate.range.end)
+            && constraint.time.abs_diff(candidate.range.start)
+                <= constraint.time.abs_diff(candidate.range.end)
     });
     if lexical { duration } else { 0 }
 }

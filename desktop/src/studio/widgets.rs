@@ -885,4 +885,3 @@ mod editor_surface_tests {
         }
     }
 }
-

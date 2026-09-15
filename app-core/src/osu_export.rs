@@ -56,10 +56,16 @@ pub struct OsuExportOutcome {
 
 /// Locates the installed osu!lazer without spawning anything.
 pub fn detect_osu_lazer() -> Option<OsuInstallation> {
-    detect_osu_lazer_in(&std::env::var_os("PATH").unwrap_or_default(), &home_directory())
+    detect_osu_lazer_in(
+        &std::env::var_os("PATH").unwrap_or_default(),
+        &home_directory(),
+    )
 }
 
-fn detect_osu_lazer_in(path_variable: &std::ffi::OsStr, home: &Option<PathBuf>) -> Option<OsuInstallation> {
+fn detect_osu_lazer_in(
+    path_variable: &std::ffi::OsStr,
+    home: &Option<PathBuf>,
+) -> Option<OsuInstallation> {
     if let Some(launcher) = configured_file_path(OSU_EXECUTABLE_VARIABLE) {
         return Some(OsuInstallation {
             launcher,
@@ -111,7 +117,13 @@ fn detect_osu_lazer_in(path_variable: &std::ffi::OsStr, home: &Option<PathBuf>) 
     }
     if let Some(launcher) = home
         .iter()
-        .flat_map(|home| [home.join("Applications"), home.join(".local/bin"), home.join("AppImages")])
+        .flat_map(|home| {
+            [
+                home.join("Applications"),
+                home.join(".local/bin"),
+                home.join("AppImages"),
+            ]
+        })
         .find_map(|directory| app_image_in(&directory))
     {
         return Some(OsuInstallation {
@@ -211,7 +223,9 @@ fn remove_previous_handoff(file_hash: &str, directory: &Path) {
     let inside_handoff = previous
         .parent()
         .zip(directory.canonicalize().ok())
-        .and_then(|(parent, directory)| parent.canonicalize().ok().map(|parent| parent == directory))
+        .and_then(|(parent, directory)| {
+            parent.canonicalize().ok().map(|parent| parent == directory)
+        })
         .unwrap_or(false);
     if inside_handoff && previous.is_file() {
         let _ = std::fs::remove_file(previous);
@@ -327,7 +341,9 @@ mod tests {
             })
         );
 
-        let flatpak = home.join(".local/share/flatpak/exports/bin").join(OSU_FLATPAK_ID);
+        let flatpak = home
+            .join(".local/share/flatpak/exports/bin")
+            .join(OSU_FLATPAK_ID);
         std::fs::write(&flatpak, b"").unwrap();
         assert_eq!(
             detect_osu_lazer_in(&empty_path, &Some(home.clone())).map(|found| found.source),

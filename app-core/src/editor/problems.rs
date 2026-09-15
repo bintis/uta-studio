@@ -162,7 +162,10 @@ fn report_track(document: &EditorDocument, track: usize, problems: &mut Vec<Char
             });
         }
         if note.scores
-            && note.lyric.as_ref().is_none_or(|text| text.trim().is_empty())
+            && note
+                .lyric
+                .as_ref()
+                .is_none_or(|text| text.trim().is_empty())
             && !note.continues_lyric
         {
             problems.push(ChartProblem {

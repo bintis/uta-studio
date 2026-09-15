@@ -1,12 +1,12 @@
 mod alignment_fusion;
 mod articulation;
-mod lyric_activity;
 mod baseline;
 mod calibration;
 mod candidate_states;
 mod canonical;
 mod evidence;
 mod hsmm;
+mod lyric_activity;
 mod review;
 mod scalar;
 mod transcript_fusion;

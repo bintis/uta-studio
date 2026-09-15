@@ -170,7 +170,8 @@ impl EditorDocument {
             .max()?;
         let mut text = String::new();
         for (token, _) in &tokens {
-            if !text.is_empty() && !self.compact_language() && token.join_before == LyricJoin::Space {
+            if !text.is_empty() && !self.compact_language() && token.join_before == LyricJoin::Space
+            {
                 text.push(' ');
             }
             text.push_str(&token.text);

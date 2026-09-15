@@ -107,8 +107,15 @@ fn layer_entries_attention_entries_and_completed_tiles_remain_durable() {
         assert!(requires_sync(phase, detail, None), "{phase}: {detail}");
         let mut buffer = RecordBuffer::default();
         let mut writer = ObservedWriter::default();
-        append_event(&mut buffer, &mut writer, phase, detail, None, Duration::ZERO)
-            .unwrap();
+        append_event(
+            &mut buffer,
+            &mut writer,
+            phase,
+            detail,
+            None,
+            Duration::ZERO,
+        )
+        .unwrap();
         assert_eq!(*writer.calls.borrow(), ["write", "flush", "sync"]);
         assert_eq!(records(&writer)[0]["phase"], phase);
     }
@@ -139,8 +146,16 @@ fn both_qwen_routes_preserve_every_event_with_fewer_disk_sync_requests() {
     assert_eq!(steps.len(), 73);
     for (model, layer, completed_tile) in [
         ("qwen3_asr_1_7b", "dec.blocks.13.", "decoder.attention_tile"),
-        ("qwen3_forced_aligner_0_6b", "blk.13.", "decoder.attention_tile"),
-        ("qwen3_asr_1_7b", "enc.blocks.0.", "encoder.attention_window"),
+        (
+            "qwen3_forced_aligner_0_6b",
+            "blk.13.",
+            "decoder.attention_tile",
+        ),
+        (
+            "qwen3_asr_1_7b",
+            "enc.blocks.0.",
+            "encoder.attention_window",
+        ),
     ] {
         for focus in [None, Some("qwen.strict")] {
             let mut buffer = RecordBuffer::default();
@@ -157,7 +172,12 @@ fn both_qwen_routes_preserve_every_event_with_fewer_disk_sync_requests() {
                 ("qwen_attention_begin", "strict"),
             ] {
                 append_event(
-                    &mut buffer, &mut writer, phase, detail, focus, Duration::ZERO,
+                    &mut buffer,
+                    &mut writer,
+                    phase,
+                    detail,
+                    focus,
+                    Duration::ZERO,
                 )
                 .unwrap();
                 expected.push(serde_json::json!({"phase": phase, "detail": detail}));
@@ -283,7 +303,12 @@ fn interruption_does_not_fabricate_a_completed_attention_tile() {
     let mut buffer = RecordBuffer::default();
     let mut writer = ObservedWriter::default();
     append_event(
-        &mut buffer, &mut writer, "qwen_attention_begin", "strict", None, Duration::ZERO,
+        &mut buffer,
+        &mut writer,
+        "qwen_attention_begin",
+        "strict",
+        None,
+        Duration::ZERO,
     )
     .unwrap();
     for phase in ["attention_operator_begin", "attention_operator_await"] {
@@ -337,7 +362,11 @@ fn error_flushes_pending_details_and_sync_failure_is_not_retried() {
             let saved = records(&writer);
             assert_eq!(saved.len(), 2);
             assert_eq!(saved[1]["phase"], "native_error");
-            assert!(!saved.iter().any(|record| record["phase"] == "qwen_stage_complete"));
+            assert!(
+                !saved
+                    .iter()
+                    .any(|record| record["phase"] == "qwen_stage_complete")
+            );
         }
     }
 }
@@ -349,10 +378,18 @@ fn actual_journal_uses_the_policy_and_publishes_its_limits() {
     // No process environment mutation; the fixture checks the unfocused path.
     journal.focus = None;
     journal.record("qwen_attention_begin", "strict").unwrap();
-    journal.record("attention_operator_begin", "qwen.strict.query_view").unwrap();
-    journal.record("attention_operator_await", "qwen.strict.query_view").unwrap();
-    journal.record("attention_operator_complete", "qwen.strict.query_view").unwrap();
-    journal.record("qwen_stage_complete", "decoder.attention_tile").unwrap();
+    journal
+        .record("attention_operator_begin", "qwen.strict.query_view")
+        .unwrap();
+    journal
+        .record("attention_operator_await", "qwen.strict.query_view")
+        .unwrap();
+    journal
+        .record("attention_operator_complete", "qwen.strict.query_view")
+        .unwrap();
+    journal
+        .record("qwen_stage_complete", "decoder.attention_tile")
+        .unwrap();
     let files = fs::read_dir(&fixture.0)
         .unwrap()
         .collect::<Result<Vec<_>, _>>()
@@ -364,10 +401,26 @@ fn actual_journal_uses_the_policy_and_publishes_its_limits() {
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     assert_eq!(saved.len(), 7);
-    let policy: serde_json::Value = serde_json::from_str(saved[1]["detail"].as_str().unwrap()).unwrap();
-    assert!(policy["details"].as_str().unwrap().contains("Qwen strict operator triplets"));
-    assert!(policy["durable"].as_str().unwrap().contains("completed attention tiles"));
-    assert!(policy["limitation"].as_str().unwrap().contains("next event"));
+    let policy: serde_json::Value =
+        serde_json::from_str(saved[1]["detail"].as_str().unwrap()).unwrap();
+    assert!(
+        policy["details"]
+            .as_str()
+            .unwrap()
+            .contains("Qwen strict operator triplets")
+    );
+    assert!(
+        policy["durable"]
+            .as_str()
+            .unwrap()
+            .contains("completed attention tiles")
+    );
+    assert!(
+        policy["limitation"]
+            .as_str()
+            .unwrap()
+            .contains("next event")
+    );
     for (index, record) in saved.iter().enumerate() {
         assert_eq!(record["sequence"], index);
     }
