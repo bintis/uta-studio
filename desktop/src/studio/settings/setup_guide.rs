@@ -280,20 +280,20 @@ fn spawn_guide_buttons(
             ..default()
         })
         .with_children(|row| {
-            for (label, action, primary) in buttons {
+            for (label, action, primary) in buttons.iter().cloned() {
                 row.spawn((
                     Button,
-                    action.clone(),
+                    action,
                     Node {
                         padding: UiRect::axes(px(13), px(8)),
                         border_radius: BorderRadius::all(px(5)),
                         ..default()
                     },
-                    BackgroundColor(if *primary { theme.primary } else { Color::NONE }),
+                    BackgroundColor(if primary { theme.primary } else { Color::NONE }),
                     children![(
-                        Text::new(*label),
+                        Text::new(label),
                         ui_text_font(font.clone(), 10.0),
-                        TextColor(if *primary {
+                        TextColor(if primary {
                             theme.primary_foreground
                         } else {
                             theme.muted_foreground
