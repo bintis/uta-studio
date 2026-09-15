@@ -163,6 +163,22 @@ pub(super) fn take_for(executable: &Path, task: &NativeTask) -> Option<WorkerPro
     })
 }
 
+/// The accelerator lane (`"{backend}:{device_class}"`) a ggml-worker config
+/// targets. Every schedule entry here is a ggml-worker task by construction
+/// of this preload feature, so this always resolves (mirrors the defaults in
+/// `accelerator_lane` above, which additionally gates on `uses_ggml_worker`).
+fn preload_lane(config: &serde_json::Value) -> String {
+    let backend = config
+        .get("backend")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("native");
+    let device = config
+        .get("device_class")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("default");
+    format!("{backend}:{device}")
+}
+
 pub(super) fn start_next(task: &NativeTask) -> Option<String> {
     with_context(|context| {
         let context = context?;
@@ -172,9 +188,20 @@ pub(super) fn start_next(task: &NativeTask) -> Option<String> {
         {
             return None;
         }
+        // Only preload a model on a *different* accelerator lane than the one
+        // still executing `task`. Preloading a same-lane successor here would
+        // spawn a second worker process that starts allocating device memory
+        // and, for libtorch_xpu, opening a second Level-Zero context on the
+        // same physical GPU while the current worker's context is still
+        // live -- observed in production as a hard power-loss crash right
+        // after such a same-lane handoff (analysis-logs 2026-09-15). The
+        // `GgmlGate` in the parent module cannot catch this because it is
+        // only acquired when a worker's `Run` command is actually sent, not
+        // during this opportunistic preload.
+        let current_lane = preload_lane(&task.config);
         let spec = context.schedule[context.cursor..]
             .iter()
-            .find(|spec| spec.model_id != task.model_id)?
+            .find(|spec| spec.model_id != task.model_id && preload_lane(&spec.config) != current_lane)?
             .clone();
         let result = (|| {
             let mut process = WorkerProcess::spawn(&spec.executable, &spec.environment)?;
@@ -298,6 +325,84 @@ for line in sys.stdin:
                 .get("turbo_acceleration")
                 .is_none()
         );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn preload_skips_a_same_lane_successor_and_targets_a_different_lane_candidate() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "uta-studio-super-lane-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let executable = directory.join("worker");
+        std::fs::write(&executable, r##"#!/usr/bin/env python3
+import json, pathlib, sys
+def emit(frame): print(json.dumps(frame), flush=True)
+emit({'type':'ready','component':'uta-ggml-worker'})
+for line in sys.stdin:
+    command = json.loads(line)
+    if command['type'] == 'quit': break
+    if command['type'] == 'prepare':
+        emit({'type':'prepared','model_id':command['model_id'],'status':'loaded','message':'fixture weights prepared','device':'fixture GPU','free_bytes':1000000000})
+    if command['type'] == 'run':
+        emit({'type':'progress','task_id':command['task_id'],'fraction':1.0,'message':'fixture unit','work_units_completed':1,'work_units_total':1})
+        target = pathlib.Path(command['output_dir']) / (command['task_id'] + '.json')
+        target.write_text('{}')
+        emit({'type':'output','task_id':command['task_id'],'artifact':'fixture','path':str(target),'media_type':'application/json'})
+        emit({'type':'done','task_id':command['task_id'],'status':'ok'})
+"##).unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let input = directory.join("input.wav");
+        std::fs::write(&input, b"isolated protocol fixture").unwrap();
+        let cancellation = CancellationToken::default();
+        // "same_lane" shares the running task's libtorch_xpu:gpu lane -- must
+        // be skipped for preload. "cross_lane" is on ggml_vulkan:integrated_gpu
+        // -- the only one it is safe to preload while "primary" still runs.
+        let schedule = vec![
+            PreloadSpec {
+                model_id: "same_lane".to_string(),
+                executable: executable.clone(),
+                environment: BTreeMap::new(),
+                config: serde_json::json!({"backend": "libtorch_xpu", "device_class": "gpu"}),
+            },
+            PreloadSpec {
+                model_id: "cross_lane".to_string(),
+                executable: executable.clone(),
+                environment: BTreeMap::new(),
+                config: serde_json::json!({"backend": "ggml_vulkan", "device_class": "integrated_gpu"}),
+            },
+        ];
+        let guard = AccelerationGuard::enter(true, schedule, &directory, &cancellation);
+        let expectation = WorkerExpectation {
+            component: "uta-ggml-worker".to_string(),
+            runtime_recipe_digest: None,
+            environment: BTreeMap::new(),
+        };
+        let task = NativeTask {
+            task_id: "primary".to_string(),
+            node_id: "fixture".to_string(),
+            presentation_node_id: None,
+            model_id: "primary".to_string(),
+            input_artifacts: vec![input.clone()],
+            output_dir: directory.clone(),
+            config: serde_json::json!({"backend": "libtorch_xpu", "device_class": "gpu"}),
+            timeout: Duration::from_secs(5),
+        };
+        SupervisedWorker::run(&executable, &expectation, &task, &cancellation, |_| {}).unwrap();
+        let preloaded = with_context(|context| {
+            context
+                .unwrap()
+                .pending
+                .as_ref()
+                .map(|pending| pending.spec.model_id.clone())
+        });
+        assert_eq!(preloaded.as_deref(), Some("cross_lane"));
+        drop(guard);
         std::fs::remove_dir_all(directory).unwrap();
     }
 

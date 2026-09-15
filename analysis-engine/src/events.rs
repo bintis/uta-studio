@@ -35,6 +35,22 @@ pub struct EngineLifecycleEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_id: Option<String>,
     pub implementation: String,
+    /// The resolved native backend actually dispatched for this node (e.g.
+    /// `"ggml_vulkan"`, `"ggml_cpu"`, `"libtorch_xpu"`). `implementation` alone
+    /// cannot distinguish these: the shared `uta-ggml-worker` process name is
+    /// unchanged across all of them, so a crash log with no `backend` here is
+    /// otherwise unable to say which native runtime actually ran.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
+    /// The GGML device class actually requested for this node (e.g. `"gpu"`
+    /// for the Intel Arc B580 discrete adapter, `"integrated_gpu"` for the
+    /// AMD Radeon iGPU, `"cpu"`). Only meaningful alongside a `ggml_*`
+    /// `backend`; `libtorch_xpu` nodes always run on the Arc B580 regardless
+    /// of this field. Exists so a crash log can show exactly which physical
+    /// GPU each concurrently-running node was on, not just which backend
+    /// family.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_class: Option<String>,
     /// Present only for measured worker progress. Overall DAG progress is never
     /// inferred from node order.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -68,6 +84,8 @@ struct EventIdentity {
     capability_id: String,
     model_id: Option<String>,
     implementation: String,
+    backend: Option<String>,
+    device_class: Option<String>,
 }
 
 #[derive(Clone)]
@@ -216,7 +234,15 @@ pub(crate) fn begin_node(
     model_id: Option<&str>,
     implementation: impl Into<String>,
 ) -> LifecycleNodeGuard {
-    begin_node_for_presentation(node_id, capability_id, model_id, implementation, None)
+    begin_node_for_presentation(
+        node_id,
+        capability_id,
+        model_id,
+        implementation,
+        None,
+        None,
+        None,
+    )
 }
 
 pub(crate) fn begin_node_for_presentation(
@@ -225,10 +251,14 @@ pub(crate) fn begin_node_for_presentation(
     model_id: Option<&str>,
     implementation: impl Into<String>,
     presentation_node_id: Option<&str>,
+    backend: Option<&str>,
+    device_class: Option<&str>,
 ) -> LifecycleNodeGuard {
     let node_id = node_id.into();
     let capability_id = capability_id.into();
     let implementation = implementation.into();
+    let backend = backend.map(str::to_string);
+    let device_class = device_class.map(str::to_string);
     let identity = EVENT_CONTEXT.with(|slot| {
         let context = slot.borrow();
         let context = context.as_ref()?;
@@ -256,6 +286,8 @@ pub(crate) fn begin_node_for_presentation(
             capability_id,
             model_id: model_id.map(str::to_string),
             implementation,
+            backend,
+            device_class,
         })
     });
     if let Some(identity) = identity.as_ref() {
@@ -283,6 +315,8 @@ fn emit_run_message(kind: EngineLifecycleKind, message: String) {
             capability_id: "analysis.run".to_string(),
             model_id: None,
             implementation: "uta-analysis-engine".to_string(),
+            backend: None,
+            device_class: None,
         })
     });
     if let Some(identity) = identity {
@@ -304,6 +338,8 @@ fn emit(
         capability_id: identity.capability_id.clone(),
         model_id: identity.model_id.clone(),
         implementation: identity.implementation.clone(),
+        backend: identity.backend.clone(),
+        device_class: identity.device_class.clone(),
         progress: None,
         work_units_completed: None,
         work_units_total: None,
@@ -379,6 +415,8 @@ mod tests {
                     Some("melband_roformer_denoise_aufr33"),
                     "openvino",
                     Some("workflow.cleanup_copy"),
+                    Some("libtorch_xpu"),
+                    Some("gpu"),
                 )
                 .complete();
             },
@@ -389,6 +427,29 @@ mod tests {
             event.node_id == "audio.denoise"
                 && event.presentation_node_id.as_deref() == Some("workflow.cleanup_copy")
                 && event.capability_id == "audio.denoise"
+                && event.backend.as_deref() == Some("libtorch_xpu")
+                && event.device_class.as_deref() == Some("gpu")
         }));
+    }
+
+    #[test]
+    fn backend_and_device_class_are_absent_when_not_supplied() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let target = Arc::clone(&events);
+        with_event_sink(
+            "request",
+            None,
+            Vec::new(),
+            Arc::new(move |event| target.lock().unwrap().push(event)),
+            || {
+                begin_node("decode", "audio.decode", None, "ffmpeg").complete();
+            },
+        );
+        let events = events.lock().unwrap();
+        assert!(
+            events
+                .iter()
+                .all(|event| event.backend.is_none() && event.device_class.is_none())
+        );
     }
 }

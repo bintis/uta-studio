@@ -41,6 +41,17 @@ pub struct AnalysisLifecycleFrameWire {
     #[serde(default)]
     pub model_id: Option<String>,
     pub implementation: String,
+    /// The resolved native backend actually dispatched for this node (e.g.
+    /// `"ggml_vulkan"`, `"ggml_cpu"`, `"libtorch_xpu"`). `implementation`
+    /// alone cannot distinguish these -- see `analysis-engine`'s
+    /// `EngineLifecycleEvent::backend` doc comment for why this exists.
+    #[serde(default)]
+    pub backend: Option<String>,
+    /// The GGML device class actually requested for this node (e.g. `"gpu"`,
+    /// `"integrated_gpu"`, `"cpu"`) -- see `analysis-engine`'s
+    /// `EngineLifecycleEvent::device_class` doc comment for why this exists.
+    #[serde(default)]
+    pub device_class: Option<String>,
     #[serde(default)]
     pub progress: Option<f32>,
     #[serde(default)]

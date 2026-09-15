@@ -829,6 +829,8 @@ mod progress_tests {
             capability_id: "pitch.track".to_string(),
             model_id: Some("rmvpe".to_string()),
             implementation: "openvino".to_string(),
+            backend: None,
+            device_class: None,
             progress: Some(progress),
             work_units_completed: Some(completed),
             work_units_total: Some(total),

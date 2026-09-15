@@ -723,6 +723,8 @@ fn artifact_event_does_not_erase_last_measured_node_progress() {
             capability_id: "pitch.track".to_string(),
             model_id: Some("rmvpe".to_string()),
             implementation: "openvino".to_string(),
+            backend: None,
+            device_class: None,
             progress,
             work_units_completed: work_units.map(|(completed, _)| completed),
             work_units_total: work_units.map(|(_, total)| total),

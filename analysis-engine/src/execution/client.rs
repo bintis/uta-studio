@@ -201,12 +201,22 @@ impl SupervisedWorker {
                 format!("native worker is unavailable: {}", executable.display()),
             ));
         }
+        let backend = task
+            .config
+            .get("backend")
+            .and_then(serde_json::Value::as_str);
+        let device_class = task
+            .config
+            .get("device_class")
+            .and_then(serde_json::Value::as_str);
         let lifecycle = begin_node_for_presentation(
             &task.node_id,
             &task.node_id,
             Some(&task.model_id),
             &expectation.component,
             task.presentation_node_id.as_deref(),
+            backend,
+            device_class,
         );
         let output_root = task.output_dir.canonicalize().map_err(|error| {
             EngineError::new(

@@ -52,13 +52,21 @@ for line in sys.stdin:
         }
     }
     fn scope(&self, hold: bool) -> (AccelerationGuard, PathBuf) {
+        // A different accelerator lane than `run`'s task config: preloading
+        // only ever happens across lanes (see `start_next`'s lane check), so
+        // these cleanup-mechanics fixtures must model a realistic cross-lane
+        // preload, not a same-lane one that would never actually be started.
         let schedule = ["primary", "next", "actual"]
             .into_iter()
             .map(|model_id| PreloadSpec {
                 model_id: model_id.to_string(),
                 executable: self.executable.clone(),
                 environment: BTreeMap::new(),
-                config: serde_json::json!({"hold":hold}),
+                config: serde_json::json!({
+                    "hold": hold,
+                    "backend": "ggml_vulkan",
+                    "device_class": "integrated_gpu",
+                }),
             })
             .collect();
         let scope = AccelerationGuard::enter(true, schedule, &self.directory, &self.cancellation);
@@ -77,7 +85,11 @@ for line in sys.stdin:
             model_id: model_id.to_string(),
             input_artifacts: vec![self.input.clone()],
             output_dir: self.directory.clone(),
-            config: serde_json::json!({"fail":fail}),
+            config: serde_json::json!({
+                "fail": fail,
+                "backend": "libtorch_xpu",
+                "device_class": "gpu",
+            }),
             timeout: Duration::from_secs(5),
         };
         let expectation = WorkerExpectation {
