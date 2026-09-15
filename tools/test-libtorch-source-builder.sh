@@ -34,6 +34,7 @@ if [ "$1" = --build ]; then
   else
     mkdir -p "$2"
     printf 'fixture native DSO\n' > "$2/libuta_libtorch.so"
+    printf '{"native_source_commit":"fixture-native-source","native_source_dirty":false}\n' > "$2/native-build-info.json"
   fi
 fi
 TOOL
