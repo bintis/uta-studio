@@ -16,6 +16,9 @@ pub const RUNTIME_CATALOG_VERSION: &str = "ggml";
 const GGML_COMMIT: &str = "8c63e70982c95ceb862e3a1073a2c1beef75d60a";
 const LEAP_REPOSITORY: &str = "scragnog/HOT-Step-CPP-SuperSep";
 const LEAP_REVISION: &str = "440487b8300dcd61453cc52ec244a38150b03456";
+/// Uta! Studio's published GGUF files, one directory per model id.
+const MODEL_REPOSITORY: &str = "bintis/uta-studio";
+const MODEL_REPOSITORY_REVISION: &str = "308e46b3315710d38765eddde2c99753f1aab039";
 
 /// Every catalog model has two explicit execution routes: the pinned default
 /// GGML Vulkan runtime and the native LibTorch XPU runtime. Hardware class
@@ -428,7 +431,6 @@ impl ResourceCatalog {
                 source.0,
                 source.1,
                 "ggml_vulkan",
-                source.2,
                 Some(457_008_736),
                 GGML_RUNTIME_RECIPE_SHA256,
             )?)?;
@@ -445,6 +447,17 @@ impl ResourceCatalog {
         self.insert_model(firered_model()?)?;
         self.insert_model(qwen_asr_model()?)?;
         self.insert_model(qwen_aligner_model()?)?;
+        for model in self.models.values_mut() {
+            if model.download.is_none() {
+                let directory = model.id.as_str().to_string();
+                *model = with_download(
+                    model.clone(),
+                    MODEL_REPOSITORY,
+                    MODEL_REPOSITORY_REVISION,
+                    Some(&directory),
+                );
+            }
+        }
         Ok(())
     }
 
@@ -609,7 +622,6 @@ fn ggml_model(
     source: SourceIdentity,
     license: LicenseInfo,
     runtime: &str,
-    download_bytes: Option<u64>,
     installed_bytes: Option<u64>,
     runtime_recipe: &str,
 ) -> RuntimeManagerResult<ModelCatalogEntry> {
@@ -648,7 +660,7 @@ fn ggml_model(
         ],
         backends: vec![backend(), libtorch_backend()],
         pinned_backend: Some(NativeBackend::Ggml),
-        estimated_download_bytes: download_bytes,
+        estimated_download_bytes: None,
         estimated_installed_bytes: installed_bytes,
         recipe_digest: catalog_recipe_digest(id),
         runtime_recipe_digest: Some(runtime_recipe.to_string()),
@@ -698,7 +710,6 @@ fn leap_model() -> RuntimeManagerResult<ModelCatalogEntry> {
         },
         "ggml_vulkan",
         Some(267_433_600),
-        Some(267_433_600),
         GGML_RUNTIME_RECIPE_SHA256,
     )
 }
@@ -733,7 +744,6 @@ fn leap_instrumental_model() -> RuntimeManagerResult<ModelCatalogEntry> {
         },
         "ggml_vulkan",
         Some(267_433_600),
-        Some(267_433_600),
         GGML_RUNTIME_RECIPE_SHA256,
     )
 }
@@ -767,21 +777,18 @@ fn polarformer_model() -> RuntimeManagerResult<ModelCatalogEntry> {
             source_page: Some("https://huggingface.co/bgkb/bs_polarformer".to_string()),
         },
         "ggml_vulkan",
-        None,
         Some(204_237_408),
         GGML_RUNTIME_RECIPE_SHA256,
     )
 }
 
-fn roformer_source(id: &str) -> (SourceIdentity, LicenseInfo, Option<u64>) {
-    let (repository, revision, filename, source_sha, bytes, attribution, page, gguf_sha) = match id
-    {
+fn roformer_source(id: &str) -> (SourceIdentity, LicenseInfo) {
+    let (repository, revision, filename, source_sha, attribution, page, gguf_sha) = match id {
         "melband_roformer_harmony" => (
             "https://github.com/TRvlvr/model_repo",
             "all_public_uvr_models",
             "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt",
             "1de20d459332fe8869aeb01327a31df0032262706e1365114e852dc271779813",
-            913_096_801,
             "aufr33 + viperx MelBand RoFormer Karaoke",
             "https://github.com/TRvlvr/model_repo/releases/tag/all_public_uvr_models",
             "d463c06a1bf5d3889a2a6be58cc469f0a996155eafb91845ff5e8c139a3d64be",
@@ -791,7 +798,6 @@ fn roformer_source(id: &str) -> (SourceIdentity, LicenseInfo, Option<u64>) {
             "4e39bc34a36dda8e73254cd8f5d44f15de2bd7b9",
             "denoise_mel_band_roformer_aufr33_sdr_27.9959.ckpt",
             "7c1c39191edc34e942ca7f2346ce6b6c0e1208a5f76349ffce6f696bd12910de",
-            913_097_300,
             "aufr33 MelBand RoFormer denoise",
             "https://huggingface.co/poiqazwsx/melband-roformer-denoise",
             "eb03fce4c5a450f88718e8a529b8adcd653618a5d32cb55275fa212a80fef33a",
@@ -801,7 +807,6 @@ fn roformer_source(id: &str) -> (SourceIdentity, LicenseInfo, Option<u64>) {
             "cef05ad2b5b3145ea5c149d3ad5d1f8439b34d06",
             "dereverb_mel_band_roformer_anvuew_sdr_19.1729.ckpt",
             "9262877b87e9ebb0fb808a456b0a411fa677f5df31c8383c1254af531c078970",
-            913_107_578,
             "anvuew MelBand RoFormer dereverb",
             "https://huggingface.co/anvuew/dereverb_mel_band_roformer",
             "f850fb2460099df356676ce37ba48875e3c75726d7a848b42d75ff6015955ac7",
@@ -831,7 +836,6 @@ fn roformer_source(id: &str) -> (SourceIdentity, LicenseInfo, Option<u64>) {
             source_attribution: attribution.to_string(),
             source_page: Some(page.to_string()),
         },
-        Some(bytes),
     )
 }
 
@@ -852,7 +856,6 @@ fn rmvpe_model() -> RuntimeManagerResult<ModelCatalogEntry> {
             source_page: None,
         },
         "ggml_vulkan",
-        None,
         Some(361_625_344),
         GGML_RUNTIME_RECIPE_SHA256,
     )
@@ -906,7 +909,6 @@ fn fcpe_model() -> RuntimeManagerResult<ModelCatalogEntry> {
             ),
         },
         "ggml_vulkan",
-        None,
         Some(FCPE_GGUF_SIZE_BYTES),
         GGML_RUNTIME_RECIPE_SHA256,
     )
@@ -948,7 +950,6 @@ fn basic_pitch_model() -> RuntimeManagerResult<ModelCatalogEntry> {
             ),
         },
         "ggml_vulkan",
-        None,
         Some(144_512),
         GGML_RUNTIME_RECIPE_SHA256,
     )
@@ -999,7 +1000,6 @@ fn game_model(variant: &str) -> RuntimeManagerResult<ModelCatalogEntry> {
             source_page: Some("https://github.com/openvpi/GAME/releases/tag/v1.0.3".to_string()),
         },
         "ggml_vulkan",
-        None,
         Some(bytes),
         GGML_RUNTIME_RECIPE_SHA256,
     )
@@ -1024,7 +1024,6 @@ fn jbm555_model() -> RuntimeManagerResult<ModelCatalogEntry> {
             source_page: Some("https://github.com/york135/CECTC_baseline_APSIPA25".to_string()),
         },
         "ggml_vulkan",
-        None,
         Some(3_981_024),
         GGML_RUNTIME_RECIPE_SHA256,
     )
@@ -1064,8 +1063,7 @@ fn stars_model() -> RuntimeManagerResult<ModelCatalogEntry> {
             ),
         },
         "ggml_vulkan",
-        None,
-        Some(201_133_440),
+        Some(201_085_024),
         GGML_RUNTIME_RECIPE_SHA256,
     )?;
     model.dependencies.insert(0, ResourceRef::model("rmvpe")?);
@@ -1106,8 +1104,7 @@ fn rosvot_model() -> RuntimeManagerResult<ModelCatalogEntry> {
             ),
         },
         "ggml_vulkan",
-        None,
-        Some(48_196_032),
+        Some(48_194_496),
         GGML_RUNTIME_RECIPE_SHA256,
     )?;
     model.dependencies.insert(0, ResourceRef::model("rmvpe")?);
@@ -1168,7 +1165,6 @@ fn firered_model() -> RuntimeManagerResult<ModelCatalogEntry> {
             ),
         },
         "ggml_vulkan",
-        None,
         Some(4_686_998_595),
         GGML_RUNTIME_RECIPE_SHA256,
     )?;
@@ -1204,7 +1200,6 @@ fn qwen_asr_model() -> RuntimeManagerResult<ModelCatalogEntry> {
         },
         qwen_license("Qwen/Qwen3-ASR-1.7B"),
         "ggml_vulkan",
-        None,
         Some(4_083_087_904),
         GGML_RUNTIME_RECIPE_SHA256,
     )
@@ -1225,7 +1220,6 @@ fn qwen_aligner_model() -> RuntimeManagerResult<ModelCatalogEntry> {
         },
         qwen_license("Qwen/Qwen3-ForcedAligner-0.6B-hf"),
         "ggml_vulkan",
-        None,
         Some(1_842_216_416),
         GGML_RUNTIME_RECIPE_SHA256,
     )
@@ -1252,6 +1246,7 @@ fn with_download(
         revision: revision.to_string(),
         directory: directory.map(str::to_string),
     });
+    model.estimated_download_bytes = model.estimated_installed_bytes;
     model.acquisition.insert(
         0,
         acquisition(
@@ -1360,6 +1355,38 @@ mod tests {
             "qwen3_forced_aligner_0_6b",
         ] {
             assert!(catalog.model(id).is_some(), "{id}");
+        }
+    }
+
+    #[test]
+    fn every_model_downloads_its_measured_artifact_set_from_a_pinned_location() {
+        let catalog = ResourceCatalog::default_catalog().unwrap();
+        for model in catalog.models.values() {
+            let id = model.id.as_str();
+            let expected = if id.starts_with("bs_roformer_leap_xe90_") {
+                ModelDownloadSpec {
+                    repository: LEAP_REPOSITORY.to_string(),
+                    revision: LEAP_REVISION.to_string(),
+                    directory: None,
+                }
+            } else {
+                ModelDownloadSpec {
+                    repository: MODEL_REPOSITORY.to_string(),
+                    revision: MODEL_REPOSITORY_REVISION.to_string(),
+                    directory: Some(id.to_string()),
+                }
+            };
+            assert_eq!(model.download.as_ref(), Some(&expected), "{id}");
+            assert_eq!(
+                model.acquisition.first().map(|spec| spec.method),
+                Some(AcquisitionMethod::ManagedDownload),
+                "{id}"
+            );
+            assert!(model.estimated_installed_bytes.is_some(), "{id}");
+            assert_eq!(
+                model.estimated_download_bytes, model.estimated_installed_bytes,
+                "{id}"
+            );
         }
     }
 

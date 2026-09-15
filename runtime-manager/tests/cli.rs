@@ -385,15 +385,26 @@ fn plan_is_offline_and_ndjson_is_one_structured_result() {
 fn ndjson_mutation_uses_structured_start_resource_and_error_events() {
     let store = temp_path("ndjson-mutation");
     let store_arg = store.to_string_lossy().into_owned();
-    let output = run(&[
-        "install",
-        "model:rmvpe",
-        "--yes",
-        "--output",
-        "ndjson",
-        "--store",
-        &store_arg,
-    ]);
+    // Every catalog model downloads, so fail on the one resource install
+    // cannot acquire without touching the network: the LibTorch XPU runtime,
+    // isolated from this machine's installed copy.
+    let output = Command::new(binary())
+        .args([
+            "install",
+            "runtime:libtorch_xpu",
+            "--yes",
+            "--output",
+            "ndjson",
+            "--store",
+            &store_arg,
+        ])
+        .env(
+            "UTA_STUDIO_LIBTORCH_RUNTIME_DIR",
+            temp_path("ndjson-mutation-libtorch"),
+        )
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
     assert_eq!(output.status.code(), Some(14));
     assert!(output.stderr.is_empty());
     let events = String::from_utf8(output.stdout)

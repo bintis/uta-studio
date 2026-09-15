@@ -30,6 +30,18 @@ availability, never authentication readiness. A selected provider may contact
 an external AI service and incur provider charges; credentials remain owned by
 the provider CLI.
 
+## Model downloads
+
+Every catalog model pins a download location for its complete runtime artifact
+set. The BS-RoFormer Leap XE90 GGUFs come from
+`scragnog/HOT-Step-CPP-SuperSep`; every other model's files come from the
+public Hugging Face repository `bintis/uta-studio` at a pinned commit, one
+directory per model id (for example `firered_asr2_aed/` holds
+`firered-f32.gguf`, `cmvn.ark`, and `dict.txt`). `install` downloads them only
+after explicit confirmation and publishes them as one generation. A model is
+installable when any one of its runtimes is present; `import` remains
+available for local files.
+
 ## RMVPE GGML/Vulkan import
 
 RMVPE conversion is an explicit local action. Run
