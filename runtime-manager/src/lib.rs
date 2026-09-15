@@ -24,9 +24,9 @@ pub mod smoke;
 pub use acquire::{AcquisitionTransport, HttpAcquisitionTransport};
 pub use catalog::{
     AcquisitionMethod, AcquisitionSpec, AlgorithmIdentity, BackendCapability, BundleCatalogEntry,
-    ConvertedArtifactIdentity, LicenseInfo, ModelArtifactSpec, ModelCatalogEntry, NativeBackend,
-    NativeDeviceClass, NativeModelRuntime, ResourceCatalog, RuntimeCatalogEntry,
-    SourceArtifactIdentity, SourceIdentity, ToolCatalogEntry,
+    ConvertedArtifactIdentity, LicenseInfo, ModelArtifactSpec, ModelCatalogEntry,
+    ModelDownloadSpec, NativeBackend, NativeDeviceClass, NativeModelRuntime, ResourceCatalog,
+    RuntimeCatalogEntry, SourceArtifactIdentity, SourceIdentity, ToolCatalogEntry,
 };
 pub use doctor::{DiagnosticCheck, DiagnosticSeverity, DoctorReport};
 pub use error::{RuntimeManagerError, RuntimeManagerResult};

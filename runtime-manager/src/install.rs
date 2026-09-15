@@ -9,7 +9,8 @@ use sha2::{Digest, Sha256};
 
 use crate::acquire::{AcquisitionTransport, HttpAcquisitionTransport};
 use crate::catalog::{
-    AcquisitionMethod, AcquisitionSpec, LicenseInfo, ModelCatalogEntry, ResourceCatalog,
+    AcquisitionMethod, AcquisitionSpec, LicenseInfo, ModelCatalogEntry, ModelDownloadSpec,
+    ResourceCatalog,
 };
 use crate::error::{RuntimeManagerError, RuntimeManagerResult};
 use crate::lease::ResourceLease;
@@ -533,22 +534,22 @@ fn acquire_managed_model(
     transport: &dyn AcquisitionTransport,
 ) -> RuntimeManagerResult<()> {
     let resource = model.resource();
-    if model.runtime_artifacts.len() != 1
-        || model.runtime_artifacts[0].name != "model"
-        || model.runtime_artifacts[0].filename
-            != model.source.filename.as_deref().unwrap_or_default()
-    {
+    let download = model
+        .download
+        .as_ref()
+        .ok_or_else(|| not_acquirable(&resource, "the catalog has no pinned download location"))?;
+    if model.runtime_artifacts.is_empty() {
         return Err(not_acquirable(
             &resource,
-            "managed download requires one catalog-pinned model artifact",
+            "managed download requires a catalog-pinned artifact set",
         ));
     }
-    let filename =
-        model.source.filename.as_deref().ok_or_else(|| {
-            not_acquirable(&resource, "the catalog has no pinned artifact filename")
-        })?;
-    validate_leaf_filename(filename).map_err(|error| error.with_resource(&resource))?;
-    let url = managed_download_url(model)?;
+    let urls = model
+        .runtime_artifacts
+        .iter()
+        .map(|artifact| managed_download_url(download, &artifact.filename))
+        .collect::<RuntimeManagerResult<Vec<_>>>()
+        .map_err(|error| error.with_resource(&resource))?;
     let root = manager.paths().store_root.as_ref().ok_or_else(|| {
         RuntimeManagerError::new("publish_failed", "runtime store is not configured")
     })?;
@@ -569,18 +570,23 @@ fn acquire_managed_model(
     }
     let downloads = root.join("downloads");
     ensure_managed_directory(&downloads)?;
-    let temporary = downloads.join(format!(
-        ".{}-{}.download",
-        resource.id,
-        unique_operation_id()
-    ));
-    let guard = DownloadGuard(temporary.clone());
-    transport.download(&url, &temporary, model.estimated_download_bytes)?;
-    publish_single_file(
+    let mut guards = Vec::with_capacity(urls.len());
+    let mut files = Vec::with_capacity(urls.len());
+    for (artifact, url) in model.runtime_artifacts.iter().zip(&urls) {
+        let temporary = downloads.join(format!(
+            ".{}-{}-{}.download",
+            resource.id,
+            artifact.name,
+            unique_operation_id()
+        ));
+        guards.push(DownloadGuard(temporary.clone()));
+        transport.download(url, &temporary, model.estimated_download_bytes)?;
+        files.push((temporary, PathBuf::from(&artifact.filename)));
+    }
+    publish_file_set(
         manager.paths(),
         &resource,
-        &temporary,
-        Path::new(filename),
+        &files,
         PublishIdentity {
             source: Some(model.source.clone()),
             source_sha256: model.source.sha256.clone(),
@@ -589,46 +595,46 @@ fn acquire_managed_model(
             runtime_recipe_digest: model.runtime_recipe_digest.clone(),
         },
     )?;
-    drop(guard);
+    drop(guards);
     Ok(())
 }
 
-fn managed_download_url(model: &ModelCatalogEntry) -> RuntimeManagerResult<String> {
-    let resource = model.resource();
-    let repository =
-        model.source.repository.as_deref().ok_or_else(|| {
-            not_acquirable(&resource, "the catalog has no pinned source repository")
-        })?;
+fn managed_download_url(
+    download: &ModelDownloadSpec,
+    filename: &str,
+) -> RuntimeManagerResult<String> {
+    let repository = download.repository.as_str();
     if repository.is_empty()
         || repository.starts_with('/')
         || repository.contains("..")
         || repository.contains(['?', '#', '\\'])
     {
-        return Err(
-            RuntimeManagerError::invalid_catalog("managed repository identity is unsafe")
-                .with_resource(&resource),
-        );
+        return Err(RuntimeManagerError::invalid_catalog(
+            "managed repository identity is unsafe",
+        ));
     }
-    let revision = model.source.revision.as_deref().unwrap_or("main");
+    let revision = download.revision.as_str();
     if revision.is_empty()
         || !revision
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
     {
-        return Err(
-            RuntimeManagerError::invalid_catalog("managed repository revision is unsafe")
-                .with_resource(&resource),
-        );
+        return Err(RuntimeManagerError::invalid_catalog(
+            "managed repository revision is unsafe",
+        ));
     }
-    let filename = model
-        .source
-        .filename
-        .as_deref()
-        .ok_or_else(|| not_acquirable(&resource, "the catalog has no artifact filename"))?;
-    validate_leaf_filename(filename).map_err(|error| error.with_resource(&resource))?;
-    Ok(format!(
-        "https://huggingface.co/{repository}/resolve/{revision}/{filename}"
-    ))
+    validate_leaf_filename(filename)?;
+    match download.directory.as_deref() {
+        Some(directory) => {
+            validate_leaf_filename(directory)?;
+            Ok(format!(
+                "https://huggingface.co/{repository}/resolve/{revision}/{directory}/{filename}"
+            ))
+        }
+        None => Ok(format!(
+            "https://huggingface.co/{repository}/resolve/{revision}/{filename}"
+        )),
+    }
 }
 
 fn validate_leaf_filename(filename: &str) -> RuntimeManagerResult<()> {
@@ -838,21 +844,6 @@ struct PublishIdentity {
     model_recipe_digest: Option<String>,
     conversion_recipe_digest: Option<String>,
     runtime_recipe_digest: Option<String>,
-}
-
-fn publish_single_file(
-    paths: &StorePaths,
-    resource: &ResourceRef,
-    source: &Path,
-    relative: &Path,
-    identity: PublishIdentity,
-) -> RuntimeManagerResult<String> {
-    publish_file_set(
-        paths,
-        resource,
-        &[(source.to_path_buf(), relative.to_path_buf())],
-        identity,
-    )
 }
 
 fn publish_file_set(
@@ -1296,15 +1287,19 @@ mod tests {
             .collect()
     }
 
-    struct FixedTransport;
+    #[derive(Default)]
+    struct FixedTransport {
+        urls: std::cell::RefCell<Vec<String>>,
+    }
 
     impl AcquisitionTransport for FixedTransport {
         fn download(
             &self,
-            _url: &str,
+            url: &str,
             destination: &Path,
             _maximum_bytes: Option<u64>,
         ) -> RuntimeManagerResult<()> {
+            self.urls.borrow_mut().push(url.to_string());
             std::fs::write(destination, b"gguf").map_err(publish_io)
         }
     }
@@ -1366,7 +1361,7 @@ mod tests {
                 std::slice::from_ref(&resource),
                 RuntimePolicy::Production,
                 &MutationOptions { confirmed: true },
-                &FixedTransport,
+                &FixedTransport::default(),
             )
             .unwrap();
         assert_eq!(result.changed, [resource.clone()]);
@@ -1377,6 +1372,72 @@ mod tests {
         assert_eq!(resolved.runtime_id, "ggml_vulkan");
         drop(resolved);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn managed_download_publishes_the_complete_artifact_set_from_its_directory() {
+        let root = scratch_root("artifact-set-download");
+        let mut catalog = ResourceCatalog::default_catalog().unwrap();
+        let model = catalog.models.get_mut("firered_asr2_aed").unwrap();
+        model.download = Some(ModelDownloadSpec {
+            repository: "owner/models".to_string(),
+            revision: "0123abcd".to_string(),
+            directory: Some("firered_asr2_aed".to_string()),
+        });
+        model.acquisition = vec![AcquisitionSpec {
+            method: AcquisitionMethod::ManagedDownload,
+            label: "test download".to_string(),
+            license_id: None,
+        }];
+        model.estimated_download_bytes = Some(16);
+        model.estimated_installed_bytes = Some(16);
+        let manager = RuntimeManager::new(catalog, fresh_store_paths(&root));
+        let transport = FixedTransport::default();
+        let resource = ResourceRef::model("firered_asr2_aed").unwrap();
+        manager
+            .install_with_transport(
+                std::slice::from_ref(&resource),
+                RuntimePolicy::Production,
+                &MutationOptions { confirmed: true },
+                &transport,
+            )
+            .unwrap();
+        assert_eq!(
+            *transport.urls.borrow(),
+            ["firered-f32.gguf", "cmvn.ark", "dict.txt"].map(|filename| format!(
+                "https://huggingface.co/owner/models/resolve/0123abcd/firered_asr2_aed/{filename}"
+            ))
+        );
+        let store = root.join("store");
+        let pointer =
+            crate::store::read_current_pointer(&store.join("models/firered_asr2_aed/current.json"))
+                .unwrap();
+        let manifest = crate::manifest::read_install_manifest(
+            &store
+                .join("models/firered_asr2_aed/generations")
+                .join(pointer.generation),
+        )
+        .unwrap();
+        assert_eq!(manifest.files.len(), 3);
+        assert!(
+            std::fs::read_dir(store.join("downloads"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn download_location_segments_must_be_single_path_components() {
+        let download = |directory: &str| ModelDownloadSpec {
+            repository: "owner/models".to_string(),
+            revision: "main".to_string(),
+            directory: Some(directory.to_string()),
+        };
+        assert!(managed_download_url(&download("rmvpe"), "rmvpe-f32.gguf").is_ok());
+        assert!(managed_download_url(&download("../rmvpe"), "rmvpe-f32.gguf").is_err());
+        assert!(managed_download_url(&download("rmvpe"), "nested/rmvpe-f32.gguf").is_err());
     }
 
     #[test]

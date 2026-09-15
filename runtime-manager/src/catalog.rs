@@ -14,6 +14,8 @@ use crate::state::ValidationState;
 
 pub const RUNTIME_CATALOG_VERSION: &str = "ggml";
 const GGML_COMMIT: &str = "8c63e70982c95ceb862e3a1073a2c1beef75d60a";
+const LEAP_REPOSITORY: &str = "scragnog/HOT-Step-CPP-SuperSep";
+const LEAP_REVISION: &str = "440487b8300dcd61453cc52ec244a38150b03456";
 
 /// Every catalog model has two explicit execution routes: the pinned default
 /// GGML Vulkan runtime and the native LibTorch XPU runtime. Hardware class
@@ -192,6 +194,17 @@ pub struct ModelArtifactSpec {
     pub filename: String,
 }
 
+/// Pinned Hugging Face location of a model's complete runtime artifact set.
+/// Each runtime artifact downloads from
+/// `{repository}/resolve/{revision}/[{directory}/]{filename}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelDownloadSpec {
+    pub repository: String,
+    pub revision: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelCatalogEntry {
     pub id: ModelId,
@@ -204,6 +217,8 @@ pub struct ModelCatalogEntry {
     /// sidecars are explicit peers rather than paths guessed by workers.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runtime_artifacts: Vec<ModelArtifactSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download: Option<ModelDownloadSpec>,
     pub acquisition: Vec<AcquisitionSpec>,
     pub dependencies: Vec<ResourceRef>,
     pub backends: Vec<BackendCapability>,
@@ -378,8 +393,9 @@ impl ResourceCatalog {
     }
 
     fn add_models(&mut self) -> RuntimeManagerResult<()> {
-        self.insert_model(leap_model()?)?;
-        self.insert_model(leap_instrumental_model()?)?;
+        for leap in [leap_model()?, leap_instrumental_model()?] {
+            self.insert_model(with_download(leap, LEAP_REPOSITORY, LEAP_REVISION, None))?;
+        }
         self.insert_model(polarformer_model()?)?;
         for (id, name, purpose, capability, source) in [
             (
@@ -621,15 +637,9 @@ fn ggml_model(
             name: "model".to_string(),
             filename: primary_filename,
         }],
+        download: None,
         acquisition: vec![acquisition(
-            if matches!(
-                id,
-                "bs_roformer_leap_xe90_vocals" | "bs_roformer_leap_xe90_instrumental"
-            ) {
-                AcquisitionMethod::ManagedDownload
-            } else {
-                AcquisitionMethod::LocalImport
-            },
+            AcquisitionMethod::LocalImport,
             "GGUF model for the pinned GGML runtime",
         )],
         dependencies: vec![
@@ -1229,6 +1239,29 @@ fn qwen_license(repository: &str) -> LicenseInfo {
     }
 }
 
+/// Pins where Runtime Manager downloads a model's runtime artifact set. Local
+/// import stays available beside the download.
+fn with_download(
+    mut model: ModelCatalogEntry,
+    repository: &str,
+    revision: &str,
+    directory: Option<&str>,
+) -> ModelCatalogEntry {
+    model.download = Some(ModelDownloadSpec {
+        repository: repository.to_string(),
+        revision: revision.to_string(),
+        directory: directory.map(str::to_string),
+    });
+    model.acquisition.insert(
+        0,
+        acquisition(
+            AcquisitionMethod::ManagedDownload,
+            "GGUF model download for the pinned GGML runtime",
+        ),
+    );
+    model
+}
+
 fn acquisition(method: AcquisitionMethod, label: &str) -> AcquisitionSpec {
     AcquisitionSpec {
         method,
@@ -1372,6 +1405,24 @@ mod tests {
             assert_eq!(
                 leap.capabilities,
                 ["audio.extract_vocals", "audio.extract_instrumental"]
+            );
+            assert_eq!(
+                leap.download,
+                Some(ModelDownloadSpec {
+                    repository: LEAP_REPOSITORY.to_string(),
+                    revision: LEAP_REVISION.to_string(),
+                    directory: None,
+                })
+            );
+            assert_eq!(
+                leap.acquisition
+                    .iter()
+                    .map(|spec| spec.method)
+                    .collect::<Vec<_>>(),
+                [
+                    AcquisitionMethod::ManagedDownload,
+                    AcquisitionMethod::LocalImport
+                ]
             );
         }
         let instrumental = catalog.model("bs_roformer_leap_xe90_instrumental").unwrap();
