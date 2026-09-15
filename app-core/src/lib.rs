@@ -222,6 +222,16 @@ pub fn startup() -> Result<(), String> {
     // Load and repair configuration before opening SQLite: the configured
     // data root decides which library database belongs to this process.
     let config = AppConfig::load();
+    // startup can launch resumed work before the desktop window exists. Set
+    // up DEBUG now, so the very first uta-analyze process inherits native
+    // capture settings rather than permanently missing them for this run.
+    if let Err(error) = debug_logging::restore_at_startup(&config) {
+        use std::io::Write as _;
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "Uta! Studio could not restore DEBUG capture before analysis: {error}"
+        );
+    }
     init_library().map_err(|e| e.to_string())?;
 
     // Exact Engine requests that the user already started resume from their

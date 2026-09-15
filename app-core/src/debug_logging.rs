@@ -10,6 +10,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::log_storage::{self, LogStorageStats};
 
+#[cfg(target_os = "linux")]
+mod kernel;
+
 static DEBUG_LOGGING: LazyLock<Mutex<DebugLogging>> =
     LazyLock::new(|| Mutex::new(DebugLogging::default()));
 static DIRECTORY_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
@@ -29,8 +32,34 @@ struct DebugSession {
     app_source: Option<File>,
     app_source_path: Option<PathBuf>,
     app_copied: u64,
+    #[cfg(target_os = "linux")]
+    kernel_capture: Option<kernel::KernelCapture>,
 }
 
+/// Restore the saved capture preference before startup can resume any analysis.
+/// Desktop later adopts this same session and separately applies its log filter.
+/// Failure stays observable through the existing logging error API; it is not
+/// an inference eligibility check and must not change the user's queue policy.
+pub(crate) fn restore_at_startup(config: &crate::AppConfig) -> Result<(), String> {
+    restore_startup_capture(config, start_debug_logging)
+}
+
+fn restore_startup_capture(
+    config: &crate::AppConfig,
+    start: impl FnOnce(&str) -> Result<PathBuf, String>,
+) -> Result<(), String> {
+    if config.debug_logging {
+        let context = format!(
+            "Uta! Studio {}\nOS: {} / {}\nSettings: {}",
+            env!("CARGO_PKG_VERSION"),
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            serde_json::to_string_pretty(config).map_err(|error| error.to_string())?
+        );
+        start(&context)?;
+    }
+    Ok(())
+}
 /// Snapshot the full on-disk app.log and recursive analysis-logs, then mirror
 /// subsequent app-log lines and backend stderr into the returned directory.
 /// `context` is stored verbatim in context.txt; desktop owns its contents and
@@ -53,10 +82,12 @@ pub fn start_debug_logging(context: &str) -> Result<PathBuf, String> {
     let root = crate::cache::uta_studio_dir();
     // Bulk copies must not hold up live logging or backend pipe draining.
     let prepared = DebugSession::snapshot(&root, context);
-    DEBUG_LOGGING
+    let mut logging = DEBUG_LOGGING
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .activate(prepared)
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let result = logging.activate(prepared);
+    logging.start_kernel_capture();
+    result
 }
 
 /// Stop mirroring immediately without deleting logs or changing desktop tracing.
@@ -95,10 +126,12 @@ pub fn clear_logs() -> Result<LogStorageStats, String> {
     let _snapshot = SNAPSHOT_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    DEBUG_LOGGING
+    let mut logging = DEBUG_LOGGING
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clear(&crate::cache::uta_studio_dir())
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let result = logging.clear(&crate::cache::uta_studio_dir());
+    logging.start_kernel_capture();
+    result
 }
 
 /// First live-write failure (or latest start/cleanup failure), retained until a
@@ -108,8 +141,7 @@ pub fn debug_logging_error() -> Option<String> {
     DEBUG_LOGGING
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .error
-        .clone()
+        .current_error()
 }
 
 /// Whether local mirroring is active; desktop owns persistence and tracing.
@@ -139,6 +171,23 @@ pub(crate) fn record_backend_stderr(bytes: &[u8]) {
 }
 
 impl DebugLogging {
+    // Production entry points opt in. Snapshot/cleanup fixture methods never
+    // launch external commands or access the user's live system journal.
+    fn start_kernel_capture(&mut self) {
+        #[cfg(target_os = "linux")]
+        if let Some(session) = self.session.as_mut()
+            && session.kernel_capture.is_none()
+        {
+            session.kernel_capture = Some(kernel::KernelCapture::start(&session.directory));
+        }
+    }
+
+    fn current_error(&self) -> Option<String> {
+        let error = self.error.clone();
+        #[cfg(target_os = "linux")]
+        let error = error.or_else(|| self.session.as_ref()?.kernel_capture.as_ref()?.error());
+        error
+    }
     #[cfg(test)]
     fn start(&mut self, root: &Path, context: &str) -> Result<PathBuf, String> {
         if let Some(directory) = self.active_directory() {
@@ -346,6 +395,8 @@ impl DebugSession {
             // any surviving app history after a partially failed cleanup.
             app_source_path: snapshot.then_some(source_path),
             app_copied: 0,
+            #[cfg(target_os = "linux")]
+            kernel_capture: None,
         };
         session.copy_app_tail()?;
         Ok(session)
@@ -515,6 +566,61 @@ mod tests {
         }
     }
 
+    #[test]
+    fn startup_capture_survives_desktop_adoption_without_another_snapshot() {
+        let fixture = Fixture::new();
+        let config = crate::AppConfig {
+            data_path: Some(fixture.0.clone()),
+            debug_logging: true,
+            ..crate::AppConfig::default()
+        };
+        let mut logging = DebugLogging::default();
+        // Run the production restoration helper with isolated local storage.
+        // This never starts a worker, reads the live journal or changes env.
+        restore_startup_capture(&config, |context| logging.start(&fixture.0, context)).unwrap();
+        let early_directory = logging
+            .active_directory()
+            .expect("startup capture was not active");
+        logging.record_stderr(b"resumed backend before desktop startup\n");
+        let desktop_directory = logging
+            .start(&fixture.0, "desktop now adopts capture")
+            .unwrap();
+        assert_eq!(early_directory, desktop_directory);
+        assert_eq!(
+            fs::read(desktop_directory.join("backend-stderr.log")).unwrap(),
+            b"resumed backend before desktop startup\n"
+        );
+        let context = fs::read_to_string(desktop_directory.join("context.txt")).unwrap();
+        assert!(context.contains("\"debug_logging\": true"));
+        assert!(context.starts_with("Uta! Studio "));
+        assert!(logging.current_error().is_none());
+    }
+
+    #[test]
+    fn startup_with_debug_disabled_does_not_start_capture() {
+        let config = crate::AppConfig::default();
+        restore_startup_capture(&config, |_| {
+            panic!("disabled DEBUG must not create a snapshot or start a journal reader")
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn startup_capture_failure_remains_visible_without_a_false_active_session() {
+        let config = crate::AppConfig {
+            debug_logging: true,
+            ..crate::AppConfig::default()
+        };
+        let mut logging = DebugLogging::default();
+        let error = restore_startup_capture(&config, |_| {
+            logging.activate(Err("fixture capture initialization failure".to_owned()))
+        })
+        .unwrap_err();
+        assert_eq!(error, "fixture capture initialization failure");
+        assert_eq!(logging.current_error().as_deref(), Some(error.as_str()));
+        assert!(logging.active_directory().is_none());
+        assert!(config.debug_logging);
+    }
     #[test]
     fn copies_full_app_log_and_nested_jsonl_and_context() {
         let fixture = Fixture::new();
