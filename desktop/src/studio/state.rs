@@ -13,7 +13,8 @@ use super::{
     LibraryView, NativeEditor, NativeEditorLoadJob, NativeExportJob, NativeLanguageEditor,
     NativeLyricsEditor, NativeLyricsFetchJob, NativeLyricsSearchJob, NativeLyricsWaveformJob,
     NativeSongSettings, PendingLeave, PlanPreviewDraft, SettingsSelectKind, SettingsTab,
-    SetupRequest, SongContextMenu, StudioRoute, build_analysis_node_context_menu, load_songs,
+    SetupGuideStep, SetupRequest, SongContextMenu, StudioRoute, build_analysis_node_context_menu,
+    load_songs,
 };
 
 #[derive(Resource)]
@@ -122,6 +123,7 @@ pub(crate) struct DialogState {
     pub(crate) analysis_node_context: Option<AnalysisNodeContextMenu>,
     pub(crate) pending_setup: Option<SetupRequest>,
     pub(crate) model_downloads_open: bool,
+    pub(crate) setup_guide: Option<SetupGuideStep>,
     pub(crate) diagnostic_report: Option<uta_studio_diagnostics::DiagnosticReport>,
     pub(crate) lyrics_editor: Option<NativeLyricsEditor>,
     pub(crate) pending_cache_delete: Option<String>,
@@ -154,6 +156,8 @@ pub(crate) struct ModelSettingsSnapshot {
     pub(crate) fusion_providers_error: Option<String>,
     pub(crate) audio_catalog: app_core::AudioModelCatalogSummary,
     pub(crate) audio_catalog_error: Option<String>,
+    pub(crate) setup_tiers: Vec<app_core::SetupTierOption>,
+    pub(crate) setup_tiers_error: Option<String>,
 }
 
 #[derive(Default)]
@@ -245,6 +249,7 @@ impl StudioStateBundle {
             };
         }
         let folder_browser = FolderBrowser::new(&config);
+        let setup_guide = (!config.setup_guide_completed).then_some(SetupGuideStep::Welcome);
         Self {
             shell: ShellState {
                 config,
@@ -297,6 +302,7 @@ impl StudioStateBundle {
                 analysis_node_context: None,
                 pending_setup: None,
                 model_downloads_open: false,
+                setup_guide,
                 diagnostic_report: None,
                 lyrics_editor: None,
                 pending_cache_delete: None,
@@ -489,6 +495,7 @@ pub(crate) struct StudioSessionView<'a> {
     pub(crate) analysis_node_context: &'a Option<AnalysisNodeContextMenu>,
     pub(crate) pending_setup: Option<SetupRequest>,
     pub(crate) model_downloads_open: bool,
+    pub(crate) setup_guide: Option<SetupGuideStep>,
     pub(crate) diagnostic_report: &'a Option<uta_studio_diagnostics::DiagnosticReport>,
     pub(crate) lyrics_editor: &'a Option<NativeLyricsEditor>,
     pub(crate) pending_cache_delete: &'a Option<String>,
@@ -567,6 +574,7 @@ impl<'a> StudioSessionView<'a> {
             analysis_node_context: &dialogs.analysis_node_context,
             pending_setup: dialogs.pending_setup,
             model_downloads_open: dialogs.model_downloads_open,
+            setup_guide: dialogs.setup_guide,
             diagnostic_report: &dialogs.diagnostic_report,
             lyrics_editor: &dialogs.lyrics_editor,
             pending_cache_delete: &dialogs.pending_cache_delete,

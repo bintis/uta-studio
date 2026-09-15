@@ -989,6 +989,9 @@ fn spawn_overlay_region(
             if let Some(panel) = session.song_settings.as_ref() {
                 spawn_song_settings_panel(overlay, font.clone(), theme, panel);
             }
+            if let Some(step) = session.setup_guide {
+                spawn_setup_guide_dialog(overlay, font.clone(), theme, session, step);
+            }
             if let Some(destination) = session.pending_leave.clone() {
                 spawn_leave_confirmation(overlay, font, theme, session, destination);
             }

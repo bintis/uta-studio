@@ -43,6 +43,14 @@ pub(crate) enum SettingsSelectKind {
 #[derive(Clone, Copy)]
 pub(crate) struct SetupRequest {
     pub(crate) target: Option<app_core::ModelDownloadTarget>,
+    pub(crate) tier: Option<app_core::SetupTier>,
+}
+
+/// Page of the setup guide: the first-run question, then the download level.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SetupGuideStep {
+    Welcome,
+    ChooseTier(app_core::SetupTier),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

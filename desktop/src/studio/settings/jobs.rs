@@ -126,6 +126,10 @@ pub(crate) fn start_model_settings_job(job: &mut ModelSettingsJob) {
                 Some(error),
             ),
         };
+        let (setup_tiers, setup_tiers_error) = match app_core::setup_tier_options() {
+            Ok(options) => (options, None),
+            Err(error) => (Vec::new(), Some(error)),
+        };
         let _ = sender.send(Ok(ModelSettingsSnapshot {
             runtime_status,
             runtime_models,
@@ -135,6 +139,8 @@ pub(crate) fn start_model_settings_job(job: &mut ModelSettingsJob) {
             fusion_providers_error,
             audio_catalog,
             audio_catalog_error,
+            setup_tiers,
+            setup_tiers_error,
         }));
     });
     job.receiver = Some(Mutex::new(receiver));
@@ -191,6 +197,8 @@ pub(crate) fn poll_model_settings_job(
     }
     invalidated.invalidate(UiDirtyRegion::Settings);
     invalidated.invalidate(UiDirtyRegion::Analysis);
+    // The setup guide reads its level sizes from this snapshot.
+    invalidated.invalidate(UiDirtyRegion::Dialog);
 }
 
 pub(crate) fn start_native_setup(
@@ -235,6 +243,7 @@ pub(crate) fn setup_folders(config: &AppConfig, request: SetupRequest) -> app_co
         cache_paths: config.cache_paths.clone(),
         compute_backend: app_core::ComputeBackend::from_setting(config.compute_backend.as_deref()),
         model_target: request.target,
+        model_tier: request.tier,
     }
 }
 

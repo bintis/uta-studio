@@ -339,6 +339,11 @@ fn quality_profile(
     })
 }
 
+fn setup_tier(arguments: &serde_json::Value) -> Result<app_core::SetupTier, String> {
+    let tier = text(arguments, "tier")?;
+    app_core::SetupTier::parse(&tier).ok_or_else(|| format!("unknown setup tier `{tier}`"))
+}
+
 fn download_target(
     arguments: &serde_json::Value,
 ) -> Result<Option<app_core::ModelDownloadTarget>, String> {
@@ -645,6 +650,13 @@ fn parse_settings(name: &str, arguments: &serde_json::Value) -> Result<SettingsC
         "remove_audio_model" => SettingsCommand::RemoveAudioModel(text(arguments, "model_id")?),
         "cancel_setup" => SettingsCommand::CancelSetup,
         "confirm_setup" => SettingsCommand::ConfirmSetup,
+        "open_setup_guide" => SettingsCommand::OpenSetupGuide,
+        "close_setup_guide" => SettingsCommand::CloseSetupGuide,
+        "skip_setup_guide" => SettingsCommand::SkipSetupGuide,
+        "open_setup_tiers" => SettingsCommand::OpenSetupTiers,
+        "select_setup_tier" => SettingsCommand::SelectSetupTier(setup_tier(arguments)?),
+        "close_setup_tiers" => SettingsCommand::CloseSetupTiers,
+        "confirm_setup_tier" => SettingsCommand::ConfirmSetupTier,
         "toggle_theme" => SettingsCommand::ToggleTheme,
         "toggle_window_transparency" => SettingsCommand::ToggleWindowTransparency,
         "adjust_window_opacity" => {
@@ -939,6 +951,39 @@ mod tests {
 
     fn parse(command: &str, arguments: serde_json::Value) -> UiCommand {
         parse_ui_command(command, &arguments).unwrap_or_else(|error| panic!("{command}: {error}"))
+    }
+
+    #[test]
+    fn setup_guide_commands_parse_with_download_confirmation_classified_external() {
+        assert_eq!(
+            parse(
+                "ui.settings.select_setup_tier",
+                serde_json::json!({"tier": "maximum"})
+            ),
+            UiCommand::Settings(SettingsCommand::SelectSetupTier(
+                app_core::SetupTier::Maximum
+            ))
+        );
+        assert!(
+            parse_ui_command(
+                "ui.settings.select_setup_tier",
+                &serde_json::json!({"tier": "everything"})
+            )
+            .is_err()
+        );
+        for (command, access) in [
+            ("ui.settings.open_setup_guide", "read"),
+            ("ui.settings.close_setup_guide", "read"),
+            ("ui.settings.skip_setup_guide", "mutation"),
+            ("ui.settings.open_setup_tiers", "read"),
+            ("ui.settings.close_setup_tiers", "read"),
+            ("ui.settings.confirm_setup_tier", "external"),
+        ] {
+            assert_eq!(
+                parse(command, serde_json::json!({})).api_request().access,
+                access
+            );
+        }
     }
 
     #[test]

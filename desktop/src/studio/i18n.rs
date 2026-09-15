@@ -790,6 +790,44 @@ mod tests {
     }
 
     #[test]
+    fn setup_guide_ui_has_required_non_english_catalog_coverage() {
+        let english = parse_catalog(ENGLISH_JSON);
+        let chinese = parse_catalog(SIMPLIFIED_CHINESE_JSON);
+        let japanese = parse_catalog(JAPANESE_JSON);
+        for key in [
+            "Welcome to Uta! Studio",
+            "Is this your first time setting up Uta! Studio on this computer?",
+            "Not now",
+            "No, skip setup",
+            "Yes, set up",
+            "Choose a setup level",
+            "High quality",
+            "Complete set",
+            "{models} models · {} to download ({} missing)",
+            "{models} models · all installed",
+            "Setup guide",
+            "Open guide",
+            "Downloading {name} ({} of {})…",
+        ] {
+            assert_eq!(english.get(key).map(String::as_str), Some(key));
+            for (locale, catalog) in [("zh-CN", &chinese), ("ja", &japanese)] {
+                let translated = catalog
+                    .get(key)
+                    .unwrap_or_else(|| panic!("{locale} is missing {key}"));
+                assert_ne!(translated, key, "{locale} fell back to English for {key}");
+            }
+        }
+        assert_eq!(
+            translate_ui(
+                UiLocale::SimplifiedChinese,
+                "6 models · 6.3 GB to download (6 missing)"
+            )
+            .as_deref(),
+            Some("6 个模型 · 需下载 6.3 GB（缺少 6 个）")
+        );
+    }
+
+    #[test]
     fn remove_song_ui_has_required_non_english_catalog_coverage() {
         let english = parse_catalog(ENGLISH_JSON);
         let chinese = parse_catalog(SIMPLIFIED_CHINESE_JSON);

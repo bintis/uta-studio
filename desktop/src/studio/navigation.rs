@@ -91,6 +91,15 @@ pub(crate) fn navigation_back_action(session: &StudioSessionView<'_>) -> Option<
     if session.pending_leave.is_some() {
         return Some(UiAction::from(AppCommand::CancelLeave));
     }
+    match session.setup_guide {
+        Some(SetupGuideStep::ChooseTier(_)) => {
+            return Some(UiAction::from(SettingsCommand::CloseSetupTiers));
+        }
+        Some(SetupGuideStep::Welcome) => {
+            return Some(UiAction::from(SettingsCommand::CloseSetupGuide));
+        }
+        None => {}
+    }
     if session.pending_setup.is_some() {
         return Some(UiAction::from(SettingsCommand::CancelSetup));
     }

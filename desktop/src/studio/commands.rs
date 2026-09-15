@@ -108,6 +108,13 @@ pub(crate) enum SettingsCommand {
     RemoveAudioModel(String),
     CancelSetup,
     ConfirmSetup,
+    OpenSetupGuide,
+    CloseSetupGuide,
+    SkipSetupGuide,
+    OpenSetupTiers,
+    SelectSetupTier(app_core::SetupTier),
+    CloseSetupTiers,
+    ConfirmSetupTier,
     ToggleTheme,
     ToggleWindowTransparency,
     AdjustWindowOpacity(i8),
@@ -277,8 +284,17 @@ impl UiCommand {
             Self::Settings(
                 SettingsCommand::ToggleTheme
                 | SettingsCommand::ToggleWindowTransparency
-                | SettingsCommand::AdjustWindowOpacity(_),
+                | SettingsCommand::AdjustWindowOpacity(_)
+                | SettingsCommand::ConfirmSetupTier,
             ) => UiDirtyRegion::Chrome,
+            Self::Settings(
+                SettingsCommand::OpenSetupGuide
+                | SettingsCommand::CloseSetupGuide
+                | SettingsCommand::SkipSetupGuide
+                | SettingsCommand::OpenSetupTiers
+                | SettingsCommand::SelectSetupTier(_)
+                | SettingsCommand::CloseSetupTiers,
+            ) => UiDirtyRegion::Dialog,
             Self::Settings(_) => UiDirtyRegion::Settings,
             // This command changes the top-level route.  Rebuilding only the
             // analysis workspace leaves the top bar and the persistent

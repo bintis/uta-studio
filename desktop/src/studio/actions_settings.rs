@@ -538,7 +538,10 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
             if setup.receiver.is_some() {
                 studio.shell.notice = Some("A runtime setup job is already running.".to_string());
             } else {
-                studio.dialogs.pending_setup = Some(SetupRequest { target: *target });
+                studio.dialogs.pending_setup = Some(SetupRequest {
+                    target: *target,
+                    tier: None,
+                });
                 studio.shell.notice = None;
             }
             invalidated.invalidate(UiDirtyRegion::Settings);
@@ -553,6 +556,72 @@ pub(crate) fn apply_settings_action(action: &UiAction, context: SettingsActionCo
                 studio.shell.notice = Some("Preparing analysis runtime…".to_string());
                 invalidated.invalidate(UiDirtyRegion::Settings);
             }
+        }
+        UiCommand::Settings(SettingsCommand::OpenSetupGuide) => {
+            studio.dialogs.setup_guide = Some(SetupGuideStep::Welcome);
+            studio.dialogs.open_settings_select = None;
+            studio.dialogs.open_model_runtime_select = None;
+            invalidated.invalidate(UiDirtyRegion::Dialog);
+        }
+        UiCommand::Settings(SettingsCommand::CloseSetupGuide) => {
+            studio.dialogs.setup_guide = None;
+            invalidated.invalidate(UiDirtyRegion::Dialog);
+        }
+        UiCommand::Settings(SettingsCommand::SkipSetupGuide) => {
+            studio.dialogs.setup_guide = None;
+            studio.shell.config.setup_guide_completed = true;
+            studio.shell.notice = save_config_error(&studio.shell.config);
+            invalidated.invalidate(UiDirtyRegion::Dialog);
+        }
+        UiCommand::Settings(SettingsCommand::OpenSetupTiers) => {
+            studio.dialogs.setup_guide =
+                Some(SetupGuideStep::ChooseTier(app_core::SetupTier::Standard));
+            if studio.jobs.model_settings_job.current.is_none() {
+                studio.jobs.request_model_settings_refresh = true;
+            }
+            invalidated.invalidate(UiDirtyRegion::Dialog);
+        }
+        UiCommand::Settings(SettingsCommand::SelectSetupTier(tier)) => {
+            if studio.dialogs.setup_guide.is_some() {
+                studio.dialogs.setup_guide = Some(SetupGuideStep::ChooseTier(*tier));
+            }
+            invalidated.invalidate(UiDirtyRegion::Dialog);
+        }
+        UiCommand::Settings(SettingsCommand::CloseSetupTiers) => {
+            studio.dialogs.setup_guide = Some(SetupGuideStep::Welcome);
+            invalidated.invalidate(UiDirtyRegion::Dialog);
+        }
+        UiCommand::Settings(SettingsCommand::ConfirmSetupTier) => {
+            if setup.receiver.is_some() {
+                studio.shell.notice = Some("A runtime setup job is already running.".to_string());
+            } else if let Some(SetupGuideStep::ChooseTier(tier)) = studio.dialogs.setup_guide {
+                // Persist completion before the setup worker loads and saves
+                // the configuration, so its save keeps the flag.
+                studio.shell.config.setup_guide_completed = true;
+                let save_error = save_config_error(&studio.shell.config);
+                start_native_setup(
+                    &studio.shell.config,
+                    SetupRequest {
+                        target: None,
+                        tier: Some(tier),
+                    },
+                    setup,
+                );
+                studio.dialogs.setup_guide = None;
+                // Download progress is shown in Models & runtime > Model downloads.
+                if studio.shell.route != StudioRoute::Settings {
+                    studio.dialogs.settings_returns_to_workflow =
+                        studio.shell.route == StudioRoute::ProcessingStudio;
+                }
+                studio.shell.route = StudioRoute::Settings;
+                studio.shell.settings_tab = SettingsTab::Models;
+                studio.dialogs.model_downloads_open = true;
+                studio.jobs.request_model_settings_refresh = true;
+                studio.shell.notice = save_error
+                    .or_else(|| Some("Downloading the selected setup level…".to_string()));
+            }
+            invalidated.invalidate(UiDirtyRegion::Chrome);
+            invalidated.invalidate(UiDirtyRegion::Dialog);
         }
         UiCommand::Library(LibraryCommand::RescanLibrary) => {
             if studio.shell.config.library_paths().is_empty() {

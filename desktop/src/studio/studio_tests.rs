@@ -207,6 +207,7 @@ mod tests {
             &config,
             SetupRequest {
                 target: Some(app_core::ModelDownloadTarget::Pitch),
+                tier: None,
             },
         );
         assert_eq!(folders.compute_backend, app_core::ComputeBackend::Ggml);
@@ -214,9 +215,24 @@ mod tests {
             folders.model_target,
             Some(app_core::ModelDownloadTarget::Pitch)
         );
+        assert_eq!(folders.model_tier, None);
+        let folders = setup_folders(
+            &config,
+            SetupRequest {
+                target: None,
+                tier: Some(app_core::SetupTier::Maximum),
+            },
+        );
+        assert_eq!(folders.model_tier, Some(app_core::SetupTier::Maximum));
 
         config.compute_backend = Some("vulkan".to_string());
-        let folders = setup_folders(&config, SetupRequest { target: None });
+        let folders = setup_folders(
+            &config,
+            SetupRequest {
+                target: None,
+                tier: None,
+            },
+        );
         assert_eq!(folders.compute_backend, app_core::ComputeBackend::Ggml);
         assert_eq!(folders.model_target, None);
     }
@@ -227,7 +243,13 @@ mod tests {
             compute_backend: Some("intel".to_string()),
             ..AppConfig::default()
         };
-        let folders = setup_folders(&config, SetupRequest { target: None });
+        let folders = setup_folders(
+            &config,
+            SetupRequest {
+                target: None,
+                tier: None,
+            },
+        );
         assert_eq!(folders.compute_backend, app_core::ComputeBackend::Auto);
     }
 

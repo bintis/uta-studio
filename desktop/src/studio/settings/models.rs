@@ -18,6 +18,27 @@ pub(crate) fn spawn_model_settings(
         "Inspect installed tools and tune runtime parameters for each model. Lifecycle actions remain explicit; these controls never choose analysis outputs or change workflow topology.",
     );
 
+    spawn_settings_group(
+        parent,
+        font.clone(),
+        theme,
+        "SETUP GUIDE",
+        "Download the analysis models for a setup level.",
+        |group| {
+            spawn_setting_row(
+                group,
+                font.clone(),
+                theme,
+                "Setup guide",
+                "Reopen the first-run guide and choose a level: Standard, High quality, or Complete set. Nothing downloads until you confirm a level.",
+                Some((
+                    "Open guide",
+                    UiAction::from(SettingsCommand::OpenSetupGuide),
+                )),
+            );
+        },
+    );
+
     let automatic_routing = session.config.turbo_acceleration.unwrap_or(false);
     spawn_settings_group(
         parent,
