@@ -88,6 +88,7 @@ const char* uta_libtorch_build_info(void) noexcept {
                 first = false;
             }
             result += "],\"roformer_projection_math\":\"ieee\"";
+            result += ",\"qwen_weight_upload\":\"bounded_host_conversion\",\"qwen_stage_completion\":\"required\"";
             result += ",\"native_source_commit\":" + uta::torch_native::json_string(UTA_NATIVE_SOURCE_COMMIT);
             result += std::string(",\"native_source_dirty\":") + (UTA_NATIVE_SOURCE_DIRTY ? "true" : "false");
             return result + ",\"qualification\":\"not_asserted\"}";
@@ -102,7 +103,10 @@ UtaLibtorchRuntime* uta_libtorch_runtime_create(const char* backend, int device,
         error_text.clear();
         c10::InferenceMode inference;
         auto result = std::make_unique<UtaLibtorchRuntime>();
+        std::cerr << "[uta-libtorch-lifecycle] stage=device_begin backend=" << required(backend, "native backend")
+                  << " device=" << device << " precision=" << required(precision, "native precision") << std::endl;
         result->runtime = std::make_shared<Runtime>(required(backend, "native backend"), device, required(precision, "native precision"));
+        std::cerr << "[uta-libtorch-lifecycle] stage=device_complete" << std::endl;
         return result.release();
     } catch (...) { save_error(); return nullptr; }
 }
@@ -117,7 +121,10 @@ UtaLibtorchModel* uta_libtorch_model_open(UtaLibtorchRuntime* runtime, const cha
         const std::string model_path = required(path, "GGUF path");
         c10::InferenceMode inference;
         c10::DeviceGuard guard(runtime->runtime->device);
-        auto weights = std::make_shared<Weights>(model_path, runtime->runtime->device);
+        std::cerr << "[uta-libtorch-lifecycle] stage=weights_begin model=" << model_resource << std::endl;
+        auto weights = std::make_shared<Weights>(model_path, runtime->runtime->device,
+            [&] { runtime->runtime->synchronize(); });
+        std::cerr << "[uta-libtorch-lifecycle] stage=weights_complete model=" << model_resource << std::endl;
         auto result = std::make_unique<UtaLibtorchModel>();
         result->metadata = weights->container.metadata_json();
         result->plan = uta::torch_native::make_plan(model_resource, runtime->runtime, std::move(weights));

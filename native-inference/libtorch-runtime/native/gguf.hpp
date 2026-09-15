@@ -2,6 +2,7 @@
 #include <ATen/ATen.h>
 #include <cstdint>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <string>
 #include <variant>
@@ -49,7 +50,7 @@ private:
 
 class Weights {
 public:
-    Weights(const std::string& path, const at::Device& device);
+    Weights(const std::string& path, const at::Device& device, const std::function<void()>& complete);
     bool has(const std::string& name) const;
     const at::Tensor& get(const std::string& name) const;
     at::Tensor optional(const std::string& name) const;

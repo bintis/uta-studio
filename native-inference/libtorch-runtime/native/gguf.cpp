@@ -1,4 +1,7 @@
 #include "gguf.hpp"
+#include "weight_upload.hpp"
+#include <cstdlib>
+#include <iostream>
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -258,11 +261,31 @@ std::string canonical_model_tensor_name(const Gguf& container, std::string name)
 }
 } // namespace
 
-Weights::Weights(const std::string& path, const at::Device& selected) : container(path), device(selected) {
+Weights::Weights(const std::string& path, const at::Device& selected, const std::function<void()>& complete)
+    : container(path), device(selected) {
+    const auto architecture = container.text("general.architecture");
+    const bool bounded_upload = device.is_xpu() && (architecture == "qwen3_asr" || architecture == "qwen3-asr");
+    const auto enabled = [](const char* name) {
+        const auto value = std::getenv(name);
+        return value && std::string(value) == "1";
+    };
+    const bool trace_upload = bounded_upload &&
+        (enabled("UTA_STUDIO_DEBUG") || enabled("UTA_STUDIO_LIBTORCH_TRACE_SYNC"));
     for (const auto& name : container.tensor_names()) {
+        if (trace_upload) std::cerr << "[uta-libtorch-load] stage=read tensor=" << name << std::endl;
         auto tensor = container.read_tensor(name);
-        // One explicit conversion at load, not a conversion at every layer call.
-        tensor = tensor.to(at::TensorOptions().device(device).dtype(tensor.is_floating_point() ? at::kFloat : at::kLong));
+        if (bounded_upload) {
+            if (trace_upload) std::cerr << "[uta-libtorch-load] stage=upload tensor=" << name
+                                       << " elements=" << tensor.numel() << " tile_bytes=4194304" << std::endl;
+            tensor = upload_weight_in_tiles(tensor, device, [&](int64_t copied, int64_t total) {
+                complete();
+                if (trace_upload) std::cerr << "[uta-libtorch-load] stage=uploaded tensor=" << name
+                                           << " elements=" << copied << '/' << total << std::endl;
+            });
+        } else {
+            // Other model/backend loading policies are unchanged.
+            tensor = tensor.to(at::TensorOptions().device(device).dtype(tensor.is_floating_point() ? at::kFloat : at::kLong));
+        }
         tensors_.emplace(name, std::move(tensor));
     }
 }

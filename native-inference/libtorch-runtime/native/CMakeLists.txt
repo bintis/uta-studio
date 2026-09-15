@@ -217,3 +217,13 @@ set_target_properties(uta-libtorch-qwen-attention-check PROPERTIES BUILD_RPATH "
 
 install(TARGETS uta_libtorch LIBRARY DESTINATION lib)
 install(FILES api.h DESTINATION include/uta_libtorch)
+
+# Host-only conversion/partition oracle. No native runtime or GPU library is
+# loaded by this test target; actual XPU transfer still requires user testing.
+add_executable(uta-libtorch-weight-upload-check weight_upload_check.cpp)
+target_compile_features(uta-libtorch-weight-upload-check PRIVATE cxx_std_20)
+target_compile_definitions(uta-libtorch-weight-upload-check PRIVATE _GLIBCXX_USE_CXX11_ABI=${TORCH_CXX_ABI})
+target_include_directories(uta-libtorch-weight-upload-check SYSTEM PRIVATE "${TORCH_INCLUDE_ROOT}")
+target_link_libraries(uta-libtorch-weight-upload-check PRIVATE "${native_torch_cpu}" "${native_c10}")
+target_link_options(uta-libtorch-weight-upload-check PRIVATE "-Wl,--disable-new-dtags")
+set_target_properties(uta-libtorch-weight-upload-check PROPERTIES BUILD_RPATH "${native_paths}")
