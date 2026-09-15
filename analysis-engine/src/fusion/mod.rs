@@ -1,5 +1,6 @@
 mod alignment_fusion;
 mod articulation;
+mod lyric_activity;
 mod baseline;
 mod calibration;
 mod candidate_states;
