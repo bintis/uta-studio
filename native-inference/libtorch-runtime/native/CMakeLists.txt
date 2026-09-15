@@ -227,3 +227,13 @@ target_include_directories(uta-libtorch-weight-upload-check SYSTEM PRIVATE "${TO
 target_link_libraries(uta-libtorch-weight-upload-check PRIVATE "${native_torch_cpu}" "${native_c10}")
 target_link_options(uta-libtorch-weight-upload-check PRIVATE "-Wl,--disable-new-dtags")
 set_target_properties(uta-libtorch-weight-upload-check PROPERTIES BUILD_RPATH "${native_paths}")
+
+# Same FP32 scheduling helpers as the XPU plan, with CPU tensors and independent
+# full-context double references. No app-native DSO or GPU backend is linked.
+add_executable(uta-libtorch-roformer-bounded-check roformer_bounded_check.cpp)
+target_compile_features(uta-libtorch-roformer-bounded-check PRIVATE cxx_std_20)
+target_compile_definitions(uta-libtorch-roformer-bounded-check PRIVATE _GLIBCXX_USE_CXX11_ABI=${TORCH_CXX_ABI})
+target_include_directories(uta-libtorch-roformer-bounded-check SYSTEM PRIVATE "${TORCH_INCLUDE_ROOT}")
+target_link_libraries(uta-libtorch-roformer-bounded-check PRIVATE "${native_torch_cpu}" "${native_c10}")
+target_link_options(uta-libtorch-roformer-bounded-check PRIVATE "-Wl,--disable-new-dtags")
+set_target_properties(uta-libtorch-roformer-bounded-check PROPERTIES BUILD_RPATH "${native_paths}")

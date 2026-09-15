@@ -2,6 +2,8 @@
 #include "projection.hpp"
 #include "attention_partition.hpp"
 #include "roformer_ops.hpp"
+#include "roformer_bounded.hpp"
+#include "diagnostics.hpp"
 #include <cmath>
 #include <numeric>
 #include <iostream>
@@ -89,22 +91,33 @@ public:
         const auto frames = features.size(0);
         const auto total = std::accumulate(widths.begin(), widths.end(), int64_t{0});
         if (features.dim() != 2 || features.size(1) != total) throw std::invalid_argument("RoFormer prepared band feature shape mismatch");
+        if (runtime->backend == "libtorch_xpu") {
+            const auto detail = "precision=" + runtime->precision + " frames=" + std::to_string(frames)
+                + " bands=" + std::to_string(widths.size()) + " heads=" + std::to_string(heads);
+            diagnostic_event("roformer_plan_begin", detail.c_str());
+        }
         std::vector<at::Tensor> bands;
-        auto projected_bands = runtime->backend == "libtorch_rocm"
+        auto projected_bands = runtime->backend == "libtorch_rocm" || runtime->backend == "libtorch_xpu"
             ? at::empty({static_cast<int64_t>(widths.size()), frames, dimension}, features.options())
             : at::Tensor();
         int64_t offset = 0;
         for (std::size_t band = 0; band < widths.size(); ++band) {
             const auto prefix = "band_split." + std::to_string(band) + '.';
+            check_cancel();
+            if (runtime->backend == "libtorch_xpu") diagnostic_event("roformer_band_split_begin", prefix.c_str());
             auto input = features.narrow(1, offset, widths[band]);
             auto normalized = normalize(input, prefix + (public_names ? "norm" : "norm.weight"));
             const auto& weight = weights->get(prefix + (public_names ? "w" : "linear.weight"));
             const auto& bias = weights->get(prefix + (public_names ? "b" : "linear.bias"));
             if (projected_bands.defined()) {
                 auto output = projected_bands.select(0, static_cast<int64_t>(band));
-                tiled_projection_into(output, normalized, weight, bias, [this] { check_cancel(); },
-                                      bounded_projection_row_tile(normalized, weight),
-                                      tile_checkpoint("roformer.band_split." + std::to_string(band)));
+                if (runtime->backend == "libtorch_xpu")
+                    bounded_roformer_linear_into(output, normalized, weight, bias, [this] { check_cancel(); },
+                                                  xpu_tile_completion(prefix));
+                else
+                    tiled_projection_into(output, normalized, weight, bias, [this] { check_cancel(); },
+                                          bounded_projection_row_tile(normalized, weight),
+                                          tile_checkpoint("roformer.band_split." + std::to_string(band)));
             } else {
                 bands.push_back(project(normalized, weight, bias));
             }
@@ -113,21 +126,32 @@ public:
         auto value = projected_bands.defined()
             ? projected_bands.transpose(0, 1)
             : at::stack(bands, 1); // [time, band, model channel]
-        runtime->checkpoint("roformer.band_split");
+        // `value` now owns the view. Do not pin the original XPU band storage
+        // until the end of every transformer layer after that view is replaced.
+        if (runtime->backend == "libtorch_xpu") projected_bands = at::Tensor();
+        complete_stage("roformer.band_split");
         std::vector<at::Tensor> previous;
         for (int64_t layer = 0; layer < depth; ++layer) {
             check_cancel();
             if (skips) for (const auto& skip : previous) value = value + skip;
             const auto prefix = "blk." + std::to_string(layer) + '.';
-            auto time = value.transpose(0, 1).contiguous(); // [band, time, channel]
+            auto time = value.transpose(0, 1); // [band, time, channel]
+            if (runtime->backend != "libtorch_xpu") time = time.contiguous();
             time = attend(time, prefix + (public_names ? "time" : "time_attn"), true);
             time = feed_forward(time, prefix + (public_names ? "time" : "time_ff"));
-            runtime->checkpoint(prefix + "time_feed_forward");
+            complete_stage(prefix + "time_feed_forward");
             if (output_norm) time = normalize(time, prefix + "time_norm.weight");
-            value = time.transpose(0, 1).contiguous();
+            value = time.transpose(0, 1);
+            if (runtime->backend == "libtorch_xpu") {
+                // The frequency view owns its storage. Keep only that view;
+                // normalization/packing happens inside each bounded batch.
+                time = at::Tensor();
+            } else {
+                value = value.contiguous();
+            }
             value = attend(value, prefix + (public_names ? "freq" : "freq_attn"), false);
             value = feed_forward(value, prefix + (public_names ? "freq" : "freq_ff"));
-            runtime->checkpoint(prefix + "frequency_feed_forward");
+            complete_stage(prefix + "frequency_feed_forward");
             if (output_norm) value = normalize(value, prefix + "freq_norm.weight");
             if (skips) previous.push_back(value);
         }
@@ -140,24 +164,28 @@ public:
                 auto current = value.select(1, static_cast<int64_t>(band));
                 if (public_names) {
                     const auto prefix = "mask." + std::to_string(stem) + '.' + std::to_string(band) + '.';
+                    if (runtime->backend == "libtorch_xpu") diagnostic_event("roformer_mask_band_begin", prefix.c_str());
                     current = at::tanh(project(current, weights->get(prefix + "w1"), weights->get(prefix + "b1")));
                     current = project(current, weights->get(prefix + "w2"), weights->get(prefix + "b2"));
                 } else {
                     const auto prefix = "mask_est." + std::to_string(stem) + ".freq." + std::to_string(band) + ".mlp.";
+                    if (runtime->backend == "libtorch_xpu") diagnostic_event("roformer_mask_band_begin", prefix.c_str());
                     for (int64_t layer = 0; layer < mask_layers; ++layer) {
                         const auto projection = prefix + std::to_string(layer * 2);
                         current = project(current, weights->get(projection + ".weight"), weights->optional(projection + ".bias"));
-                        runtime->checkpoint("roformer.mask." + std::to_string(stem) + '.' + std::to_string(band) + '.' + std::to_string(layer));
+                        complete_stage("roformer.mask." + std::to_string(stem) + '.' + std::to_string(band) + '.' + std::to_string(layer));
                         if (layer + 1 < mask_layers) current = at::tanh(current);
                     }
                 }
                 auto gated = current.chunk(2, -1);
                 bands.push_back(gated[0] * at::sigmoid(gated[1]));
+                if (runtime->backend == "libtorch_xpu")
+                    complete_stage("roformer.mask_band." + std::to_string(stem) + '.' + std::to_string(band));
             }
             predicted.push_back(at::cat(bands, -1));
         }
         auto mask = at::stack(predicted, 1); // [time, stem, gathered stereo-complex feature]
-        runtime->checkpoint("roformer.mask");
+        complete_stage("roformer.mask");
         if (prepared) {
             wait_for_roformer_work(runtime->device);
             return {{"mask", mask}};
@@ -173,15 +201,34 @@ public:
             if (zero_dc) result.select(1, 0).zero_();
             separated.push_back(result);
         }
-        runtime->checkpoint("roformer.output");
+        complete_stage("roformer.output");
         wait_for_roformer_work(runtime->device);
         return {{"spectrum", stems == 1 ? separated.front() : at::stack(separated, 0)}};
     }
 private:
+    void complete_stage(const std::string& stage) const {
+        if (runtime->backend != "libtorch_xpu") {
+            runtime->checkpoint(stage);
+            return;
+        }
+        // A quiet production run needs the same completion boundaries as a
+        // traced run. An end-of-mask wait alone does not bound outstanding
+        // submissions and temporary-storage pressure to the current work tile.
+        diagnostic_event("roformer_stage_await", stage.c_str());
+        if (runtime->stage_synchronization) runtime->checkpoint(stage);
+        else runtime->synchronize();
+        diagnostic_event("roformer_stage_complete", stage.c_str());
+        check_cancel();
+    }
+    std::function<void(const char*, int64_t, int64_t)> xpu_tile_completion(const std::string& prefix) const {
+        return [this, prefix](const char* phase, int64_t start, int64_t count) {
+            complete_stage(prefix + '.' + phase + ".start." + std::to_string(start) + ".count." + std::to_string(count));
+        };
+    }
     std::function<void(int64_t, int64_t)> tile_checkpoint(const std::string& stage) const {
         if (!runtime->stage_synchronization) return {};
         return [this, stage](int64_t start, int64_t count) {
-            runtime->checkpoint(stage + ".start." + std::to_string(start) + ".rows." + std::to_string(count));
+            complete_stage(stage + ".start." + std::to_string(start) + ".rows." + std::to_string(count));
         };
     }
     at::Tensor normalize(const at::Tensor& input, const std::string& name) const {
@@ -190,6 +237,9 @@ private:
             : weights->rms_norm(input, name, 1e-12);
     }
     at::Tensor project(const at::Tensor& input, const at::Tensor& weight, const at::Tensor& bias = {}) const {
+        if (runtime->backend == "libtorch_xpu")
+            return bounded_roformer_linear(input, weight, bias, [this] { check_cancel(); },
+                                            xpu_tile_completion("roformer.projection"));
         if (runtime->backend != "libtorch_rocm") return at::linear(input, weight, bias);
         const auto row_tile = bounded_projection_row_tile(input, weight);
         return tiled_projection(input, weight, bias, [this] { check_cancel(); }, row_tile,
@@ -238,19 +288,24 @@ private:
     }
     at::Tensor attend_tile(const at::Tensor& sequence, const std::string& prefix,
                            const PositionCache& cache, double scale) {
+        if (runtime->backend == "libtorch_xpu") {
+            const auto detail = prefix + " batches=" + std::to_string(sequence.size(0))
+                + " rows=" + std::to_string(sequence.size(1));
+            diagnostic_event("roformer_attention_block_begin", detail.c_str());
+        }
         auto normalized = normalize(sequence, name(prefix, "attn_norm", "norm.weight"));
-        runtime->checkpoint(prefix + ".normalization");
+        complete_stage(prefix + ".normalization");
         const auto batch = sequence.size(0), length = sequence.size(1);
         const auto qkv_weights = weights->get(name(prefix, "qkv", "qkv.weight")).chunk(3, 0);
         auto query = project(normalized, qkv_weights[0])
             .reshape({batch, length, heads, head_dimension}).transpose(1, 2);
-        runtime->checkpoint(prefix + ".query_projection");
+        complete_stage(prefix + ".query_projection");
         auto key = project(normalized, qkv_weights[1])
             .reshape({batch, length, heads, head_dimension}).transpose(1, 2);
-        runtime->checkpoint(prefix + ".key_projection");
+        complete_stage(prefix + ".key_projection");
         auto value = project(normalized, qkv_weights[2])
             .reshape({batch, length, heads, head_dimension}).transpose(1, 2);
-        runtime->checkpoint(prefix + ".value_projection");
+        complete_stage(prefix + ".value_projection");
         if (!polar && runtime->backend == "libtorch_xpu") {
             auto rotation = runtime->precision == "mixed_attention"
                 ? interleaved_roformer_rotation_half : interleaved_roformer_rotation;
@@ -260,7 +315,7 @@ private:
             query = rotate(query, cache.cosine, cache.sine);
             key = rotate(key, polar ? cache.key_cosine : cache.cosine, polar ? cache.key_sine : cache.sine);
         }
-        runtime->checkpoint(prefix + ".rotary");
+        complete_stage(prefix + ".rotary");
         if (runtime->trace_synchronization)
             std::cerr << "[uta-libtorch-layout] " << prefix << " query=" << query.strides()
                       << " key=" << key.strides() << " value=" << value.strides() << std::endl;
@@ -269,11 +324,14 @@ private:
                 ? partitioned_mixed_attention(query, key, value, scale, [this] { check_cancel(); })
                 : runtime->backend == "libtorch_xpu"
                     ? layout_preserving_roformer_attention(query, key, value, scale, [&](const char* stage) {
-                        if (runtime->stage_synchronization) runtime->checkpoint(prefix + '.' + stage);
+                        if (runtime->stage_synchronization) complete_stage(prefix + '.' + stage);
                     })
                     : fused_attention(query, key, value, {}, false, false, scale))
-            : dense_attention(query, key, value, {}, false, scale);
-        runtime->checkpoint(prefix + ".attention");
+            : runtime->backend == "libtorch_xpu"
+                ? bounded_roformer_strict_attention(query, key, value, scale,
+                    [this] { check_cancel(); }, xpu_tile_completion(prefix))
+                : dense_attention(query, key, value, {}, false, scale);
+        complete_stage(prefix + ".attention");
         auto gates = at::sigmoid(project(normalized, weights->get(name(prefix, "gates_w", "gate.weight")),
                                             weights->get(name(prefix, "gates_b", "gate.bias"))));
         attended = gated_roformer_attention(attended, gates);
@@ -284,6 +342,10 @@ private:
         const auto batch = sequence.size(0), length = sequence.size(1);
         const auto& cache = positions(length, time);
         const double scale = 1.0 / std::sqrt(static_cast<double>(head_dimension));
+        if (runtime->backend == "libtorch_xpu")
+            return bounded_roformer_batches(sequence, heads * head_dimension * (polar ? 2 : 1),
+                [&](const at::Tensor& tile) { return attend_tile(tile, prefix, cache, scale); },
+                [this] { check_cancel(); }, xpu_tile_completion(prefix));
         // Custom ROCm contractions bound projection rows internally, so keep
         // independent batches together to avoid multiplying dispatch count.
         // Partitioning is only along batch; every sequence retains full K/V.
@@ -300,17 +362,24 @@ private:
         return output;
     }
     at::Tensor feed_forward(const at::Tensor& sequence, const std::string& prefix) const {
-        auto current = normalize(sequence, name(prefix, "ff_norm", "norm.weight"));
         const auto input_weight = weights->get(name(prefix, "ff1_w", "in.weight"));
         const auto input_bias = weights->get(name(prefix, "ff1_b", "in.bias"));
         const auto output_weight = weights->get(name(prefix, "ff2_w", "out.weight"));
         const auto output_bias = weights->get(name(prefix, "ff2_b", "out.bias"));
+        if (runtime->backend == "libtorch_xpu") {
+            diagnostic_event("roformer_feed_forward_begin", prefix.c_str());
+            return sequence + bounded_roformer_feed_forward(sequence,
+                [&](const at::Tensor& rows) { return normalize(rows, name(prefix, "ff_norm", "norm.weight")); },
+                input_weight, input_bias, output_weight, output_bias,
+                [this] { check_cancel(); }, xpu_tile_completion(prefix));
+        }
+        auto current = normalize(sequence, name(prefix, "ff_norm", "norm.weight"));
         const auto row_tile = std::min(bounded_projection_row_tile(input_weight), bounded_projection_row_tile(output_weight));
         if (runtime->backend == "libtorch_rocm" && current.numel() / current.size(-1) > row_tile)
             return sequence + tiled_feed_forward(current, input_weight, input_bias, output_weight, output_bias,
                 [this] { check_cancel(); }, row_tile, tile_checkpoint("roformer.feed_forward"));
         current = project(current, input_weight, input_bias);
-        runtime->checkpoint(prefix + ".feed_forward_projection");
+        complete_stage(prefix + ".feed_forward_projection");
         current = at::gelu(current, "none");
         return sequence + project(current, output_weight, output_bias);
     }
