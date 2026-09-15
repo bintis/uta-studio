@@ -368,10 +368,17 @@ private:
         const auto output_bias = weights->get(name(prefix, "ff2_b", "out.bias"));
         if (runtime->backend == "libtorch_xpu") {
             diagnostic_event("roformer_feed_forward_begin", prefix.c_str());
-            return sequence + bounded_roformer_feed_forward(sequence,
+            auto projected = bounded_roformer_feed_forward(sequence,
                 [&](const at::Tensor& rows) { return normalize(rows, name(prefix, "ff_norm", "norm.weight")); },
                 input_weight, input_bias, output_weight, output_bias,
-                [this] { check_cancel(); }, xpu_tile_completion(prefix));
+                [this] { check_cancel(); },
+                [&](const char* operation, int64_t start, int64_t count) {
+                    const auto detail = prefix + ".feed_forward.start." + std::to_string(start)
+                        + ".count." + std::to_string(count) + ".operation." + operation;
+                    diagnostic_event("roformer_operator_begin", detail.c_str());
+                }, xpu_tile_completion(prefix));
+            diagnostic_event("roformer_operator_begin", (prefix + ".feed_forward.residual").c_str());
+            return sequence + projected;
         }
         auto current = normalize(sequence, name(prefix, "ff_norm", "norm.weight"));
         const auto row_tile = std::min(bounded_projection_row_tile(input_weight), bounded_projection_row_tile(output_weight));

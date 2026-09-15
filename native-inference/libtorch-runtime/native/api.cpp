@@ -93,6 +93,7 @@ const char* uta_libtorch_build_info(void) noexcept {
             result += "],\"roformer_projection_math\":\"ieee\"";
             result += ",\"qwen_weight_upload\":\"bounded_host_conversion\",\"qwen_stage_completion\":\"required\"";
             result += ",\"roformer_xpu_scheduling\":\"bounded_complete_tiles\"";
+            result += ",\"roformer_ffn_trace\":\"operator_submission_intents\"";
             result += ",\"native_source_commit\":" + uta::torch_native::json_string(UTA_NATIVE_SOURCE_COMMIT);
             result += std::string(",\"native_source_dirty\":") + (UTA_NATIVE_SOURCE_DIRTY ? "true" : "false");
             return result + ",\"qualification\":\"not_asserted\"}";

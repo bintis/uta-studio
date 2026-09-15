@@ -73,17 +73,31 @@ void feed_forward() {
     auto expected = at::linear(at::gelu(at::linear(normalized, input_weight.to(at::kDouble), input_bias.to(at::kDouble)), "none"),
                                output_weight.to(at::kDouble), output_bias.to(at::kDouble));
     int64_t normalized_rows = 0;
+    std::vector<std::string> intents;
     Completion finished;
     auto actual = uta::torch_native::bounded_roformer_feed_forward(input,
         [&](const at::Tensor& rows) {
             require(rows.dim() == 2 && rows.size(0) <= 2048, "normalization allocated the full feed-forward sequence");
+            require(!intents.empty() && intents.back() == "normalization",
+                    "normalization ran before its submission intent");
             require(normalized_rows == finished.rows, "next hidden tile began before previous completion");
             normalized_rows += rows.size(0);
             return rows * at::rsqrt(rows.square().mean(-1, true) + 1e-12) * norm_weight;
-        }, input_weight, input_bias, output_weight, output_bias, [] {}, std::ref(finished));
+        }, input_weight, input_bias, output_weight, output_bias, [] {},
+        [&](const char* operation, int64_t start, int64_t count) {
+            if (std::string(operation) == "allocation")
+                require(intents.empty() && start == 0 && count == 2313, "allocation intent is missing its full output shape");
+            else
+                require(start == finished.rows && count > 0, "operator intent has the wrong tile position");
+            intents.emplace_back(operation);
+        }, std::ref(finished));
     compare(actual, expected);
     require(finished.rows == 2313 && finished.calls > 1, "feed-forward lost the final row tile");
     require(at::equal(input, before), "feed-forward changed its residual input");
+    require(intents.size() == 1 + 5 * static_cast<std::size_t>(finished.calls), "FFN operator intents are incomplete");
+    const std::vector<std::string> order{"normalization", "input_projection", "gelu", "output_projection", "output_copy"};
+    for (std::size_t index = 1; index < intents.size(); ++index)
+        require(intents[index] == order[(index - 1) % order.size()], "FFN operator submission order changed");
 }
 
 void independent_batches() {

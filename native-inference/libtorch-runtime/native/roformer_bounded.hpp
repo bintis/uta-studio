@@ -109,11 +109,11 @@ at::Tensor bounded_roformer_linear(const at::Tensor& input, const at::Tensor& we
     return output;
 }
 
-template<class Normalize, class Check, class Complete>
+template<class Normalize, class Check, class Begin, class Complete>
 at::Tensor bounded_roformer_feed_forward(const at::Tensor& input, Normalize normalize,
                                          const at::Tensor& input_weight, const at::Tensor& input_bias,
                                          const at::Tensor& output_weight, const at::Tensor& output_bias,
-                                         Check check, Complete complete) {
+                                         Check check, Begin begin, Complete complete) {
     check_roformer_linear(input, input_weight, input_bias);
     if (output_weight.dim() != 2 || output_weight.size(1) != input_weight.size(0) ||
         output_weight.size(0) <= 0 || output_weight.scalar_type() != at::kFloat ||
@@ -123,6 +123,8 @@ at::Tensor bounded_roformer_feed_forward(const at::Tensor& input, Normalize norm
         output_bias.scalar_type() != at::kFloat || output_bias.device() != input.device()))
         throw std::invalid_argument("RoFormer feed-forward output bias is incompatible");
     const auto rows = input.numel() / input.size(-1);
+    check();
+    begin("allocation", 0, rows);
     auto output = at::empty({rows, output_weight.size(0)}, input.options());
     const auto tile = std::min(roformer_projection_rows(input.size(-1), input_weight.size(0)),
                                roformer_projection_rows(output_weight.size(1), output_weight.size(0)));
@@ -130,10 +132,17 @@ at::Tensor bounded_roformer_feed_forward(const at::Tensor& input, Normalize norm
         check();
         // RMS normalization is per row. Normalize inside the tile as well;
         // retaining a whole-chunk normalized/hidden tensor defeats the bound.
+        // These markers describe host submission intent, not device completion.
+        // Keep the existing end-of-tile wait; do not add per-operator GPU fences.
+        begin("normalization", start, count);
         auto normalized = normalize(row_view);
+        begin("input_projection", start, count);
         auto hidden = at::linear(normalized, input_weight, input_bias);
+        begin("gelu", start, count);
         auto activated = at::gelu(hidden, "none");
+        begin("output_projection", start, count);
         auto projected = at::linear(activated, output_weight, output_bias);
+        begin("output_copy", start, count);
         output.narrow(0, start, count).copy_(projected);
         complete("feed_forward", start, count);
     });

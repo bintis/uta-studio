@@ -1,15 +1,18 @@
 //! Producer-side native fault records. A pipe flush is not a disk sync.
 //!
 //! Studio supplies its existing analysis-log directory before spawning workers.
-//! Records are written and synchronized on the invoking worker thread, before
-//! returning to native code. No GPU API, tracing subscriber, desktop snapshot
-//! lock, background logger, inference retry or backend fallback is used.
+//! Device/model/error boundaries and an explicitly focused operator trace are
+//! synchronized on the invoking thread. Other scheduling details are batched;
+//! their unsynchronized tail may be lost. No inference scheduling is changed.
 use std::ffi::{CStr, c_char};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+mod buffering;
+use buffering::{RecordBuffer, focus_matches, is_detail};
 
 static JOURNAL: OnceLock<Mutex<Option<Journal>>> = OnceLock::new();
 
@@ -18,6 +21,8 @@ struct Journal {
     started: Instant,
     sequence: u64,
     boot_id: Option<String>,
+    buffer: RecordBuffer,
+    focus: Option<String>,
 }
 
 fn warning(error: impl std::fmt::Display) {
@@ -54,13 +59,26 @@ impl Journal {
         let boot_id = fs::read_to_string("/proc/sys/kernel/random/boot_id")
             .ok()
             .map(|value| value.trim().to_owned());
+        let focus = std::env::var("UTA_STUDIO_NATIVE_TRACE_FOCUS")
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
         let mut result = Self {
             file,
             started: Instant::now(),
             sequence: 0,
             boot_id,
+            buffer: RecordBuffer::default(),
+            focus,
         };
         result.record("journal_opened", &path.to_string_lossy())?;
+        let policy = serde_json::json!({
+            "focused_scope": result.focus,
+            "durable": "device/model/forward/error boundaries and focused events",
+            "details": "64 KiB batches; synchronize on next event after one second",
+            "limitation": "unfocused tail can be lost; a submit marker does not prove device execution",
+        });
+        result.record("journal_policy", &policy.to_string())?;
         let _ = writeln!(
             io::stderr().lock(),
             "[uta-native-diagnostics] {}",
@@ -70,6 +88,7 @@ impl Journal {
     }
 
     fn record(&mut self, phase: &str, detail: &str) -> io::Result<()> {
+        let durable = !is_detail(phase) || focus_matches(self.focus.as_deref(), detail);
         let record = serde_json::json!({
             "record_type": "native_execution",
             "pid": std::process::id(),
@@ -80,7 +99,8 @@ impl Journal {
             "phase": phase,
             "detail": detail,
         });
-        persist(&mut self.file, &record)?;
+        self.buffer
+            .append(&mut self.file, &record, durable, self.started.elapsed())?;
         self.sequence += 1;
         Ok(())
     }
@@ -93,14 +113,6 @@ impl DurableWrite for File {
     fn sync_record(&self) -> io::Result<()> {
         self.sync_data()
     }
-}
-fn persist(writer: &mut impl DurableWrite, record: &serde_json::Value) -> io::Result<()> {
-    // Encode first: a JSON encoding failure must not start a partial record.
-    let mut bytes = serde_json::to_vec(record).map_err(io::Error::other)?;
-    bytes.push(b'\n');
-    writer.write_all(&bytes)?;
-    writer.flush()?;
-    writer.sync_record()
 }
 
 pub(crate) fn record(phase: &str, detail: &str) {
