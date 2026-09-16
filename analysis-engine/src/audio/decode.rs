@@ -359,6 +359,10 @@ mod tests {
         permissions.set_mode(0o755);
         std::fs::set_permissions(&staging, permissions).unwrap();
         std::fs::rename(staging, &path).unwrap();
+        if let Some(parent) = path.parent() {
+            let directory = std::fs::File::open(parent).unwrap();
+            directory.sync_all().unwrap();
+        }
         path
     }
 
@@ -409,6 +413,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn super_shares_facts_pcm_and_acoustic_without_changing_source_or_roles() {
+        let _process_guard = fake_process_lock();
         let root = temp_root();
         let source = root.join("source.wav");
         std::fs::write(&source, b"fixture source").unwrap();
@@ -552,7 +557,7 @@ mod tests {
         let root = temp_root();
         let source = root.join("source.wav");
         std::fs::write(&source, b"fixture").unwrap();
-        let ffmpeg = fake_ffmpeg(&root, "exec sleep 30");
+        let ffmpeg = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/audio/stall_ffmpeg.sh");
         let cancellation = CancellationToken::default();
         let thread_token = cancellation.clone();
         let canceller = std::thread::spawn(move || {
