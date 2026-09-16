@@ -124,6 +124,7 @@ fn layer_entries_attention_entries_and_completed_tiles_remain_durable() {
 // One ordinary attention tile: 1 allocation, 8 physical KV preparations and
 // 16 query heads with 4 steps each. This is a synthetic journal workload only,
 // not a GPU execution, a system-call trace or a speed/stability measurement.
+#[allow(clippy::same_item_push)]
 fn ordinary_attention_steps() -> Vec<&'static str> {
     let mut steps = vec!["qwen.strict.output_allocate"];
     for _ in 0..8 {

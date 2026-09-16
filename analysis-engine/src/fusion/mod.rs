@@ -6,6 +6,7 @@ mod candidate_states;
 mod canonical;
 mod evidence;
 mod hsmm;
+#[cfg(test)]
 mod lyric_activity;
 mod review;
 mod scalar;

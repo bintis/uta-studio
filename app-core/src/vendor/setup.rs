@@ -224,7 +224,7 @@ fn step_install_tier(
             Some(done_bytes),
             Some(total_bytes),
         );
-        let resource = RuntimeResourceRefWire::model(*model_id)?;
+        let resource = RuntimeResourceRefWire::model(model_id)?;
         match client.install(std::slice::from_ref(&resource)) {
             Ok(_) => on_output(format!("{name} was installed and verified.")),
             Err(error) => {

@@ -104,9 +104,8 @@ impl Library {
             ));
         }
         diagnostics::record("library_load_begin", &path.to_string_lossy());
-        let api = Arc::new(ffi::Api::load(path).map_err(|error| {
-            diagnostics::record("library_load_failed", &error);
-            error
+        let api = Arc::new(ffi::Api::load(path).inspect_err(|error| {
+            diagnostics::record("library_load_failed", error);
         })?);
         // SAFETY: a process-lifetime callback; it does not call back into this
         // library or an accelerator, and it contains panics at the ABI boundary.

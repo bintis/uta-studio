@@ -103,7 +103,7 @@ pub(super) fn tier_model_details(
     tier.model_ids()
         .iter()
         .map(|model_id| {
-            let resource = RuntimeResourceRefWire::model(*model_id)?;
+            let resource = RuntimeResourceRefWire::model(model_id)?;
             client
                 .show(&resource)
                 .map(|details| (*model_id, details))

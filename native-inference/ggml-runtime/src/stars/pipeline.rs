@@ -653,7 +653,7 @@ mod tests {
             .map(|index| index * 30..(index + 1) * 30)
             .collect::<Vec<_>>();
         let mut logits = vec![-10.0; ranges.len() * PITCH_CLASSES];
-        for row in logits.chunks_exact_mut(PITCH_CLASSES) {
+        for row in logits.as_chunks_mut::<PITCH_CLASSES>().0 {
             row[60] = 10.0;
         }
         let mut notes = Vec::new();

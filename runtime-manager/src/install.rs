@@ -1364,7 +1364,7 @@ mod tests {
                 &FixedTransport::default(),
             )
             .unwrap();
-        assert_eq!(result.changed, [resource.clone()]);
+        assert_eq!(result.changed.as_slice(), std::slice::from_ref(&resource));
         let resolved = manager
             .resolve_model(&resource.id, RuntimePolicy::Production)
             .unwrap();
