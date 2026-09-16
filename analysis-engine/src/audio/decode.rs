@@ -71,6 +71,17 @@ pub(crate) fn decode_audio_with_cancellation(
     })
 }
 
+fn decode_error(cancellation: &CancellationToken, message: impl Into<String>) -> EngineError {
+    EngineError::new(
+        if cancellation.is_cancelled() {
+            EngineErrorCode::Cancelled
+        } else {
+            EngineErrorCode::DecodeFailed
+        },
+        message,
+    )
+}
+
 fn decode_uncached(
     ffmpeg: &Path,
     source_id: &str,
@@ -171,34 +182,25 @@ fn decode_uncached(
             Ok(())
         },
     )
-    .map_err(|message| {
-        EngineError::new(
-            if cancellation.is_cancelled() {
-                EngineErrorCode::Cancelled
-            } else {
-                EngineErrorCode::DecodeFailed
-            },
-            message,
-        )
-    })?;
+    .map_err(|message| decode_error(cancellation, message))?;
     if !carry.is_empty()
         || sample_count == 0
         || !sample_count.is_multiple_of(u64::from(source_facts.channels))
     {
-        return Err(EngineError::new(
-            EngineErrorCode::DecodeFailed,
+        return Err(decode_error(
+            cancellation,
             "decoded audio is empty or has a malformed sample payload",
         ));
     }
     if invalid_sample {
-        return Err(EngineError::new(
-            EngineErrorCode::DecodeFailed,
+        return Err(decode_error(
+            cancellation,
             "decoded audio contains non-finite samples",
         ));
     }
     if sample_count > max_samples {
-        return Err(EngineError::new(
-            EngineErrorCode::DecodeFailed,
+        return Err(decode_error(
+            cancellation,
             "decoded audio exceeds the four-hour Engine limit",
         ));
     }
@@ -550,7 +552,7 @@ mod tests {
         let root = temp_root();
         let source = root.join("source.wav");
         std::fs::write(&source, b"fixture").unwrap();
-        let ffmpeg = fake_ffmpeg(&root, "while :; do :; done");
+        let ffmpeg = fake_ffmpeg(&root, "exec sleep 30");
         let cancellation = CancellationToken::default();
         let thread_token = cancellation.clone();
         let canceller = std::thread::spawn(move || {
@@ -561,7 +563,7 @@ mod tests {
         let error =
             decode_audio_with_cancellation(&ffmpeg, "main", &source, &cancellation).unwrap_err();
         canceller.join().unwrap();
-        assert_eq!(error.code, EngineErrorCode::Cancelled);
+        assert_eq!(error.code, EngineErrorCode::Cancelled, "{}", error.message);
         assert!(started.elapsed() < Duration::from_secs(2));
         std::fs::remove_dir_all(root).unwrap();
     }

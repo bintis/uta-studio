@@ -152,6 +152,9 @@ pub(super) fn decode(
     };
     let _ = output_reader.join();
     let stderr = error_reader.join().unwrap_or_default();
+    if cancelled() {
+        return Err("audio decode cancelled".into());
+    }
     if let Some(error) = failure {
         return Err(error);
     }
