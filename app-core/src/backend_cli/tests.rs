@@ -1,6 +1,9 @@
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::*;
+
+static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
 fn analysis_request(request_id: &str) -> serde_json::Value {
     serde_json::json!({
@@ -158,7 +161,11 @@ fn real_runtime_cli_result_error_status_and_read_paths_are_non_mutating() {
 fn fixture_script(label: &str, body: &str) -> PathBuf {
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
-    let path = std::env::temp_dir().join(format!("uta-studio-cli-{label}-{}", std::process::id()));
+    let path = std::env::temp_dir().join(format!(
+        "uta-studio-cli-{label}-{}-{}",
+        std::process::id(),
+        NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
+    ));
     let staging = path.with_extension("part");
     {
         let mut file = std::fs::File::create(&staging).unwrap();
@@ -170,6 +177,10 @@ fn fixture_script(label: &str, body: &str) -> PathBuf {
     permissions.set_mode(0o755);
     std::fs::set_permissions(&staging, permissions).unwrap();
     std::fs::rename(staging, &path).unwrap();
+    if let Some(parent) = path.parent() {
+        let directory = std::fs::File::open(parent).unwrap();
+        directory.sync_all().unwrap();
+    }
     path
 }
 
@@ -196,7 +207,13 @@ fn runtime_client_configures_observes_resolves_and_clears_the_fusion_adapter() {
     let store = root.join("store");
     let adapter = root.join("uta-fusion-agent-adapter");
     let launched = root.join("adapter-launched");
+    let runtime_copy = root.join("uta-runtime");
     std::fs::create_dir_all(&root).unwrap();
+    std::fs::copy(&runtime, &runtime_copy).unwrap();
+    {
+        let copied = std::fs::File::open(&runtime_copy).unwrap();
+        copied.sync_all().unwrap();
+    }
     std::fs::write(
         &adapter,
         format!("#!/bin/sh\nprintf launched > '{}'\n", launched.display()),
@@ -219,7 +236,7 @@ fn runtime_client_configures_observes_resolves_and_clears_the_fusion_adapter() {
         "runtime-tool-client",
         &format!(
             "unset UTA_STUDIO_FUSION_AGENT_ADAPTER_PATH UTA_STUDIO_FUSION_AGENT_CLI_PATH\nexec '{}' \"$@\"",
-            runtime.display()
+            runtime_copy.display()
         ),
     );
     let client = RuntimeCliClient::new(&wrapper).with_store(&store);
