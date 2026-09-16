@@ -141,12 +141,15 @@ fn runtime_roots() -> Result<Vec<PathBuf>, String> {
     Ok(roots)
 }
 
-pub fn validate_runtime(model_id: &str) -> Result<ValidatedRuntime, String> {
-    if !matches!(model_id, "stars" | "rosvot")
-        && !MODEL_IDENTITIES
+pub(crate) fn known_model(model_id: &str) -> bool {
+    matches!(model_id, "stars" | "rosvot")
+        || MODEL_IDENTITIES
             .iter()
             .any(|identity| identity.id == model_id)
-    {
+}
+
+pub fn validate_runtime(model_id: &str) -> Result<ValidatedRuntime, String> {
+    if !known_model(model_id) {
         return Err(format!("model {model_id} has no Rust GGML executor"));
     }
     validate_available_runtime()
@@ -174,11 +177,7 @@ fn validate_available_runtime() -> Result<ValidatedRuntime, String> {
 
 #[cfg(test)]
 fn validate_runtime_at(model_id: &str, root: &Path) -> Result<ValidatedRuntime, String> {
-    if !matches!(model_id, "stars" | "rosvot")
-        && !MODEL_IDENTITIES
-            .iter()
-            .any(|identity| identity.id == model_id)
-    {
+    if !known_model(model_id) {
         return Err(format!("model {model_id} has no Rust GGML executor"));
     }
     validate_runtime_libraries_at(root)

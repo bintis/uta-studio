@@ -59,11 +59,15 @@ fn runtime_root() -> Result<PathBuf, String> {
 }
 
 impl Runtime {
-    /// Reads and validates the installed runtime manifest. This neither loads
-    /// the native library nor touches a device.
+    /// Reads and validates the installed LibTorch runtime manifest. This
+    /// neither loads the native library, touches a device, nor requires the
+    /// separate GGML shared-library runtime.
     pub fn locate(model_id: &str) -> Result<Self, String> {
-        crate::runtime::validate_runtime(model_id)
-            .map_err(|_| format!("model {model_id} has no native executor in this worker"))?;
+        if !crate::runtime::known_model(model_id) {
+            return Err(format!(
+                "model {model_id} has no native executor in this worker"
+            ));
+        }
         let root = runtime_root()?;
         let canonical_root = root.canonicalize().map_err(|error| {
             format!(
